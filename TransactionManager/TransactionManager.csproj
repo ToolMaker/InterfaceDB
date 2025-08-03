@@ -10,9 +10,4 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.7" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Queues\" />
-    <Folder Include="TransactionsTypes\" />
-  </ItemGroup>
-
 </Project>

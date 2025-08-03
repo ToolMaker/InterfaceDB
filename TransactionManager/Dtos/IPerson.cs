@@ -2,8 +2,7 @@
 
 namespace TransactionManager.Dtos
 {
-    [StorageScope()]
-    public interface IPerson : IArms
+    public interface IPerson
     {
     }
 }

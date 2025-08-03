@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Builders;
+using TransactionManager.Dtos;
 using TransactionManager.Services;
 
 namespace TransactionManager.Extentions
@@ -14,12 +15,19 @@ namespace TransactionManager.Extentions
             var builder = new ScopeStorageBuilder();
             configure?.Invoke(builder);
 
-            var tree = new ScopeTreeBuilder(builder.AssembliesToScan).Build();
-            var svc = new ScopeService(tree);
+            var assemblies = (builder.AssembliesToScan?.Any() == true
+                              ? builder.AssembliesToScan
+                              : AppDomain.CurrentDomain.GetAssemblies())
+                             .Where(a => !a.IsDynamic)
+                             .Distinct()
+                             .ToArray();
 
-            services.AddSingleton<IScopeService>(svc);
+            var tree = new ScopeTreeBuilder(assemblies).Build();
+            services.AddSingleton<IScopeService>(new ScopeService(tree));
+
             return services;
         }
     }
+
 
 }

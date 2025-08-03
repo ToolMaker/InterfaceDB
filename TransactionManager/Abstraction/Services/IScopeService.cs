@@ -2,8 +2,8 @@
 {
     public interface IScopeService
     {
-        IEnumerable<DirectoryInfo> GetScopeDirectories<T>();
-        Type? GetScopeType(DirectoryInfo path);
+        DirectoryInfo? GetDirectory<TType>();
+        Type? GetTypeByDirectory(DirectoryInfo dir);
     }
 
 }
