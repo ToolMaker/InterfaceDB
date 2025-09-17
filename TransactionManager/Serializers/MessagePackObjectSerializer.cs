@@ -1,35 +1,35 @@
-﻿namespace TransactionManager.Serializers
+using System;
+using MessagePack;
+using MessagePack.Resolvers;
+using TransactionManager.Abstraction.Serialization;
+
+namespace TransactionManager.Serializers
 {
-    using global::TransactionManager.Abstraction.Serialization;
-    using MessagePack;
-    using MessagePack.Resolvers;
-
-    namespace TransactionManager.Serialization
+    public sealed class MessagePackObjectSerializer : IObjectSerializer
     {
+        private static readonly IFormatterResolver Resolver =
+            CompositeResolver.Create(
+                StandardResolver.Instance,
+                ContractlessStandardResolver.Instance);
 
-        public sealed class MessagePackObjectSerializer : IObjectSerializer
-        {
-            // Build a composite resolver once and re-use it everywhere.
-            // Order matters: the first resolver that can handle the type wins.
-            private static readonly IFormatterResolver _resolver =
-                CompositeResolver.Create(
-                    StandardResolver.Instance,               // honors [MessagePackObject], [Key], etc.
-                    ContractlessStandardResolver.Instance    // falls back to property-name matching
-                );
+        private static readonly MessagePackSerializerOptions Options =
+            MessagePackSerializerOptions.Standard
+                                         .WithResolver(Resolver)
+                                         .WithCompression(MessagePackCompression.Lz4Block)
+                                         .WithSecurity(MessagePackSecurity.UntrustedData);
 
-            // Pin options so every call uses the exact same setup
-            private static readonly MessagePackSerializerOptions _options =
-                MessagePackSerializerOptions.Standard
-                                             .WithResolver(_resolver)
-                                             .WithCompression(MessagePackCompression.Lz4Block) // optional perf boost
-                                             .WithSecurity(MessagePackSecurity.UntrustedData); // recommended for deserializing external data
+        public string FileExtension => ".mpk";
 
-            public byte[] Serialize<T>(T obj)
-                => MessagePackSerializer.Serialize(obj, _options);
+        public byte[] Serialize<T>(T obj)
+            => Serialize(obj!, typeof(T));
 
-            public T Deserialize<T>(byte[] data)
-                => MessagePackSerializer.Deserialize<T>(data, _options);
-        }
+        public byte[] Serialize(object value, Type valueType)
+            => MessagePackSerializer.Serialize(valueType, value, Options);
+
+        public T Deserialize<T>(byte[] data)
+            => (T)Deserialize(data, typeof(T));
+
+        public object Deserialize(byte[] data, Type valueType)
+            => MessagePackSerializer.Deserialize(valueType, data, Options)!;
     }
-
 }

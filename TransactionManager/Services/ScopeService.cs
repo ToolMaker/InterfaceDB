@@ -1,4 +1,7 @@
-﻿using TransactionManager.Abstraction.Services;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using TransactionManager.Abstraction.Services;
 
 namespace TransactionManager.Services
 {
@@ -10,9 +13,49 @@ namespace TransactionManager.Services
         public ScopeService(IReadOnlyDictionary<Type, DirectoryInfo> map)
         {
             _map = map;
-            _reverse = map.ToDictionary(k => k.Value.FullName, k => k.Key);
+
+            foreach (var dir in map.Values)
+            {
+                EnsureDirectory(dir);
+            }
+
+            _reverse = map.ToDictionary(k => k.Value.FullName,
+                                        k => k.Key,
+                                        StringComparer.OrdinalIgnoreCase);
         }
-        public DirectoryInfo? GetDirectory<t>() => _map.TryGetValue(typeof(t), out var d) ? d : null;
-        public Type? GetTypeByDirectory(DirectoryInfo d) => _reverse.TryGetValue(d.FullName, out var t) ? t : null;
+
+        public DirectoryInfo? GetDirectory<T>()
+        {
+            if (_map.TryGetValue(typeof(T), out var directory))
+            {
+                EnsureDirectory(directory);
+                directory.Refresh();
+                return directory;
+            }
+
+            return null;
+        }
+
+        public Type? GetTypeByDirectory(DirectoryInfo directory)
+        {
+            var key = directory.FullName;
+            return _reverse.TryGetValue(key, out var type) ? type : null;
+        }
+
+        public IEnumerable<KeyValuePair<Type, DirectoryInfo>> EnumerateScopes()
+        {
+            foreach (var pair in _map)
+            {
+                yield return pair;
+            }
+        }
+
+        private static void EnsureDirectory(DirectoryInfo directory)
+        {
+            if (!directory.Exists)
+            {
+                Directory.CreateDirectory(directory.FullName);
+            }
+        }
     }
 }

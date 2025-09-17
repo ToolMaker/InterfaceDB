@@ -1,14 +1,22 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.IO;
+using System.Linq;
+using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Builders;
 using TransactionManager.Dtos;
+using TransactionManager.Repository;
+using TransactionManager.Serializers;
 using TransactionManager.Services;
 
 namespace TransactionManager.Extentions
 {
     public static class ScopeStorageServiceCollectionExtensions
     {
-        public static IServiceCollection AddScopeStorage(
+        private const string DefaultRootFolderName = "Storage";
+
+        public static IServiceCollection AddLocalScopeStorage(
             this IServiceCollection services,
             Action<ScopeStorageBuilder>? configure = null)
         {
@@ -22,12 +30,36 @@ namespace TransactionManager.Extentions
                              .Distinct()
                              .ToArray();
 
-            var tree = new ScopeTreeBuilder(assemblies).Build();
-            services.AddSingleton<ILocalScopeService>(new ScopeService(tree));
+            var root = builder.RootDirectory ??
+                       new DirectoryInfo(Path.Combine(AppContext.BaseDirectory, DefaultRootFolderName));
+
+            var tree = new ScopeTreeBuilder(assemblies, root).Build();
+
+            services.AddSingleton<ILocalScopeService>(_ => new ScopeService(tree));
+
+            return services;
+        }
+
+        public static IServiceCollection AddDefaultObjectWriterAndReader(this IServiceCollection services)
+        {
+            services.AddScoped<IObjectWriter, ObjectWriter>();
+            services.AddScoped<IObjectReader, ObjectReader>();
+            services.AddScoped<IRepository, FileSystemRepository>();
+
+            return services;
+        }
+
+        public static IServiceCollection AddJsonSerializer(this IServiceCollection services)
+        {
+            services.AddScoped<IObjectSerializer, JsonObjectSerializer>();
+
+            return services;
+        }
+        public static IServiceCollection AddFileSystemRepository(this IServiceCollection services)
+        {
+            services.AddScoped<IRepository, FileSystemRepository>();
 
             return services;
         }
     }
-
-
 }

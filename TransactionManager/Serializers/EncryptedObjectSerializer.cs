@@ -1,9 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using TransactionManager.Abstraction.Encryption;
 using TransactionManager.Abstraction.Serialization;
 
@@ -14,24 +9,30 @@ namespace TransactionManager.Serializers
         private readonly IObjectSerializer _innerSerializer;
         private readonly IEncryptor _encryptor;
 
-        public EncryptedObjectSerializer(
-            IObjectSerializer innerSerializer,
-            IEncryptor encryptor)
+        public EncryptedObjectSerializer(IObjectSerializer innerSerializer, IEncryptor encryptor)
         {
             _innerSerializer = innerSerializer;
             _encryptor = encryptor;
         }
 
+        public string FileExtension => ".enc";
+
         public byte[] Serialize<T>(T obj)
+            => Serialize(obj!, typeof(T));
+
+        public byte[] Serialize(object value, Type valueType)
         {
-            var plain = _innerSerializer.Serialize(obj);
+            var plain = _innerSerializer.Serialize(value, valueType);
             return _encryptor.Encrypt(plain);
         }
 
         public T Deserialize<T>(byte[] data)
+            => (T)Deserialize(data, typeof(T));
+
+        public object Deserialize(byte[] data, Type valueType)
         {
             var plain = _encryptor.Decrypt(data);
-            return _innerSerializer.Deserialize<T>(plain);
+            return _innerSerializer.Deserialize(plain, valueType);
         }
     }
 }

@@ -1,7 +1,15 @@
-﻿namespace TransactionManager.Abstraction.Serialization
+using System.Threading;
+using System.Threading.Tasks;
+using TransactionManager.Dtos;
+
+namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectWriter
     {
-        public T WriteObject<T>(T obj);
+        ValueTask<ObjectWriteResult> WriteAsync<T>(
+            T obj,
+            string? id = null,
+            short schemaVersion = 1,
+            CancellationToken cancellationToken = default);
     }
 }

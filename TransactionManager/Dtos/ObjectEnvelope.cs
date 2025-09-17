@@ -1,18 +1,20 @@
-﻿using TransactionManager.Abstraction.Serialization;
+using System;
+using TransactionManager.Abstraction.Serialization;
 
 namespace TransactionManager.Dtos
 {
-    [Serializable]           // Serializer-agnostic marker
+    [Serializable]
     public sealed class ObjectEnvelope : IObjectEnvelope
     {
-        public short SchemaVersion { get; init; }  // 2-byte version
-        public byte[] Payload { get; init; }  // object bytes
+        public short SchemaVersion { get; init; }
+        public byte[] Payload { get; init; } = Array.Empty<byte>();
+        public string? TypeName { get; init; }
     }
 
     [Serializable]
     public sealed class LinkEnvelope : ILinkEnvelope
     {
-        public short SchemaVersion { get; init; }  // 2-byte version
-        public byte[] Payload { get; init; }  // object bytes
+        public short SchemaVersion { get; init; }
+        public byte[] Payload { get; init; } = Array.Empty<byte>();
     }
 }

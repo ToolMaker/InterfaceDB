@@ -1,7 +1,19 @@
-﻿namespace TransactionManager.Abstraction.Serialization
+using System.Threading;
+using System.Threading.Tasks;
+using TransactionManager.Dtos;
+
+namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectReader
     {
-        public T ReadObject<T>(T obj); //?????
+        ValueTask<bool> ExistsAsync<T>(
+            string id,
+            short? schemaVersion = null,
+            CancellationToken cancellationToken = default);
+
+        ValueTask<ObjectReadResult<T>> ReadAsync<T>(
+            string id,
+            short? schemaVersion = null,
+            CancellationToken cancellationToken = default);
     }
 }

@@ -1,10 +1,25 @@
-﻿namespace TransactionManager.Repository
+using System.Threading;
+using System.Threading.Tasks;
+using TransactionManager.Dtos;
+
+namespace TransactionManager.Repository
 {
-    // IRepository.cs
     public interface IRepository
     {
-        ValueTask SaveAsync<TContract>(TContract entity, CancellationToken ct = default);
-        ValueTask<TContract?> LoadAsync<TContract>(string id, CancellationToken ct = default);
-    }
+        ValueTask<ObjectWriteResult> SaveAsync<TContract>(
+            TContract entity,
+            string? id = null,
+            short schemaVersion = 1,
+            CancellationToken cancellationToken = default);
 
+        ValueTask<ObjectReadResult<TContract>> LoadAsync<TContract>(
+            string id,
+            short? schemaVersion = null,
+            CancellationToken cancellationToken = default);
+
+        ValueTask<bool> ExistsAsync<TContract>(
+            string id,
+            short? schemaVersion = null,
+            CancellationToken cancellationToken = default);
+    }
 }
