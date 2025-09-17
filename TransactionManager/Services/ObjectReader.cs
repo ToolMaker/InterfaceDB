@@ -13,9 +13,12 @@ namespace TransactionManager.Services
 {
     public sealed class ObjectReader : IObjectReader
     {
+        private const int DefaultBufferSize = 64 * 1024;
+
         private readonly ILocalScopeService _scopeService;
         private readonly IObjectSerializer _serializer;
         private readonly ILogger<ObjectReader> _logger;
+        private readonly string _extension;
 
         public ObjectReader(
             ILocalScopeService scopeService,
@@ -25,6 +28,7 @@ namespace TransactionManager.Services
             _scopeService = scopeService;
             _serializer = serializer;
             _logger = logger ?? NullLogger<ObjectReader>.Instance;
+            _extension = NormalizeExtension(serializer.FileExtension);
         }
 
         public ValueTask<bool> ExistsAsync<T>(
@@ -45,7 +49,6 @@ namespace TransactionManager.Services
             }
 
             var normalizedId = NormalizeId(id);
-            var extension = NormalizeExtension(_serializer.FileExtension);
             var tag = versionTag ?? scope.VersionTag;
 
             var versionDirectory = GetVersionDirectory(scope.Directory, tag, createIfMissing: false);
@@ -54,7 +57,7 @@ namespace TransactionManager.Services
                 return ValueTask.FromResult(false);
             }
 
-            var file = LocateFile(versionDirectory, normalizedId, extension);
+            var file = LocateFile(versionDirectory, normalizedId);
             return ValueTask.FromResult(file?.Exists == true);
         }
 
@@ -75,7 +78,6 @@ namespace TransactionManager.Services
                         ?? throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
 
             var normalizedId = NormalizeId(id);
-            var extension = NormalizeExtension(_serializer.FileExtension);
 
             FileInfo? file = null;
             string resolvedTag;
@@ -85,7 +87,7 @@ namespace TransactionManager.Services
                 var directory = GetVersionDirectory(scope.Directory, versionTag, createIfMissing: false)
                                ?? throw new FileNotFoundException($"Version tag '{versionTag}' not found for contract '{contractType.Name}'.");
 
-                file = LocateFile(directory, normalizedId, extension)
+                file = LocateFile(directory, normalizedId)
                        ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found in version '{versionTag}'.");
 
                 resolvedTag = versionTag;
@@ -95,7 +97,7 @@ namespace TransactionManager.Services
                 var defaultDirectory = GetVersionDirectory(scope.Directory, scope.VersionTag, createIfMissing: false);
                 if (defaultDirectory is not null)
                 {
-                    file = LocateFile(defaultDirectory, normalizedId, extension);
+                    file = LocateFile(defaultDirectory, normalizedId);
                     if (file is not null)
                     {
                         resolvedTag = scope.VersionTag;
@@ -106,16 +108,16 @@ namespace TransactionManager.Services
                 var latestDirectory = GetLatestVersionDirectory(scope.Directory)
                                       ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
 
-                file = LocateFile(latestDirectory, normalizedId, extension)
+                file = LocateFile(latestDirectory, normalizedId)
                        ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found.");
 
                 resolvedTag = latestDirectory.Name;
             }
 
         Deserialize:
-            var bytes = await File.ReadAllBytesAsync(file.FullName, cancellationToken);
+            var envelopeBytes = await ReadFileAsync(file!, cancellationToken).ConfigureAwait(false);
 
-            var envelope = _serializer.Deserialize<ObjectEnvelope>(bytes);
+            var envelope = _serializer.Deserialize<ObjectEnvelope>(envelopeBytes);
             var resolvedType = ResolveStoredType(envelope.TypeName, contractType);
 
             if (!contractType.IsAssignableFrom(resolvedType))
@@ -134,11 +136,11 @@ namespace TransactionManager.Services
                 resolvedType.Name,
                 normalizedId,
                 envelope.VersionTag,
-                file.FullName);
+                file!.FullName);
 
             return new ObjectReadResult<T>(normalizedId,
                                             envelope.VersionTag,
-                                            file,
+                                            file!,
                                             envelope,
                                             typedValue);
         }
@@ -164,20 +166,63 @@ namespace TransactionManager.Services
             return directory;
         }
 
-        private static DirectoryInfo? GetLatestVersionDirectory(DirectoryInfo contractDirectory)
-            => contractDirectory.EnumerateDirectories()
-                                 .OrderByDescending(d => d.Name, StringComparer.Ordinal)
-                                 .FirstOrDefault();
+        private DirectoryInfo? GetLatestVersionDirectory(DirectoryInfo contractDirectory)
+        {
+            return contractDirectory.EnumerateDirectories()
+                                     .OrderByDescending(d => d.Name, StringComparer.Ordinal)
+                                     .FirstOrDefault();
+        }
 
-        private static FileInfo? LocateFile(DirectoryInfo versionDirectory, string id, string extension)
+        private FileInfo? LocateFile(DirectoryInfo versionDirectory, string id)
         {
             if (!versionDirectory.Exists)
             {
                 return null;
             }
 
-            var candidate = new FileInfo(Path.Combine(versionDirectory.FullName, $"{id}{extension}"));
+            var candidate = new FileInfo(Path.Combine(versionDirectory.FullName, id + _extension));
             return candidate.Exists ? candidate : null;
+        }
+
+        private static async ValueTask<byte[]> ReadFileAsync(FileInfo file, CancellationToken cancellationToken)
+        {
+            var length = file.Length;
+            if (length == 0)
+            {
+                return Array.Empty<byte>();
+            }
+
+            if (length > int.MaxValue)
+            {
+                throw new IOException($"File '{file.FullName}' is too large to be processed.");
+            }
+
+            var buffer = GC.AllocateUninitializedArray<byte>((int)length);
+
+            var options = new FileStreamOptions
+            {
+                Access = FileAccess.Read,
+                Mode = FileMode.Open,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+                BufferSize = DefaultBufferSize
+            };
+
+            await using var stream = new FileStream(file.FullName, options);
+
+            var offset = 0;
+            while (offset < buffer.Length)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    throw new EndOfStreamException($"Unexpected end of file while reading '{file.FullName}'.");
+                }
+
+                offset += read;
+            }
+
+            return buffer;
         }
 
         private static Type ResolveStoredType(string? typeName, Type fallback)
@@ -231,7 +276,7 @@ namespace TransactionManager.Services
 
             return extension.StartsWith(".", StringComparison.Ordinal)
                 ? extension
-                : $".{extension}";
+                : "." + extension;
         }
     }
 }

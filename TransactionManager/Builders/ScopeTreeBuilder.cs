@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -12,6 +13,8 @@ namespace TransactionManager.Builders
     {
         private readonly IReadOnlyCollection<Assembly> _assemblies;
         private readonly DirectoryInfo _root;
+
+        private static readonly ConcurrentDictionary<AssemblySetKey, IReadOnlyList<ScopeMetadata>> MetadataCache = new();
 
         public ScopeTreeBuilder(IEnumerable<Assembly> assemblies, DirectoryInfo root)
         {
@@ -27,7 +30,35 @@ namespace TransactionManager.Builders
                 _root.Refresh();
             }
 
-            var allTypes = _assemblies.SelectMany(GetLoadableTypes).ToArray();
+            var key = AssemblySetKey.Create(_assemblies);
+            var metadata = MetadataCache.GetOrAdd(key, _ => BuildMetadata(_assemblies));
+
+            var descriptors = new Dictionary<Type, ScopeDescriptor>(metadata.Count);
+
+            foreach (var meta in metadata)
+            {
+                var directoryPath = Path.Combine(_root.FullName, meta.ContractType.Name);
+                var directory = new DirectoryInfo(directoryPath);
+
+                if (!directory.Exists)
+                {
+                    Directory.CreateDirectory(directory.FullName);
+                    directory.Refresh();
+                }
+
+                descriptors[meta.ContractType] = new ScopeDescriptor(
+                    meta.ContractType,
+                    directory,
+                    meta.Implementations,
+                    meta.VersionTag);
+            }
+
+            return descriptors;
+        }
+
+        private static IReadOnlyList<ScopeMetadata> BuildMetadata(IReadOnlyCollection<Assembly> assemblies)
+        {
+            var allTypes = assemblies.SelectMany(GetLoadableTypes).ToArray();
 
             var scopedInterfaces = allTypes
                 .Where(t => t.IsInterface && t.IsDefined(typeof(StorageScopeAttribute), inherit: false))
@@ -37,7 +68,7 @@ namespace TransactionManager.Builders
                 .Where(t => t.IsClass && !t.IsAbstract)
                 .ToArray();
 
-            var descriptors = new Dictionary<Type, ScopeDescriptor>();
+            var list = new List<ScopeMetadata>(scopedInterfaces.Length);
 
             foreach (var contract in scopedInterfaces)
             {
@@ -45,24 +76,12 @@ namespace TransactionManager.Builders
                     .Where(contract.IsAssignableFrom)
                     .ToArray();
 
-                var directoryPath = Path.Combine(_root.FullName, contract.Name);
-                var directory = new DirectoryInfo(directoryPath);
-
-                if (!directory.Exists)
-                {
-                    Directory.CreateDirectory(directory.FullName);
-                    directory.Refresh();
-                }
-
                 var versionTag = ResolveVersionTag(contract);
 
-                descriptors[contract] = new ScopeDescriptor(contract,
-                                                             directory,
-                                                             implementations,
-                                                             versionTag);
+                list.Add(new ScopeMetadata(contract, versionTag, implementations));
             }
 
-            return descriptors;
+            return list;
         }
 
         private static string ResolveVersionTag(Type contract)
@@ -97,6 +116,36 @@ namespace TransactionManager.Builders
             catch (ReflectionTypeLoadException ex)
             {
                 return ex.Types.Where(t => t != null)!;
+            }
+        }
+
+        private readonly record struct ScopeMetadata(Type ContractType, string VersionTag, Type[] Implementations);
+
+        private readonly record struct AssemblySetKey(string[] AssemblyNames)
+        {
+            public static AssemblySetKey Create(IEnumerable<Assembly> assemblies)
+            {
+                var names = assemblies
+                    .Where(a => !a.IsDynamic)
+                    .Select(a => a.FullName ?? a.GetName().Name ?? string.Empty)
+                    .Distinct()
+                    .OrderBy(n => n, StringComparer.Ordinal)
+                    .ToArray();
+
+                return new AssemblySetKey(names);
+            }
+
+            public bool Equals(AssemblySetKey other)
+                => AssemblyNames.AsSpan().SequenceEqual(other.AssemblyNames);
+
+            public override int GetHashCode()
+            {
+                var hash = new HashCode();
+                foreach (var name in AssemblyNames)
+                {
+                    hash.Add(name, StringComparer.Ordinal);
+                }
+                return hash.ToHashCode();
             }
         }
     }

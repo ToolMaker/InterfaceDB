@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -13,9 +12,12 @@ namespace TransactionManager.Services
 {
     public sealed class ObjectWriter : IObjectWriter
     {
+        private const int DefaultBufferSize = 64 * 1024;
+
         private readonly ILocalScopeService _scopeService;
         private readonly IObjectSerializer _serializer;
         private readonly ILogger<ObjectWriter> _logger;
+        private readonly string _extension;
 
         public ObjectWriter(
             ILocalScopeService scopeService,
@@ -25,6 +27,7 @@ namespace TransactionManager.Services
             _scopeService = scopeService;
             _serializer = serializer;
             _logger = logger ?? NullLogger<ObjectWriter>.Instance;
+            _extension = NormalizeExtension(serializer.FileExtension);
         }
 
         public async ValueTask<ObjectWriteResult> WriteAsync<T>(
@@ -60,7 +63,7 @@ namespace TransactionManager.Services
                     "Type {RuntimeType} was not discovered for contract {Contract}. Known implementations: {Known}",
                     runtimeType.FullName,
                     contractType.FullName,
-                    string.Join(", ", scope.Implementations.Select(t => t.FullName)));
+                    string.Join(", ", scope.Implementations));
             }
 
             var contractDirectory = scope.Directory;
@@ -69,9 +72,7 @@ namespace TransactionManager.Services
             var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, scope.VersionTag);
 
             var normalizedId = NormalizeId(id);
-            var extension = NormalizeExtension(_serializer.FileExtension);
-            var targetPath = Path.Combine(versionDirectory.FullName, $"{normalizedId}{extension}");
-            var tempPath = Path.Combine(versionDirectory.FullName, $".{normalizedId}.{Guid.NewGuid():N}.tmp");
+            var targetPath = Path.Combine(versionDirectory.FullName, normalizedId + _extension);
 
             var payload = _serializer.Serialize(obj, runtimeType);
             var envelope = new ObjectEnvelope
@@ -83,13 +84,20 @@ namespace TransactionManager.Services
 
             var bytes = _serializer.Serialize(envelope);
 
-            await using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 32_768, useAsync: true))
+            var options = new FileStreamOptions
             {
-                await stream.WriteAsync(bytes.AsMemory(0, bytes.Length), cancellationToken);
-                await stream.FlushAsync(cancellationToken);
-            }
+                Mode = FileMode.Create,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+                BufferSize = DefaultBufferSize
+            };
 
-            File.Move(tempPath, targetPath, true);
+            await using (var stream = new FileStream(targetPath, options))
+            {
+                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             _logger.LogInformation(
                 "Wrote {Contract} implementation {Runtime} with id {Id} tag {Tag} to {Path}",
@@ -115,6 +123,7 @@ namespace TransactionManager.Services
                 Directory.CreateDirectory(directory.FullName);
                 directory.Refresh();
             }
+
             return directory;
         }
 
@@ -141,7 +150,7 @@ namespace TransactionManager.Services
 
             return extension.StartsWith(".", StringComparison.Ordinal)
                 ? extension
-                : $".{extension}";
+                : "." + extension;
         }
     }
 }
