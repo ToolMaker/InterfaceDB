@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -31,7 +30,6 @@ namespace TransactionManager.Services
         public async ValueTask<ObjectWriteResult> WriteAsync<T>(
             T obj,
             string? id = null,
-            short schemaVersion = 1,
             CancellationToken cancellationToken = default)
         {
             if (obj is null)
@@ -68,7 +66,7 @@ namespace TransactionManager.Services
             var contractDirectory = scope.Directory;
             Directory.CreateDirectory(contractDirectory.FullName);
 
-            var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, schemaVersion);
+            var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, scope.VersionTag);
 
             var normalizedId = NormalizeId(id);
             var extension = NormalizeExtension(_serializer.FileExtension);
@@ -78,7 +76,7 @@ namespace TransactionManager.Services
             var payload = _serializer.Serialize(obj, runtimeType);
             var envelope = new ObjectEnvelope
             {
-                SchemaVersion = schemaVersion,
+                VersionTag = scope.VersionTag,
                 Payload = payload,
                 TypeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName
             };
@@ -94,24 +92,24 @@ namespace TransactionManager.Services
             File.Move(tempPath, targetPath, true);
 
             _logger.LogInformation(
-                "Wrote {Contract} implementation {Runtime} with id {Id} v{Version} to {Path}",
+                "Wrote {Contract} implementation {Runtime} with id {Id} tag {Tag} to {Path}",
                 contractType.Name,
                 runtimeType.Name,
                 normalizedId,
-                schemaVersion,
+                scope.VersionTag,
                 targetPath);
 
             return new ObjectWriteResult(normalizedId,
-                                         schemaVersion,
+                                         scope.VersionTag,
                                          contractType,
                                          new FileInfo(targetPath),
                                          envelope);
         }
 
-        private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory, short schemaVersion)
+        private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory,
+                                                                  string versionTag)
         {
-            var versionFolderName = GetVersionFolderName(schemaVersion);
-            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionFolderName));
+            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionTag));
             if (!directory.Exists)
             {
                 Directory.CreateDirectory(directory.FullName);
@@ -119,9 +117,6 @@ namespace TransactionManager.Services
             }
             return directory;
         }
-
-        internal static string GetVersionFolderName(short schemaVersion)
-            => schemaVersion.ToString("0.0", CultureInfo.InvariantCulture);
 
         private static string NormalizeId(string? id)
         {

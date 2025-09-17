@@ -5,7 +5,7 @@ namespace TransactionManager.Dtos
 {
     public sealed record ObjectWriteResult(
         string Id,
-        short SchemaVersion,
+        string VersionTag,
         Type ObjectType,
         FileInfo File,
         ObjectEnvelope Envelope);

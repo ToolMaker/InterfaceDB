@@ -4,7 +4,7 @@ namespace TransactionManager.Dtos
 {
     public sealed record ObjectReadResult<T>(
         string Id,
-        short SchemaVersion,
+        string VersionTag,
         FileInfo File,
         ObjectEnvelope Envelope,
         T Value);

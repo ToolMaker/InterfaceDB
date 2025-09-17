@@ -9,17 +9,16 @@ namespace TransactionManager.Repository
         ValueTask<ObjectWriteResult> SaveAsync<TContract>(
             TContract entity,
             string? id = null,
-            short schemaVersion = 1,
             CancellationToken cancellationToken = default);
 
         ValueTask<ObjectReadResult<TContract>> LoadAsync<TContract>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default);
 
         ValueTask<bool> ExistsAsync<TContract>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default);
     }
 }

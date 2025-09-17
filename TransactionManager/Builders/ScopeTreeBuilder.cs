@@ -54,10 +54,38 @@ namespace TransactionManager.Builders
                     directory.Refresh();
                 }
 
-                descriptors[contract] = new ScopeDescriptor(contract, directory, implementations);
+                var versionTag = ResolveVersionTag(contract);
+
+                descriptors[contract] = new ScopeDescriptor(contract,
+                                                             directory,
+                                                             implementations,
+                                                             versionTag);
             }
 
             return descriptors;
+        }
+
+        private static string ResolveVersionTag(Type contract)
+        {
+            var attribute = contract.GetCustomAttribute<StorageScopeAttribute>(inherit: false);
+            var tag = attribute?.VersionTag;
+
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                tag = "1.0";
+            }
+
+            if (tag.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                throw new FormatException($"Version tag '{tag}' declared on '{contract.FullName}' contains invalid path characters.");
+            }
+
+            if (tag.Contains(Path.DirectorySeparatorChar) || tag.Contains(Path.AltDirectorySeparatorChar))
+            {
+                throw new FormatException($"Version tag '{tag}' declared on '{contract.FullName}' cannot contain directory separators.");
+            }
+
+            return tag;
         }
 
         private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)

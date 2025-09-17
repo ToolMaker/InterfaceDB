@@ -1,8 +1,8 @@
-using TransactionManager.Attributes;
-
 namespace TransactionManager.Dtos
 {
-    [StorageScope]
+    using TransactionManager.Attributes;
+
+    [StorageScope(VersionTag = "1.0")]
     public interface IPerson
     {
         string Name { get; }

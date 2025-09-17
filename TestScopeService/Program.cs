@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -38,63 +37,39 @@ namespace TestScopeService
             var scopeService = scope.ServiceProvider.GetRequiredService<ILocalScopeService>();
             var serializer = scope.ServiceProvider.GetRequiredService<IObjectSerializer>();
 
-            var personV1 = new Person
+            var descriptor = scopeService.GetScope<IPerson>()
+                            ?? throw new InvalidOperationException("IPerson scope not registered.");
+
+            Console.WriteLine($"Version tag for IPerson: '{descriptor.VersionTag}'");
+
+            var person = new Person
             {
                 Name = "Ada",
                 Surname = "Lovelace"
             };
 
-            var writeResultV1 = await repository.SaveAsync<IPerson>(personV1, schemaVersion: 1);
-            Console.WriteLine($"Saved {writeResultV1.ObjectType.Name} #{writeResultV1.Id} to {writeResultV1.File.FullName}");
+            var writeResult = await repository.SaveAsync<IPerson>(person);
+            Console.WriteLine($"Saved {writeResult.ObjectType.Name} #{writeResult.Id} to {writeResult.File.FullName}");
 
-            var personV2 = new Person
-            {
-                Name = "Ada",
-                Surname = "Byron"
-            };
-
-            var writeResultV2 = await repository.SaveAsync<IPerson>(personV2, writeResultV1.Id, schemaVersion: (short)(writeResultV1.SchemaVersion + 1));
-            Console.WriteLine($"Saved v{writeResultV2.SchemaVersion} for {writeResultV2.Id}");
-
-            var loadedLatest = await repository.LoadAsync<IPerson>(writeResultV1.Id);
-            Console.WriteLine($"Latest: {loadedLatest.Value.Name} {loadedLatest.Value.Surname} (v{loadedLatest.SchemaVersion}) [{loadedLatest.Value.GetType().Name}]");
-
-            var loadedV1 = await repository.LoadAsync<IPerson>(writeResultV1.Id, writeResultV1.SchemaVersion);
-            Console.WriteLine($"Original: {loadedV1.Value.Name} {loadedV1.Value.Surname} (v{loadedV1.SchemaVersion}) [{loadedV1.Value.GetType().Name}]");
-
-            var hasVersion3 = await repository.ExistsAsync<IPerson>(writeResultV1.Id, schemaVersion: 3);
-            Console.WriteLine($"Version 3 exists? {hasVersion3}");
-
-            var personDirectory = scopeService.GetDirectory<IPerson>();
-            Console.WriteLine($"IPerson scope directory: {personDirectory?.FullName}");
+            var loaded = await repository.LoadAsync<IPerson>(writeResult.Id);
+            Console.WriteLine($"Loaded: {loaded.Value.Name} {loaded.Value.Surname} (tag '{loaded.Envelope.VersionTag}') [{loaded.Value.GetType().Name}]");
 
             Console.WriteLine();
             Console.WriteLine("Stored files:");
 
-            foreach (var versionDir in personDirectory!.EnumerateDirectories()
-                                             .Select(d => new { Directory = d, Version = ParseVersion(d.Name) })
-                                             .OrderBy(x => x.Version ?? decimal.MinValue))
+            foreach (var versionDir in descriptor.Directory.EnumerateDirectories().OrderBy(d => d.Name, StringComparer.Ordinal))
             {
-                Console.WriteLine($"Version folder {versionDir.Directory.Name}:");
-                foreach (var file in versionDir.Directory.EnumerateFiles($"*{serializer.FileExtension}", SearchOption.TopDirectoryOnly))
+                Console.WriteLine($"Version folder {versionDir.Name}:");
+                foreach (var file in versionDir.EnumerateFiles($"*{serializer.FileExtension}", SearchOption.TopDirectoryOnly))
                 {
                     Console.WriteLine($" - {file.Name}");
                 }
             }
 
             Console.WriteLine();
+            Console.WriteLine("Tip: Update the IPerson [StorageScope(VersionTag = ...)] attribute and rerun to create a new version folder.");
             Console.WriteLine("Press Enter to exit...");
             Console.ReadLine();
-        }
-
-        private static decimal? ParseVersion(string name)
-        {
-            if (decimal.TryParse(name, NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
-            {
-                return value;
-            }
-
-            return null;
         }
     }
 }

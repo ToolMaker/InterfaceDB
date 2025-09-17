@@ -10,5 +10,10 @@ namespace TransactionManager.Attributes
                     Inherited = false, AllowMultiple = false)]
     public sealed class StorageScopeAttribute : Attribute
     {
+        /// <summary>
+        /// Code-defined version tag used to segregate persisted data (e.g., "1.0", "2024-09", "beta").
+        /// Defaults to "1.0" when not specified.
+        /// </summary>
+        public string? VersionTag { get; init; }
     }
 }

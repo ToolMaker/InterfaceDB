@@ -9,7 +9,6 @@ namespace TransactionManager.Abstraction.Serialization
         ValueTask<ObjectWriteResult> WriteAsync<T>(
             T obj,
             string? id = null,
-            short schemaVersion = 1,
             CancellationToken cancellationToken = default);
     }
 }

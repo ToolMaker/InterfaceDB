@@ -8,12 +8,12 @@ namespace TransactionManager.Abstraction.Serialization
     {
         ValueTask<bool> ExistsAsync<T>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default);
 
         ValueTask<ObjectReadResult<T>> ReadAsync<T>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default);
     }
 }

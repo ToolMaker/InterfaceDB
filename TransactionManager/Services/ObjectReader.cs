@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -30,7 +29,7 @@ namespace TransactionManager.Services
 
         public ValueTask<bool> ExistsAsync<T>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default)
         {
             var contractType = typeof(T);
@@ -47,34 +46,21 @@ namespace TransactionManager.Services
 
             var normalizedId = NormalizeId(id);
             var extension = NormalizeExtension(_serializer.FileExtension);
+            var tag = versionTag ?? scope.VersionTag;
 
-            FileInfo? file = null;
-
-            if (schemaVersion.HasValue)
+            var versionDirectory = GetVersionDirectory(scope.Directory, tag, createIfMissing: false);
+            if (versionDirectory is null)
             {
-                var directory = GetVersionDirectory(scope.Directory, schemaVersion!.Value, createIfMissing: false);
-                if (directory is null)
-                {
-                    return ValueTask.FromResult(false);
-                }
-
-                file = LocateFile(directory, normalizedId, extension);
-            }
-            else
-            {
-                var latest = GetLatestVersionDirectory(scope.Directory);
-                if (latest is not null)
-                {
-                    file = LocateFile(latest, normalizedId, extension);
-                }
+                return ValueTask.FromResult(false);
             }
 
+            var file = LocateFile(versionDirectory, normalizedId, extension);
             return ValueTask.FromResult(file?.Exists == true);
         }
 
         public async ValueTask<ObjectReadResult<T>> ReadAsync<T>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -91,21 +77,42 @@ namespace TransactionManager.Services
             var normalizedId = NormalizeId(id);
             var extension = NormalizeExtension(_serializer.FileExtension);
 
-            DirectoryInfo? versionDirectory;
-            if (schemaVersion.HasValue)
+            FileInfo? file = null;
+            string resolvedTag;
+
+            if (!string.IsNullOrWhiteSpace(versionTag))
             {
-                versionDirectory = GetVersionDirectory(scope.Directory, schemaVersion!.Value, createIfMissing: false)
-                                   ?? throw new FileNotFoundException($"Version folder '{ObjectWriter.GetVersionFolderName(schemaVersion!.Value)}' not found for contract '{contractType.Name}'.");
+                var directory = GetVersionDirectory(scope.Directory, versionTag, createIfMissing: false)
+                               ?? throw new FileNotFoundException($"Version tag '{versionTag}' not found for contract '{contractType.Name}'.");
+
+                file = LocateFile(directory, normalizedId, extension)
+                       ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found in version '{versionTag}'.");
+
+                resolvedTag = versionTag;
             }
             else
             {
-                versionDirectory = GetLatestVersionDirectory(scope.Directory)
-                                   ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
-            }
+                var defaultDirectory = GetVersionDirectory(scope.Directory, scope.VersionTag, createIfMissing: false);
+                if (defaultDirectory is not null)
+                {
+                    file = LocateFile(defaultDirectory, normalizedId, extension);
+                    if (file is not null)
+                    {
+                        resolvedTag = scope.VersionTag;
+                        goto Deserialize;
+                    }
+                }
 
-            var file = LocateFile(versionDirectory, normalizedId, extension)
+                var latestDirectory = GetLatestVersionDirectory(scope.Directory)
+                                      ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
+
+                file = LocateFile(latestDirectory, normalizedId, extension)
                        ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found.");
 
+                resolvedTag = latestDirectory.Name;
+            }
+
+        Deserialize:
             var bytes = await File.ReadAllBytesAsync(file.FullName, cancellationToken);
 
             var envelope = _serializer.Deserialize<ObjectEnvelope>(bytes);
@@ -122,24 +129,25 @@ namespace TransactionManager.Services
             var typedValue = (T)rawValue;
 
             _logger.LogInformation(
-                "Read {Contract} implementation {Runtime} with id {Id} v{Version} from {Path}",
+                "Read {Contract} implementation {Runtime} with id {Id} tag {Tag} from {Path}",
                 contractType.Name,
                 resolvedType.Name,
                 normalizedId,
-                envelope.SchemaVersion,
+                envelope.VersionTag,
                 file.FullName);
 
             return new ObjectReadResult<T>(normalizedId,
-                                            envelope.SchemaVersion,
+                                            envelope.VersionTag,
                                             file,
                                             envelope,
                                             typedValue);
         }
 
-        private static DirectoryInfo? GetVersionDirectory(DirectoryInfo contractDirectory, short schemaVersion, bool createIfMissing)
+        private static DirectoryInfo? GetVersionDirectory(DirectoryInfo contractDirectory,
+                                                           string versionTag,
+                                                           bool createIfMissing)
         {
-            var versionFolderName = ObjectWriter.GetVersionFolderName(schemaVersion);
-            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionFolderName));
+            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionTag));
 
             if (directory.Exists)
             {
@@ -157,24 +165,9 @@ namespace TransactionManager.Services
         }
 
         private static DirectoryInfo? GetLatestVersionDirectory(DirectoryInfo contractDirectory)
-        {
-            return contractDirectory.EnumerateDirectories()
-                                     .Select(d => new { Directory = d, Version = ParseVersion(d.Name) })
-                                     .Where(x => x.Version.HasValue)
-                                     .OrderByDescending(x => x.Version!.Value)
-                                     .Select(x => x.Directory)
-                                     .FirstOrDefault();
-        }
-
-        private static decimal? ParseVersion(string name)
-        {
-            if (decimal.TryParse(name, NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
-            {
-                return value;
-            }
-
-            return null;
-        }
+            => contractDirectory.EnumerateDirectories()
+                                 .OrderByDescending(d => d.Name, StringComparer.Ordinal)
+                                 .FirstOrDefault();
 
         private static FileInfo? LocateFile(DirectoryInfo versionDirectory, string id, string extension)
         {

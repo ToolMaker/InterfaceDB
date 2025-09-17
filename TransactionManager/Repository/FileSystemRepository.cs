@@ -20,7 +20,6 @@ namespace TransactionManager.Repository
         public ValueTask<ObjectWriteResult> SaveAsync<TContract>(
             TContract entity,
             string? id = null,
-            short schemaVersion = 1,
             CancellationToken cancellationToken = default)
         {
             if (entity is null)
@@ -30,25 +29,25 @@ namespace TransactionManager.Repository
 
             EnsureContractIsInterface<TContract>();
 
-            return _writer.WriteAsync(entity, id, schemaVersion, cancellationToken);
+            return _writer.WriteAsync(entity, id, cancellationToken);
         }
 
         public ValueTask<ObjectReadResult<TContract>> LoadAsync<TContract>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default)
         {
             EnsureContractIsInterface<TContract>();
-            return _reader.ReadAsync<TContract>(id, schemaVersion, cancellationToken);
+            return _reader.ReadAsync<TContract>(id, versionTag, cancellationToken);
         }
 
         public ValueTask<bool> ExistsAsync<TContract>(
             string id,
-            short? schemaVersion = null,
+            string? versionTag = null,
             CancellationToken cancellationToken = default)
         {
             EnsureContractIsInterface<TContract>();
-            return _reader.ExistsAsync<TContract>(id, schemaVersion, cancellationToken);
+            return _reader.ExistsAsync<TContract>(id, versionTag, cancellationToken);
         }
 
         private static void EnsureContractIsInterface<TContract>()
