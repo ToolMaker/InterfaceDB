@@ -23,7 +23,7 @@ namespace TransactionManager.Extentions
                              .ToArray();
 
             var tree = new ScopeTreeBuilder(assemblies).Build();
-            services.AddSingleton<IScopeService>(new ScopeService(tree));
+            services.AddSingleton<ILocalScopeService>(new ScopeService(tree));
 
             return services;
         }

@@ -1,4 +1,4 @@
-﻿namespace TransactionManager.Serializers
+﻿namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectSerializer
     {

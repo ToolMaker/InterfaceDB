@@ -1,6 +1,6 @@
 ﻿namespace TransactionManager.Abstraction.Services
 {
-    public interface IScopeService
+    public interface ILocalScopeService
     {
         DirectoryInfo? GetDirectory<TType>();
         Type? GetTypeByDirectory(DirectoryInfo dir);

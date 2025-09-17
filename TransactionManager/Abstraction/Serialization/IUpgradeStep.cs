@@ -1,6 +1,6 @@
 ﻿using TransactionManager.Enums;
 
-namespace TransactionManager.Dtos
+namespace TransactionManager.Abstraction.Serialization
 {
     public interface IUpgradeStep
     {

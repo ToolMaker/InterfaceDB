@@ -2,7 +2,7 @@
 
 namespace TransactionManager.Services
 {
-    public sealed class ScopeService : IScopeService
+    public sealed class ScopeService : ILocalScopeService
     {
         private readonly IReadOnlyDictionary<Type, DirectoryInfo> _map;
         private readonly IReadOnlyDictionary<string, Type> _reverse;

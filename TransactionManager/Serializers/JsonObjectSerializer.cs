@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using TransactionManager.Abstraction.Serialization;
 
 namespace TransactionManager.Serializers
 {
