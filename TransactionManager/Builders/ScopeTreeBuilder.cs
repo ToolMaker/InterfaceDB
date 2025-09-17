@@ -1,7 +1,10 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using TransactionManager.Attributes;
+using TransactionManager.Dtos;
 
 namespace TransactionManager.Builders
 {
@@ -16,7 +19,7 @@ namespace TransactionManager.Builders
             _root = root;
         }
 
-        public IReadOnlyDictionary<Type, DirectoryInfo> Build()
+        public IReadOnlyDictionary<Type, ScopeDescriptor> Build()
         {
             if (!_root.Exists)
             {
@@ -24,25 +27,49 @@ namespace TransactionManager.Builders
                 _root.Refresh();
             }
 
-            return _assemblies
-                .SelectMany(a => a.GetTypes())
-                .Where(t => t.IsDefined(typeof(StorageScopeAttribute), false)
-                            && !t.IsAbstract && !t.IsInterface)
-                .ToDictionary(t => t, CreateDirectoryForType);
-        }
+            var allTypes = _assemblies.SelectMany(GetLoadableTypes).ToArray();
 
-        private DirectoryInfo CreateDirectoryForType(Type type)
-        {
-            var path = Path.Combine(_root.FullName, type.Name);
-            var dir = new DirectoryInfo(path);
+            var scopedInterfaces = allTypes
+                .Where(t => t.IsInterface && t.IsDefined(typeof(StorageScopeAttribute), inherit: false))
+                .ToArray();
 
-            if (!dir.Exists)
+            var candidateImplementations = allTypes
+                .Where(t => t.IsClass && !t.IsAbstract)
+                .ToArray();
+
+            var descriptors = new Dictionary<Type, ScopeDescriptor>();
+
+            foreach (var contract in scopedInterfaces)
             {
-                Directory.CreateDirectory(dir.FullName);
-                dir.Refresh();
+                var implementations = candidateImplementations
+                    .Where(contract.IsAssignableFrom)
+                    .ToArray();
+
+                var directoryPath = Path.Combine(_root.FullName, contract.Name);
+                var directory = new DirectoryInfo(directoryPath);
+
+                if (!directory.Exists)
+                {
+                    Directory.CreateDirectory(directory.FullName);
+                    directory.Refresh();
+                }
+
+                descriptors[contract] = new ScopeDescriptor(contract, directory, implementations);
             }
 
-            return dir;
+            return descriptors;
+        }
+
+        private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.Where(t => t != null)!;
+            }
         }
     }
 }

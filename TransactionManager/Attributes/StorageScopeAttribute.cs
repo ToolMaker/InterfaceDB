@@ -3,10 +3,10 @@ using System;
 namespace TransactionManager.Attributes
 {
     /// <summary>
-    /// Marks a concrete class or struct as an on-disk storage scope.
-    /// Interfaces and abstract classes are ignored.
+    /// Marks an interface contract as an on-disk storage scope.
+    /// Concrete implementations are discovered via reflection at startup.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct,
+    [AttributeUsage(AttributeTargets.Interface,
                     Inherited = false, AllowMultiple = false)]
     public sealed class StorageScopeAttribute : Attribute
     {

@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -39,17 +41,40 @@ namespace TransactionManager.Services
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            var directory = _scopeService.GetDirectory<T>()
-                           ?? throw new InvalidOperationException($"No storage scope registered for type '{typeof(T).FullName}'.");
+            var contractType = typeof(T);
+            if (!contractType.IsInterface)
+            {
+                throw new InvalidOperationException($"Storage contract '{contractType.FullName}' must be an interface marked with [StorageScope].");
+            }
 
-            Directory.CreateDirectory(directory.FullName);
+            var scope = _scopeService.GetScope<T>()
+                        ?? throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
+
+            var runtimeType = obj.GetType();
+            if (!contractType.IsAssignableFrom(runtimeType))
+            {
+                throw new InvalidOperationException($"Instance of type '{runtimeType.FullName}' does not implement storage contract '{contractType.FullName}'.");
+            }
+
+            if (scope.Implementations.Count > 0 && !scope.Implementations.Contains(runtimeType))
+            {
+                _logger.LogWarning(
+                    "Type {RuntimeType} was not discovered for contract {Contract}. Known implementations: {Known}",
+                    runtimeType.FullName,
+                    contractType.FullName,
+                    string.Join(", ", scope.Implementations.Select(t => t.FullName)));
+            }
+
+            var contractDirectory = scope.Directory;
+            Directory.CreateDirectory(contractDirectory.FullName);
+
+            var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, schemaVersion);
 
             var normalizedId = NormalizeId(id);
             var extension = NormalizeExtension(_serializer.FileExtension);
-            var targetPath = Path.Combine(directory.FullName, $"{normalizedId}.v{schemaVersion}{extension}");
-            var tempPath = Path.Combine(directory.FullName, $".{normalizedId}.v{schemaVersion}.{Guid.NewGuid():N}.tmp");
+            var targetPath = Path.Combine(versionDirectory.FullName, $"{normalizedId}{extension}");
+            var tempPath = Path.Combine(versionDirectory.FullName, $".{normalizedId}.{Guid.NewGuid():N}.tmp");
 
-            var runtimeType = obj.GetType();
             var payload = _serializer.Serialize(obj, runtimeType);
             var envelope = new ObjectEnvelope
             {
@@ -68,14 +93,35 @@ namespace TransactionManager.Services
 
             File.Move(tempPath, targetPath, true);
 
-            _logger.LogInformation("Wrote {Type} with id {Id} v{Version} to {Path}", typeof(T).Name, normalizedId, schemaVersion, targetPath);
+            _logger.LogInformation(
+                "Wrote {Contract} implementation {Runtime} with id {Id} v{Version} to {Path}",
+                contractType.Name,
+                runtimeType.Name,
+                normalizedId,
+                schemaVersion,
+                targetPath);
 
             return new ObjectWriteResult(normalizedId,
                                          schemaVersion,
-                                         typeof(T),
+                                         contractType,
                                          new FileInfo(targetPath),
                                          envelope);
         }
+
+        private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory, short schemaVersion)
+        {
+            var versionFolderName = GetVersionFolderName(schemaVersion);
+            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionFolderName));
+            if (!directory.Exists)
+            {
+                Directory.CreateDirectory(directory.FullName);
+                directory.Refresh();
+            }
+            return directory;
+        }
+
+        internal static string GetVersionFolderName(short schemaVersion)
+            => schemaVersion.ToString("0.0", CultureInfo.InvariantCulture);
 
         private static string NormalizeId(string? id)
         {

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -32,15 +33,42 @@ namespace TransactionManager.Services
             short? schemaVersion = null,
             CancellationToken cancellationToken = default)
         {
-            var normalizedId = NormalizeId(id);
-            var directory = _scopeService.GetDirectory<T>();
-
-            if (directory is null)
+            var contractType = typeof(T);
+            if (!contractType.IsInterface)
             {
                 return ValueTask.FromResult(false);
             }
 
-            var file = FindTargetFile(directory, normalizedId, schemaVersion);
+            var scope = _scopeService.GetScope<T>();
+            if (scope is null)
+            {
+                return ValueTask.FromResult(false);
+            }
+
+            var normalizedId = NormalizeId(id);
+            var extension = NormalizeExtension(_serializer.FileExtension);
+
+            FileInfo? file = null;
+
+            if (schemaVersion.HasValue)
+            {
+                var directory = GetVersionDirectory(scope.Directory, schemaVersion!.Value, createIfMissing: false);
+                if (directory is null)
+                {
+                    return ValueTask.FromResult(false);
+                }
+
+                file = LocateFile(directory, normalizedId, extension);
+            }
+            else
+            {
+                var latest = GetLatestVersionDirectory(scope.Directory);
+                if (latest is not null)
+                {
+                    file = LocateFile(latest, normalizedId, extension);
+                }
+            }
+
             return ValueTask.FromResult(file?.Exists == true);
         }
 
@@ -50,63 +78,56 @@ namespace TransactionManager.Services
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var normalizedId = NormalizeId(id);
 
-            var directory = _scopeService.GetDirectory<T>();
-            FileInfo? file = null;
-            Type? scopedType = directory is null ? null : _scopeService.GetTypeByDirectory(directory);
-
-            if (directory is not null)
+            var contractType = typeof(T);
+            if (!contractType.IsInterface)
             {
-                file = FindTargetFile(directory, normalizedId, schemaVersion);
+                throw new InvalidOperationException($"Storage contract '{contractType.FullName}' must be an interface marked with [StorageScope].");
+            }
+
+            var scope = _scopeService.GetScope<T>()
+                        ?? throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
+
+            var normalizedId = NormalizeId(id);
+            var extension = NormalizeExtension(_serializer.FileExtension);
+
+            DirectoryInfo? versionDirectory;
+            if (schemaVersion.HasValue)
+            {
+                versionDirectory = GetVersionDirectory(scope.Directory, schemaVersion!.Value, createIfMissing: false)
+                                   ?? throw new FileNotFoundException($"Version folder '{ObjectWriter.GetVersionFolderName(schemaVersion!.Value)}' not found for contract '{contractType.Name}'.");
             }
             else
             {
-                foreach (var scope in _scopeService.EnumerateScopes())
-                {
-                    if (!typeof(T).IsAssignableFrom(scope.Key))
-                    {
-                        continue;
-                    }
-
-                    var candidate = FindTargetFile(scope.Value, normalizedId, schemaVersion);
-                    if (candidate is not null)
-                    {
-                        directory = scope.Value;
-                        file = candidate;
-                        scopedType = scope.Key;
-                        break;
-                    }
-                }
+                versionDirectory = GetLatestVersionDirectory(scope.Directory)
+                                   ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
             }
 
-            if (directory is null || file is null)
-            {
-                throw new FileNotFoundException($"No stored instance assignable to '{typeof(T).FullName}' with id '{normalizedId}' was found.");
-            }
+            var file = LocateFile(versionDirectory, normalizedId, extension)
+                       ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found.");
 
             var bytes = await File.ReadAllBytesAsync(file.FullName, cancellationToken);
 
             var envelope = _serializer.Deserialize<ObjectEnvelope>(bytes);
-            var resolvedType = ResolveStoredType(envelope.TypeName, scopedType ?? typeof(T));
-            var rawValue = _serializer.Deserialize(envelope.Payload, resolvedType);
+            var resolvedType = ResolveStoredType(envelope.TypeName, contractType);
 
-            if (rawValue is null)
+            if (!contractType.IsAssignableFrom(resolvedType))
             {
-                throw new InvalidOperationException($"Deserializer returned null for stored type '{resolvedType.FullName}'.");
+                throw new InvalidCastException($"Stored implementation '{resolvedType.FullName}' is not assignable to requested contract '{contractType.FullName}'.");
             }
 
-            if (rawValue is not T typedValue)
-            {
-                if (!typeof(T).IsAssignableFrom(rawValue.GetType()))
-                {
-                    throw new InvalidCastException($"Stored instance type '{rawValue.GetType().FullName}' cannot be cast to '{typeof(T).FullName}'.");
-                }
+            var rawValue = _serializer.Deserialize(envelope.Payload, resolvedType)
+                           ?? throw new InvalidOperationException($"Deserializer returned null for stored type '{resolvedType.FullName}'.");
 
-                typedValue = (T)rawValue;
-            }
+            var typedValue = (T)rawValue;
 
-            _logger.LogInformation("Read {Type} with id {Id} v{Version} from {Path}", typeof(T).Name, normalizedId, envelope.SchemaVersion, file.FullName);
+            _logger.LogInformation(
+                "Read {Contract} implementation {Runtime} with id {Id} v{Version} from {Path}",
+                contractType.Name,
+                resolvedType.Name,
+                normalizedId,
+                envelope.SchemaVersion,
+                file.FullName);
 
             return new ObjectReadResult<T>(normalizedId,
                                             envelope.SchemaVersion,
@@ -115,25 +136,55 @@ namespace TransactionManager.Services
                                             typedValue);
         }
 
-        private FileInfo? FindTargetFile(DirectoryInfo directory, string id, short? schemaVersion)
+        private static DirectoryInfo? GetVersionDirectory(DirectoryInfo contractDirectory, short schemaVersion, bool createIfMissing)
         {
-            if (!directory.Exists)
+            var versionFolderName = ObjectWriter.GetVersionFolderName(schemaVersion);
+            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionFolderName));
+
+            if (directory.Exists)
+            {
+                return directory;
+            }
+
+            if (!createIfMissing)
             {
                 return null;
             }
 
-            var extension = NormalizeExtension(_serializer.FileExtension);
+            Directory.CreateDirectory(directory.FullName);
+            directory.Refresh();
+            return directory;
+        }
 
-            if (schemaVersion.HasValue)
+        private static DirectoryInfo? GetLatestVersionDirectory(DirectoryInfo contractDirectory)
+        {
+            return contractDirectory.EnumerateDirectories()
+                                     .Select(d => new { Directory = d, Version = ParseVersion(d.Name) })
+                                     .Where(x => x.Version.HasValue)
+                                     .OrderByDescending(x => x.Version!.Value)
+                                     .Select(x => x.Directory)
+                                     .FirstOrDefault();
+        }
+
+        private static decimal? ParseVersion(string name)
+        {
+            if (decimal.TryParse(name, NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
             {
-                var candidate = new FileInfo(Path.Combine(directory.FullName, $"{id}.v{schemaVersion.Value}{extension}"));
-                return candidate.Exists ? candidate : null;
+                return value;
             }
 
-            var pattern = $"{id}.v*{extension}";
-            return directory.EnumerateFiles(pattern, SearchOption.TopDirectoryOnly)
-                             .OrderByDescending(f => ParseSchemaVersion(f.Name))
-                             .FirstOrDefault();
+            return null;
+        }
+
+        private static FileInfo? LocateFile(DirectoryInfo versionDirectory, string id, string extension)
+        {
+            if (!versionDirectory.Exists)
+            {
+                return null;
+            }
+
+            var candidate = new FileInfo(Path.Combine(versionDirectory.FullName, $"{id}{extension}"));
+            return candidate.Exists ? candidate : null;
         }
 
         private static Type ResolveStoredType(string? typeName, Type fallback)
@@ -159,25 +210,6 @@ namespace TransactionManager.Services
             }
 
             return fallback;
-        }
-
-        private static short ParseSchemaVersion(string fileName)
-        {
-            var start = fileName.IndexOf(".v", StringComparison.Ordinal);
-            if (start < 0)
-            {
-                return short.MinValue;
-            }
-
-            start += 2;
-            var end = fileName.LastIndexOf('.');
-            if (end <= start)
-            {
-                return short.MinValue;
-            }
-
-            var span = fileName.AsSpan(start, end - start);
-            return short.TryParse(span, out var version) ? version : short.MinValue;
         }
 
         private static string NormalizeId(string id)

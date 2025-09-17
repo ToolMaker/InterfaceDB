@@ -28,6 +28,8 @@ namespace TransactionManager.Repository
                 throw new ArgumentNullException(nameof(entity));
             }
 
+            EnsureContractIsInterface<TContract>();
+
             return _writer.WriteAsync(entity, id, schemaVersion, cancellationToken);
         }
 
@@ -36,6 +38,7 @@ namespace TransactionManager.Repository
             short? schemaVersion = null,
             CancellationToken cancellationToken = default)
         {
+            EnsureContractIsInterface<TContract>();
             return _reader.ReadAsync<TContract>(id, schemaVersion, cancellationToken);
         }
 
@@ -44,7 +47,17 @@ namespace TransactionManager.Repository
             short? schemaVersion = null,
             CancellationToken cancellationToken = default)
         {
+            EnsureContractIsInterface<TContract>();
             return _reader.ExistsAsync<TContract>(id, schemaVersion, cancellationToken);
+        }
+
+        private static void EnsureContractIsInterface<TContract>()
+        {
+            var contractType = typeof(TContract);
+            if (!contractType.IsInterface)
+            {
+                throw new InvalidOperationException($"Storage contract '{contractType.FullName}' must be an interface marked with [StorageScope].");
+            }
         }
     }
 }
