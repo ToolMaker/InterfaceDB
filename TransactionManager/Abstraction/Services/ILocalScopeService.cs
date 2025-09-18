@@ -1,13 +1,14 @@
 using TransactionManager.Abstraction.Dtos;
+using TransactionManager.Implementation.Dtos;
 
 namespace TransactionManager.Abstraction.Services
 {
     public interface ILocalScopeService
     {
         DirectoryInfo? GetDirectory<TContract>();
-        ScopeDescriptor? GetScope<TContract>();
-        ScopeDescriptor? GetScope(Type contractType);
+        IScopeDescriptor? GetScope<TContract>();
+        IScopeDescriptor? GetScope(Type contractType);
         Type? GetContractByDirectory(DirectoryInfo dir);
-        IEnumerable<ScopeDescriptor> GetScopes();
+        IEnumerable<IScopeDescriptor> GetScopes();
     }
 }

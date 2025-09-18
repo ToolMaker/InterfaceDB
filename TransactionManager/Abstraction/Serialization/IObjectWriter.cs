@@ -1,10 +1,10 @@
-using TransactionManager.Implementation.Dtos;
+using TransactionManager.Abstraction.Dtos;
 
 namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectWriter
     {
-        ValueTask<ObjectWriteResult> WriteAsync<T>(
+        ValueTask<IObjectWriteResult> WriteAsync<T>(
             T obj,
             string? id = null,
             CancellationToken cancellationToken = default);

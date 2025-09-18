@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Implementation.Dtos;
@@ -56,7 +57,7 @@ namespace TransactionManager.Implementation.Services
             return ValueTask.FromResult(file?.Exists == true);
         }
 
-        public async ValueTask<ObjectReadResult<T>> ReadAsync<T>(
+        public async ValueTask<IObjectReadResult<T>> ReadAsync<T>(
             string id,
             string? versionTag = null,
             CancellationToken cancellationToken = default)

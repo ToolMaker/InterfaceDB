@@ -1,6 +1,8 @@
-namespace TransactionManager.Abstraction.Dtos
+using TransactionManager.Abstraction.Dtos;
+
+namespace TransactionManager.Implementation.Dtos
 {
-    public sealed class ScopeDescriptor
+    public sealed class ScopeDescriptor : IScopeDescriptor
     {
         public ScopeDescriptor(Type contractType,
                                DirectoryInfo directory,

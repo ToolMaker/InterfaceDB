@@ -1,14 +1,15 @@
 using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Services;
+using TransactionManager.Implementation.Dtos;
 
 namespace TransactionManager.Implementation.Services
 {
     public sealed class ScopeService : ILocalScopeService
     {
-        private readonly IReadOnlyDictionary<Type, ScopeDescriptor> _scopes;
+        private readonly IReadOnlyDictionary<Type, IScopeDescriptor> _scopes;
         private readonly IReadOnlyDictionary<string, Type> _reverse;
 
-        public ScopeService(IReadOnlyDictionary<Type, ScopeDescriptor> scopes)
+        public ScopeService(IReadOnlyDictionary<Type, IScopeDescriptor> scopes)
         {
             _scopes = scopes;
 
@@ -25,10 +26,10 @@ namespace TransactionManager.Implementation.Services
         public DirectoryInfo? GetDirectory<TContract>()
             => GetScope<TContract>()?.Directory;
 
-        public ScopeDescriptor? GetScope<TContract>()
+        public IScopeDescriptor? GetScope<TContract>()
             => GetScope(typeof(TContract));
 
-        public ScopeDescriptor? GetScope(Type contractType)
+        public IScopeDescriptor? GetScope(Type contractType)
         {
             if (_scopes.TryGetValue(contractType, out var descriptor))
             {
@@ -46,7 +47,7 @@ namespace TransactionManager.Implementation.Services
             return _reverse.TryGetValue(key, out var contract) ? contract : null;
         }
 
-        public IEnumerable<ScopeDescriptor> GetScopes()
+        public IEnumerable<IScopeDescriptor> GetScopes()
             => _scopes.Values;
 
         private static void EnsureDirectory(DirectoryInfo directory)

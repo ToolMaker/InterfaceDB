@@ -3,6 +3,7 @@ using System.Reflection;
 using TransactionManager.Abstraction.Attributes;
 using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Services;
+using TransactionManager.Implementation.Dtos;
 using TransactionManager.Implementation.Services;
 
 namespace TransactionManager.Implementation.Builders
@@ -20,7 +21,7 @@ namespace TransactionManager.Implementation.Builders
             _root = root;
         }
 
-        public IReadOnlyDictionary<Type, ScopeDescriptor> Build()
+        public IReadOnlyDictionary<Type, IScopeDescriptor> Build()
         {
             if (!_root.Exists)
             {
@@ -31,7 +32,7 @@ namespace TransactionManager.Implementation.Builders
             var key = AssemblySetKey.Create(_assemblies);
             var metadata = MetadataCache.GetOrAdd(key, _ => BuildMetadata(_assemblies));
 
-            var descriptors = new Dictionary<Type, ScopeDescriptor>(metadata.Count);
+            var descriptors = new Dictionary<Type, IScopeDescriptor>(metadata.Count);
 
             foreach (var meta in metadata)
             {

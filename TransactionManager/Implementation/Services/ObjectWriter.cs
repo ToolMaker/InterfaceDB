@@ -33,7 +33,7 @@ namespace TransactionManager.Implementation.Services
             _extension = NormalizeExtension(serializer.FileExtension);
         }
 
-        public async ValueTask<ObjectWriteResult> WriteAsync<T>(
+        public async ValueTask<IObjectWriteResult> WriteAsync<T>(
             T obj,
             string? id = null,
             CancellationToken cancellationToken = default)
@@ -118,7 +118,7 @@ namespace TransactionManager.Implementation.Services
                                          envelope);
         }
 
-        private string ResolveFileName<T>(ScopeDescriptor scope, T value, string normalizedId)
+        private string ResolveFileName<T>(IScopeDescriptor scope, T value, string normalizedId)
         {
             var factory = _fileNameFactories.GetOrAdd(scope.FileNameFactoryType, CreateFactoryInstance);
             var candidate = factory.Create(value!, normalizedId, scope.ContractType);

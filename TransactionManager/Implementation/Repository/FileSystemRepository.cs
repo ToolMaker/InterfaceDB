@@ -1,3 +1,4 @@
+using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Repository;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Implementation.Dtos;
@@ -15,7 +16,7 @@ namespace TransactionManager.Implementation.Repository
             _reader = reader;
         }
 
-        public ValueTask<ObjectWriteResult> SaveAsync<TContract>(
+        public ValueTask<IObjectWriteResult> SaveAsync<TContract>(
             TContract entity,
             string? id = null,
             CancellationToken cancellationToken = default)
@@ -30,7 +31,7 @@ namespace TransactionManager.Implementation.Repository
             return _writer.WriteAsync(entity, id, cancellationToken);
         }
 
-        public ValueTask<ObjectReadResult<TContract>> LoadAsync<TContract>(
+        public ValueTask<IObjectReadResult<TContract>> LoadAsync<TContract>(
             string id,
             string? versionTag = null,
             CancellationToken cancellationToken = default)

@@ -1,4 +1,4 @@
-using TransactionManager.Implementation.Dtos;
+using TransactionManager.Abstraction.Dtos;
 
 namespace TransactionManager.Abstraction.Serialization
 {
@@ -9,7 +9,7 @@ namespace TransactionManager.Abstraction.Serialization
             string? versionTag = null,
             CancellationToken cancellationToken = default);
 
-        ValueTask<ObjectReadResult<T>> ReadAsync<T>(
+        ValueTask<IObjectReadResult<T>> ReadAsync<T>(
             string id,
             string? versionTag = null,
             CancellationToken cancellationToken = default);

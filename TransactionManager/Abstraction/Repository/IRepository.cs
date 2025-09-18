@@ -1,15 +1,15 @@
-using TransactionManager.Implementation.Dtos;
+using TransactionManager.Abstraction.Dtos;
 
 namespace TransactionManager.Abstraction.Repository
 {
     public interface IRepository
     {
-        ValueTask<ObjectWriteResult> SaveAsync<TContract>(
+        ValueTask<IObjectWriteResult> SaveAsync<TContract>(
             TContract entity,
             string? id = null,
             CancellationToken cancellationToken = default);
 
-        ValueTask<ObjectReadResult<TContract>> LoadAsync<TContract>(
+        ValueTask<IObjectReadResult<TContract>> LoadAsync<TContract>(
             string id,
             string? versionTag = null,
             CancellationToken cancellationToken = default);
