@@ -1,6 +1,3 @@
-using System;
-using TransactionManager.Abstraction.Services;
-
 namespace TransactionManager.Abstraction.Attributes
 {
     /// <summary>

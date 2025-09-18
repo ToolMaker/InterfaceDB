@@ -1,5 +1,5 @@
+using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Services;
-using TransactionManager.Implementation.Dtos;
 
 namespace TransactionManager.Implementation.Services
 {

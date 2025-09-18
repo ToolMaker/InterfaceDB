@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using TransactionManager.Implementation.Dtos;
+using TransactionManager.Abstraction.Dtos;
 
 namespace TransactionManager.Abstraction.Services
 {

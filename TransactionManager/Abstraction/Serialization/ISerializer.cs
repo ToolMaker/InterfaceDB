@@ -1,4 +1,3 @@
-using System;
 using TransactionManager.Implementation.Dtos;
 
 namespace TransactionManager.Abstraction.Serialization

@@ -1,8 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-
-namespace TransactionManager.Implementation.Dtos
+namespace TransactionManager.Abstraction.Dtos
 {
     public sealed class ScopeDescriptor
     {

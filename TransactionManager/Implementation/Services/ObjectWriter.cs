@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Implementation.Dtos;
