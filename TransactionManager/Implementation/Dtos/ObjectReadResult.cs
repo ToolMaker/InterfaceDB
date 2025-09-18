@@ -1,5 +1,5 @@
-using System.IO;
 using TransactionManager.Abstraction.Dtos;
+using TransactionManager.Abstraction.Serialization;
 
 namespace TransactionManager.Implementation.Dtos
 {
@@ -7,6 +7,6 @@ namespace TransactionManager.Implementation.Dtos
         string Id,
         string VersionTag,
         FileInfo File,
-        ObjectEnvelope Envelope,
+        IObjectEnvelope Envelope,
         T Value) : IObjectReadResult<T>;
 }

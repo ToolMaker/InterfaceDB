@@ -1,5 +1,3 @@
-using TransactionManager.Implementation.Dtos;
-
 namespace TransactionManager.Abstraction.Serialization
 {
     public interface ISerializer
@@ -7,6 +5,6 @@ namespace TransactionManager.Abstraction.Serialization
         byte[] Serialize<T>(T value);
         T Deserialize<T>(ReadOnlyMemory<byte> bytes);
 
-        ObjectEnvelope DeserializeEnvelope(ReadOnlyMemory<byte> bytes);
+        IObjectEnvelope DeserializeEnvelope(ReadOnlyMemory<byte> bytes);
     }
 }
