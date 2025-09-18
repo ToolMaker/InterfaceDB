@@ -1,7 +1,7 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Collections.Concurrent;
 using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
@@ -11,24 +11,26 @@ namespace TransactionManager.Implementation.Services
 {
     public sealed class ObjectWriter : IObjectWriter
     {
-        private const int DefaultBufferSize = 64 * 1024;
-
         private readonly ILocalScopeService _scopeService;
         private readonly IObjectSerializer _serializer;
         private readonly IServiceProvider _serviceProvider;
+        private readonly IStoragePolicyProvider _policyProvider;
         private readonly ILogger<ObjectWriter> _logger;
         private readonly string _extension;
         private readonly ConcurrentDictionary<Type, IFileNameFactory> _fileNameFactories = new();
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _throttles = new(StringComparer.OrdinalIgnoreCase);
 
         public ObjectWriter(
             ILocalScopeService scopeService,
             IObjectSerializer serializer,
             IServiceProvider serviceProvider,
+            IStoragePolicyProvider policyProvider,
             ILogger<ObjectWriter>? logger = null)
         {
             _scopeService = scopeService;
             _serializer = serializer;
             _serviceProvider = serviceProvider;
+            _policyProvider = policyProvider;
             _logger = logger ?? NullLogger<ObjectWriter>.Instance;
             _extension = NormalizeExtension(serializer.FileExtension);
         }
@@ -69,53 +71,93 @@ namespace TransactionManager.Implementation.Services
                     string.Join(", ", scope.Implementations));
             }
 
-            var contractDirectory = scope.Directory;
-            Directory.CreateDirectory(contractDirectory.FullName);
+            var policy = _policyProvider.GetPolicy(scope.Directory.Root);
+            var throttle = GetThrottle(scope.Directory, policy);
 
-            var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, scope.VersionTag);
-
-            var normalizedId = NormalizeId(id);
-            var fileName = ResolveFileName(scope, obj!, normalizedId);
-            var targetPath = Path.Combine(versionDirectory.FullName, fileName + _extension);
-
-            var payload = _serializer.Serialize(obj, runtimeType);
-            var envelope = new ObjectEnvelope
+            await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                VersionTag = scope.VersionTag,
-                Payload = payload,
-                TypeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName
-            };
+                var contractDirectory = scope.Directory;
+                Directory.CreateDirectory(contractDirectory.FullName);
 
-            var bytes = _serializer.Serialize(envelope);
+                var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, scope.VersionTag);
 
-            var options = new FileStreamOptions
+                var normalizedId = NormalizeId(id);
+                var fileName = ResolveFileName(scope, obj!, normalizedId);
+                var targetPath = Path.Combine(versionDirectory.FullName, fileName + _extension);
+
+                var payload = _serializer.Serialize(obj, runtimeType);
+                var envelope = new ObjectEnvelope
+                {
+                    VersionTag = scope.VersionTag,
+                    Payload = payload,
+                    TypeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName
+                };
+
+                var bytes = _serializer.Serialize(envelope);
+
+                var options = CreateWriteStreamOptions(policy);
+
+                await using (var stream = new FileStream(targetPath, options))
+                {
+                    await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                _logger.LogInformation(
+                    "Wrote {Contract} implementation {Runtime} with id {Id} tag {Tag} to {Path}",
+                    contractType.Name,
+                    runtimeType.Name,
+                    fileName,
+                    scope.VersionTag,
+                    targetPath);
+
+                return new ObjectWriteResult(fileName,
+                                             scope.VersionTag,
+                                             contractType,
+                                             new FileInfo(targetPath),
+                                             envelope);
+            }
+            finally
             {
-                Mode = FileMode.Create,
-                Access = FileAccess.Write,
-                Share = FileShare.None,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-                BufferSize = DefaultBufferSize
-            };
+                throttle.Release();
+            }
+        }
 
-            await using (var stream = new FileStream(targetPath, options))
+        private IFileNameFactory CreateFactoryInstance(Type factoryType)
+        {
+            var instance = ActivatorUtilities.CreateInstance(_serviceProvider, factoryType) as IFileNameFactory;
+            if (instance is null)
             {
-                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException($"Resolved type '{factoryType.FullName}' does not implement {nameof(IFileNameFactory)}.");
             }
 
-            _logger.LogInformation(
-                "Wrote {Contract} implementation {Runtime} with id {Id} tag {Tag} to {Path}",
-                contractType.Name,
-                runtimeType.Name,
-                fileName,
-                scope.VersionTag,
-                targetPath);
+            return instance;
+        }
 
-            return new ObjectWriteResult(fileName,
-                                         scope.VersionTag,
-                                         contractType,
-                                         new FileInfo(targetPath),
-                                         envelope);
+        private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory,
+                                                                  string versionTag)
+        {
+            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionTag));
+            if (!directory.Exists)
+            {
+                Directory.CreateDirectory(directory.FullName);
+                directory.Refresh();
+            }
+
+            return directory;
+        }
+
+        private SemaphoreSlim GetThrottle(DirectoryInfo directory, IStoragePolicy policy)
+        {
+            var key = GetPolicyKey(directory);
+            return _throttles.GetOrAdd(key, _ => new SemaphoreSlim(policy.MaxConcurrentOperations));
+        }
+
+        private static string GetPolicyKey(DirectoryInfo directory)
+        {
+            var root = Path.GetPathRoot(directory.FullName);
+            return string.IsNullOrEmpty(root) ? directory.FullName : root;
         }
 
         private string ResolveFileName<T>(IScopeDescriptor scope, T value, string normalizedId)
@@ -143,31 +185,29 @@ namespace TransactionManager.Implementation.Services
             return trimmed;
         }
 
-        private IFileNameFactory CreateFactoryInstance(Type factoryType)
+        private static FileStreamOptions CreateWriteStreamOptions(IStoragePolicy policy)
         {
-            var instance = ActivatorUtilities.CreateInstance(_serviceProvider, factoryType) as IFileNameFactory;
-            if (instance is null)
+            var options = policy.FileOptions;
+            if (policy.UseAsync)
             {
-                throw new InvalidOperationException($"Resolved type '{factoryType.FullName}' does not implement {nameof(IFileNameFactory)}.");
+                options |= FileOptions.Asynchronous;
+            }
+            else
+            {
+                options &= ~FileOptions.Asynchronous;
             }
 
-            return instance;
-        }
-
-        private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory,
-                                                                  string versionTag)
-        {
-            var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionTag));
-            if (!directory.Exists)
+            return new FileStreamOptions
             {
-                Directory.CreateDirectory(directory.FullName);
-                directory.Refresh();
-            }
-
-            return directory;
+                Mode = FileMode.Create,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = options,
+                BufferSize = policy.PreferredBufferSize
+            };
         }
 
-        private static string NormalizeId(string? id)
+        private string NormalizeId(string? id)
         {
             var value = string.IsNullOrWhiteSpace(id)
                 ? Guid.NewGuid().ToString("N")

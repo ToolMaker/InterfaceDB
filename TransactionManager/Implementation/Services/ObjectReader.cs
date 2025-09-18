@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TransactionManager.Abstraction.Dtos;
@@ -9,20 +10,22 @@ namespace TransactionManager.Implementation.Services
 {
     public sealed class ObjectReader : IObjectReader
     {
-        private const int DefaultBufferSize = 64 * 1024;
-
         private readonly ILocalScopeService _scopeService;
         private readonly IObjectSerializer _serializer;
+        private readonly IStoragePolicyProvider _policyProvider;
         private readonly ILogger<ObjectReader> _logger;
         private readonly string _extension;
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _throttles = new(StringComparer.OrdinalIgnoreCase);
 
         public ObjectReader(
             ILocalScopeService scopeService,
             IObjectSerializer serializer,
+            IStoragePolicyProvider policyProvider,
             ILogger<ObjectReader>? logger = null)
         {
             _scopeService = scopeService;
             _serializer = serializer;
+            _policyProvider = policyProvider;
             _logger = logger ?? NullLogger<ObjectReader>.Instance;
             _extension = NormalizeExtension(serializer.FileExtension);
         }
@@ -73,72 +76,74 @@ namespace TransactionManager.Implementation.Services
             var scope = _scopeService.GetScope<T>()
                         ?? throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
 
-            var normalizedId = NormalizeId(id);
-
-            FileInfo? file = null;
-            string resolvedTag;
-
-            if (!string.IsNullOrWhiteSpace(versionTag))
+            var policy = _policyProvider.GetPolicy(scope.Directory.Root);
+            var throttle = GetThrottle(scope.Directory, policy);
+            await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                var directory = GetVersionDirectory(scope.Directory, versionTag, createIfMissing: false)
-                               ?? throw new FileNotFoundException($"Version tag '{versionTag}' not found for contract '{contractType.Name}'.");
+                var normalizedId = NormalizeId(id);
 
-                file = LocateFile(directory, normalizedId)
-                       ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found in version '{versionTag}'.");
+                FileInfo? file = null;
+                string resolvedTag;
 
-                resolvedTag = versionTag;
-            }
-            else
-            {
-                var defaultDirectory = GetVersionDirectory(scope.Directory, scope.VersionTag, createIfMissing: false);
-                if (defaultDirectory is not null)
+                if (!string.IsNullOrWhiteSpace(versionTag))
                 {
-                    file = LocateFile(defaultDirectory, normalizedId);
-                    if (file is not null)
+                    var directory = GetVersionDirectory(scope.Directory, versionTag, createIfMissing: false)
+                                   ?? throw new FileNotFoundException($"Version tag '{versionTag}' not found for contract '{contractType.Name}'.");
+
+                    file = LocateFile(directory, normalizedId)
+                           ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found in version '{versionTag}'.");
+
+                    resolvedTag = versionTag;
+                }
+                else
+                {
+                    var defaultDirectory = GetVersionDirectory(scope.Directory, scope.VersionTag, createIfMissing: false);
+                    if (defaultDirectory is not null)
                     {
-                        resolvedTag = scope.VersionTag;
-                        goto Deserialize;
+                        file = LocateFile(defaultDirectory, normalizedId);
+                        if (file is not null)
+                        {
+                            resolvedTag = scope.VersionTag;
+                            goto Deserialize;
+                        }
                     }
+
+                    var latestDirectory = GetLatestVersionDirectory(scope.Directory)
+                                          ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
+
+                    file = LocateFile(latestDirectory, normalizedId)
+                           ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found.");
+
+                    resolvedTag = latestDirectory.Name;
                 }
 
-                var latestDirectory = GetLatestVersionDirectory(scope.Directory)
-                                      ?? throw new FileNotFoundException($"No stored versions found for contract '{contractType.Name}'.");
+            Deserialize:
+                var envelopeBytes = await ReadFileAsync(file!, policy, cancellationToken).ConfigureAwait(false);
 
-                file = LocateFile(latestDirectory, normalizedId)
-                       ?? throw new FileNotFoundException($"No stored instance of contract '{contractType.Name}' with id '{normalizedId}' was found.");
+                var envelope = _serializer.Deserialize<ObjectEnvelope>(envelopeBytes);
+                var resolvedType = ResolveStoredType(envelope.TypeName, contractType);
 
-                resolvedTag = latestDirectory.Name;
+                if (!contractType.IsAssignableFrom(resolvedType))
+                {
+                    throw new InvalidCastException($"Stored implementation '{resolvedType.FullName}' is not assignable to requested contract '{contractType.FullName}'.");
+                }
+
+                var rawValue = _serializer.Deserialize(envelope.Payload, resolvedType)
+                               ?? throw new InvalidOperationException($"Deserializer returned null for stored implementation '{resolvedType.FullName}'.");
+
+                var typedValue = (T)rawValue;
+
+                return new ObjectReadResult<T>(normalizedId,
+                                                resolvedTag,
+                                                file!,
+                                                envelope,
+                                                typedValue);
             }
-
-        Deserialize:
-            var envelopeBytes = await ReadFileAsync(file!, cancellationToken).ConfigureAwait(false);
-
-            var envelope = _serializer.Deserialize<ObjectEnvelope>(envelopeBytes);
-            var resolvedType = ResolveStoredType(envelope.TypeName, contractType);
-
-            if (!contractType.IsAssignableFrom(resolvedType))
+            finally
             {
-                throw new InvalidCastException($"Stored implementation '{resolvedType.FullName}' is not assignable to requested contract '{contractType.FullName}'.");
+                throttle.Release();
             }
-
-            var rawValue = _serializer.Deserialize(envelope.Payload, resolvedType)
-                           ?? throw new InvalidOperationException($"Deserializer returned null for stored type '{resolvedType.FullName}'.");
-
-            var typedValue = (T)rawValue;
-
-            _logger.LogInformation(
-                "Read {Contract} implementation {Runtime} with id {Id} tag {Tag} from {Path}",
-                contractType.Name,
-                resolvedType.Name,
-                normalizedId,
-                envelope.VersionTag,
-                file!.FullName);
-
-            return new ObjectReadResult<T>(normalizedId,
-                                            envelope.VersionTag,
-                                            file!,
-                                            envelope,
-                                            typedValue);
         }
 
         private static DirectoryInfo? GetVersionDirectory(DirectoryInfo contractDirectory,
@@ -146,7 +151,6 @@ namespace TransactionManager.Implementation.Services
                                                            bool createIfMissing)
         {
             var directory = new DirectoryInfo(Path.Combine(contractDirectory.FullName, versionTag));
-
             if (directory.Exists)
             {
                 return directory;
@@ -180,7 +184,19 @@ namespace TransactionManager.Implementation.Services
             return candidate.Exists ? candidate : null;
         }
 
-        private static async ValueTask<byte[]> ReadFileAsync(FileInfo file, CancellationToken cancellationToken)
+        private SemaphoreSlim GetThrottle(DirectoryInfo directory, IStoragePolicy policy)
+        {
+            var key = GetPolicyKey(directory);
+            return _throttles.GetOrAdd(key, _ => new SemaphoreSlim(policy.MaxConcurrentOperations));
+        }
+
+        private static string GetPolicyKey(DirectoryInfo directory)
+        {
+            var root = Path.GetPathRoot(directory.FullName);
+            return string.IsNullOrEmpty(root) ? directory.FullName : root;
+        }
+
+        private static async ValueTask<byte[]> ReadFileAsync(FileInfo file, IStoragePolicy policy, CancellationToken cancellationToken)
         {
             var length = file.Length;
             if (length == 0)
@@ -195,14 +211,7 @@ namespace TransactionManager.Implementation.Services
 
             var buffer = GC.AllocateUninitializedArray<byte>((int)length);
 
-            var options = new FileStreamOptions
-            {
-                Access = FileAccess.Read,
-                Mode = FileMode.Open,
-                Share = FileShare.Read,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-                BufferSize = DefaultBufferSize
-            };
+            var options = CreateReadStreamOptions(policy);
 
             await using var stream = new FileStream(file.FullName, options);
 
@@ -219,6 +228,28 @@ namespace TransactionManager.Implementation.Services
             }
 
             return buffer;
+        }
+
+        private static FileStreamOptions CreateReadStreamOptions(IStoragePolicy policy)
+        {
+            var options = policy.FileOptions;
+            if (policy.UseAsync)
+            {
+                options |= FileOptions.Asynchronous;
+            }
+            else
+            {
+                options &= ~FileOptions.Asynchronous;
+            }
+
+            return new FileStreamOptions
+            {
+                Access = FileAccess.Read,
+                Mode = FileMode.Open,
+                Share = FileShare.Read,
+                Options = options,
+                BufferSize = policy.PreferredBufferSize
+            };
         }
 
         private static Type ResolveStoredType(string? typeName, Type fallback)

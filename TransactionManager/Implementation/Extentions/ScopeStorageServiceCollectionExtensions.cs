@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using TransactionManager.Abstraction.Repository;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
@@ -18,6 +19,8 @@ namespace TransactionManager.Implementation.Extentions
             this IServiceCollection services,
             Action<ScopeStorageBuilder>? configure = null)
         {
+            services.TryAddSingleton<IStoragePolicyProvider, DefaultStoragePolicyProvider>();
+
             var builder = new ScopeStorageBuilder();
             configure?.Invoke(builder);
 
