@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TransactionManager.Abstraction.Serialization;
@@ -16,16 +18,20 @@ namespace TransactionManager.Services
 
         private readonly ILocalScopeService _scopeService;
         private readonly IObjectSerializer _serializer;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<ObjectWriter> _logger;
         private readonly string _extension;
+        private readonly ConcurrentDictionary<Type, IFileNameFactory> _fileNameFactories = new();
 
         public ObjectWriter(
             ILocalScopeService scopeService,
             IObjectSerializer serializer,
+            IServiceProvider serviceProvider,
             ILogger<ObjectWriter>? logger = null)
         {
             _scopeService = scopeService;
             _serializer = serializer;
+            _serviceProvider = serviceProvider;
             _logger = logger ?? NullLogger<ObjectWriter>.Instance;
             _extension = NormalizeExtension(serializer.FileExtension);
         }
@@ -72,7 +78,8 @@ namespace TransactionManager.Services
             var versionDirectory = GetOrCreateVersionDirectory(contractDirectory, scope.VersionTag);
 
             var normalizedId = NormalizeId(id);
-            var targetPath = Path.Combine(versionDirectory.FullName, normalizedId + _extension);
+            var fileName = ResolveFileName(scope, obj!, normalizedId);
+            var targetPath = Path.Combine(versionDirectory.FullName, fileName + _extension);
 
             var payload = _serializer.Serialize(obj, runtimeType);
             var envelope = new ObjectEnvelope
@@ -103,15 +110,51 @@ namespace TransactionManager.Services
                 "Wrote {Contract} implementation {Runtime} with id {Id} tag {Tag} to {Path}",
                 contractType.Name,
                 runtimeType.Name,
-                normalizedId,
+                fileName,
                 scope.VersionTag,
                 targetPath);
 
-            return new ObjectWriteResult(normalizedId,
+            return new ObjectWriteResult(fileName,
                                          scope.VersionTag,
                                          contractType,
                                          new FileInfo(targetPath),
                                          envelope);
+        }
+
+        private string ResolveFileName<T>(ScopeDescriptor scope, T value, string normalizedId)
+        {
+            var factory = _fileNameFactories.GetOrAdd(scope.FileNameFactoryType, CreateFactoryInstance);
+            var candidate = factory.Create(value!, normalizedId, scope.ContractType);
+
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                return normalizedId;
+            }
+
+            var trimmed = candidate.Trim();
+
+            if (trimmed.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                throw new InvalidOperationException($"File-name '{trimmed}' produced for '{scope.ContractType.FullName}' contains invalid file-name characters.");
+            }
+
+            if (trimmed.Contains(Path.DirectorySeparatorChar) || trimmed.Contains(Path.AltDirectorySeparatorChar))
+            {
+                throw new InvalidOperationException($"File-name '{trimmed}' produced for '{scope.ContractType.FullName}' cannot contain directory separators.");
+            }
+
+            return trimmed;
+        }
+
+        private IFileNameFactory CreateFactoryInstance(Type factoryType)
+        {
+            var instance = ActivatorUtilities.CreateInstance(_serviceProvider, factoryType) as IFileNameFactory;
+            if (instance is null)
+            {
+                throw new InvalidOperationException($"Resolved type '{factoryType.FullName}' does not implement {nameof(IFileNameFactory)}.");
+            }
+
+            return instance;
         }
 
         private static DirectoryInfo GetOrCreateVersionDirectory(DirectoryInfo contractDirectory,

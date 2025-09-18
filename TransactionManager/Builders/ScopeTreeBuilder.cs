@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using TransactionManager.Abstraction.Services;
 using TransactionManager.Attributes;
 using TransactionManager.Dtos;
+using TransactionManager.Services;
 
 namespace TransactionManager.Builders
 {
@@ -50,7 +52,8 @@ namespace TransactionManager.Builders
                     meta.ContractType,
                     directory,
                     meta.Implementations,
-                    meta.VersionTag);
+                    meta.VersionTag,
+                    meta.FileNameFactoryType);
             }
 
             return descriptors;
@@ -72,21 +75,23 @@ namespace TransactionManager.Builders
 
             foreach (var contract in scopedInterfaces)
             {
+                var attribute = contract.GetCustomAttribute<StorageScopeAttribute>(inherit: false);
+
                 var implementations = candidateImplementations
                     .Where(contract.IsAssignableFrom)
                     .ToArray();
 
-                var versionTag = ResolveVersionTag(contract);
+                var versionTag = ResolveVersionTag(contract, attribute);
+                var fileNameFactoryType = ResolveFileNameFactoryType(contract, attribute);
 
-                list.Add(new ScopeMetadata(contract, versionTag, implementations));
+                list.Add(new ScopeMetadata(contract, versionTag, implementations, fileNameFactoryType));
             }
 
             return list;
         }
 
-        private static string ResolveVersionTag(Type contract)
+        private static string ResolveVersionTag(Type contract, StorageScopeAttribute? attribute)
         {
-            var attribute = contract.GetCustomAttribute<StorageScopeAttribute>(inherit: false);
             var tag = attribute?.VersionTag;
 
             if (string.IsNullOrWhiteSpace(tag))
@@ -107,6 +112,27 @@ namespace TransactionManager.Builders
             return tag;
         }
 
+        private static Type ResolveFileNameFactoryType(Type contract, StorageScopeAttribute? attribute)
+        {
+            var type = attribute?.FileNameFactory;
+            if (type is null)
+            {
+                return typeof(DefaultFileNameFactory);
+            }
+
+            if (!typeof(IFileNameFactory).IsAssignableFrom(type))
+            {
+                throw new InvalidOperationException($"File-name factory declared on '{contract.FullName}' must implement {nameof(IFileNameFactory)}.");
+            }
+
+            if (type.IsAbstract || type.IsInterface)
+            {
+                throw new InvalidOperationException($"File-name factory type '{type.FullName}' declared on '{contract.FullName}' must be a concrete class.");
+            }
+
+            return type;
+        }
+
         private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
         {
             try
@@ -119,7 +145,7 @@ namespace TransactionManager.Builders
             }
         }
 
-        private readonly record struct ScopeMetadata(Type ContractType, string VersionTag, Type[] Implementations);
+        private readonly record struct ScopeMetadata(Type ContractType, string VersionTag, Type[] Implementations, Type FileNameFactoryType);
 
         private readonly record struct AssemblySetKey(string[] AssemblyNames)
         {

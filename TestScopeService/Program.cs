@@ -45,7 +45,8 @@ namespace TestScopeService
             var person = new Person
             {
                 Name = "Ada",
-                Surname = "Lovelace"
+                Surname = "Lovelace",
+                Age = 28
             };
 
             var writeResult = await repository.SaveAsync<IPerson>(person);

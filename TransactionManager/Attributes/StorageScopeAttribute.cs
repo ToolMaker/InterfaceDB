@@ -1,4 +1,5 @@
 using System;
+using TransactionManager.Abstraction.Services;
 
 namespace TransactionManager.Attributes
 {
@@ -15,5 +16,11 @@ namespace TransactionManager.Attributes
         /// Defaults to "1.0" when not specified.
         /// </summary>
         public string? VersionTag { get; init; }
+
+        /// <summary>
+        /// Optional factory type used to compute file names.
+        /// When unspecified, <see cref="TransactionManager.Services.DefaultFileNameFactory"/> is used.
+        /// </summary>
+        public Type? FileNameFactory { get; init; }
     }
 }
