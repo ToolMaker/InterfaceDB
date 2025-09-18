@@ -1,4 +1,4 @@
-﻿using TransactionManager.Enums;
+﻿using TransactionManager.Abstraction.Enums;
 
 namespace TransactionManager.Abstraction.Serialization
 {

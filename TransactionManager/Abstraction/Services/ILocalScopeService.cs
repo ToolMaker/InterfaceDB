@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using TransactionManager.Dtos;
+using TransactionManager.Implementation.Dtos;
 
 namespace TransactionManager.Abstraction.Services
 {

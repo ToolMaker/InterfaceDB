@@ -1,5 +1,3 @@
-using System;
-
 namespace TransactionManager.Abstraction.Services
 {
     /// <summary>

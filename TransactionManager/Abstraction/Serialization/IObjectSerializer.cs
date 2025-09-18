@@ -1,5 +1,3 @@
-using System;
-
 namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectSerializer

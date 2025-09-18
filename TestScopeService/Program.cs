@@ -1,14 +1,11 @@
-using System;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using TestScopeService.Abstrations.Dtos;
+using TestScopeService.Implementations.Dtos;
+using TransactionManager.Abstraction.Repository;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
-using TransactionManager.Dtos;
-using TransactionManager.Extentions;
-using TransactionManager.Repository;
+using TransactionManager.Implementation.Extentions;
 
 namespace TestScopeService
 {

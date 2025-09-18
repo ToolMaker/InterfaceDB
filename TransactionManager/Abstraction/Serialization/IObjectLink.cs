@@ -1,6 +1,4 @@
-﻿using TransactionManager.Dtos;
-
-namespace TransactionManager.Abstraction.Serialization
+﻿namespace TransactionManager.Abstraction.Serialization
 {
     public interface IObjectLink<TObjectLinkType> 
         where TObjectLinkType : class, new()
