@@ -46,11 +46,26 @@ namespace TestScopeService
                 Age = 28
             };
 
-            var writeResult = await repository.SaveAsync<IPerson>(person);
-            Console.WriteLine($"Saved {writeResult.ObjectType.Name} #{writeResult.Id} to {writeResult.File.FullName}");
+            var personWrite = await repository.SaveAsync<IPerson>(person);
+            Console.WriteLine($"Saved Person #{personWrite.Id} to {personWrite.File.FullName}");
 
-            var loaded = await repository.LoadAsync<IPerson>(writeResult.Id);
-            Console.WriteLine($"Loaded: {loaded.Value.Name} {loaded.Value.Surname} (tag '{loaded.Envelope.VersionTag}') [{loaded.Value.GetType().Name}]");
+            var student = new Student
+            {
+                Name = "Grace",
+                Surname = "Hopper",
+                Age = 21,
+                StudentId = "CS-2025"
+            };
+
+            var studentWrite = await repository.SaveAsync<IPerson>(student, student.StudentId);
+            Console.WriteLine($"Saved Student #{studentWrite.Id} to {studentWrite.File.FullName}");
+
+            var loadedPerson = await repository.LoadAsync<IPerson>(personWrite.Id);
+            Console.WriteLine($"Loaded Person: {loadedPerson.Value.Name} {loadedPerson.Value.Surname} (tag '{loadedPerson.Envelope.VersionTag}') [{loadedPerson.Value.GetType().Name}]");
+
+            var loadedStudent = await repository.LoadAsync<IPerson>(studentWrite.Id);
+            Student test = (Student)loadedStudent.Value;
+            Console.WriteLine($"Loaded Student: {loadedStudent.Value.Name} {loadedStudent.Value.Surname} {test.StudentId} (tag '{loadedStudent.Envelope.VersionTag}') [{loadedStudent.Value.GetType().Name}]");
 
             Console.WriteLine();
             Console.WriteLine("Stored files:");

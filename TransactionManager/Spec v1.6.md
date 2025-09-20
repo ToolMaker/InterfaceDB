@@ -22,10 +22,10 @@
 - IObjectWriter.WriteAsync<T>:
   - Resolves the contract descriptor, calling VersionTagFactory() once per registration (result cached) and the per-write FileNameFactory(id) when composing the target path.
   - Writes directly to <Interface>/<VersionTag>/<FileName><ext> with exclusive access.
-- IObjectReader.ReadAsync<T> and ExistsAsync<T> honour explicit version tags; when none is provided they use the descriptor’s cached version tag and fall back to latest folders as before.
+- IObjectReader.ReadAsync<T> and ExistsAsync<T> honour explicit version tags; when none is provided they use the descriptor's cached version tag and fall back to latest folders as before.
 
 ## 5. Repository Facade
-- SaveAsync<T> still omits version arguments; repository code will simply rely on the descriptor’s cached version tag and file-name factory.
+- SaveAsync<T> still omits version arguments; repository code will simply rely on the descriptor's cached version tag and file-name factory.
 
 ## 6. Dependency Injection
 - AddScopeStorage (or follow-up extension methods) will expose configuration hooks for supplying the version/file-name factories during service registration. These delegates are stored in the cached ScopeDescriptor so all scoped services reuse them without repeated reflection or allocation.
@@ -34,15 +34,16 @@
 - Custom factories must return folder/file-safe strings (no path separators, no invalid characters). Validation occurs during descriptor creation.
 - Deployments that alter version/file-name factories should be coordinated carefully; migration tooling (hash comparison + scripts) will use the tag factory to determine when upgrades are required.
 
+# Next Steps (Technical Detail)
+- **Factory Registration APIs**: Design DI extensions that let callers register per-contract VersionTag/FileName factories (and associated options), thread the delegates through scope discovery, and document the registration surface.
+- **Storage Policy Profiling**: Introduce a policy provider that can profile the target volume/share, persist a tuned policy (queue depth, buffer size, async flags), and expose metrics so the repository adjusts concurrency automatically.
+- **Validation Helpers**: Extract the version/file-name validation logic into reusable utilities and surface actionable error messages when factories emit unsafe values.
+- **Tooling Hooks**: Emit diagnostics (logs/metrics) when factories are missing, produce duplicates, or when the resolved path collides with existing data; feed this into future management tooling.
+
 # Migration Strategy (Future Work)
 - Store version/file-name factory metadata (e.g., tags + hash) alongside persisted folders to detect drift.
 - Hash mismatches still trigger migration scripts in Migrations/<Interface>/<FromTag>_to_<ToTag>.
 - Older binaries encountering unknown tags or filenames will treat them as read-only or prompt the operator to upgrade.
 
 # Roadmap
-- **Factory Registration APIs**: Implement DI hooks for configuring VersionTagFactory and FileNameFactory per contract.
-- **Migration Hash Storage**: Persist factory metadata to detect drift across deployments.
-- **Serializer Overrides per Interface**: Revisit once factories and migrations are in place.
-- **Deduplicated Multi-Interface Persistence**: Investigate linking to avoid redundant payloads.
-- **Tooling**: Surface diagnostics for conflicting factories, tag mismatches, and concurrency issues.
-- **Version Tag/File Name Validation**: Add reusable helpers for validating factory output (length, characters, uniqueness).
+- **Migrations**: Implement the end-to-end content migration workflow (metadata capture, drift detection, upgrade scripts, validation) once the technical pre-work above is complete.

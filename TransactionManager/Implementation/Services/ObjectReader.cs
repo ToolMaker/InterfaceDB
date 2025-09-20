@@ -118,7 +118,7 @@ namespace TransactionManager.Implementation.Services
                     resolvedTag = latestDirectory.Name;
                 }
 
-            Deserialize:
+        Deserialize:
                 var envelopeBytes = await ReadFileAsync(file!, policy, cancellationToken).ConfigureAwait(false);
 
                 var envelope = _serializer.Deserialize<ObjectEnvelope>(envelopeBytes);
