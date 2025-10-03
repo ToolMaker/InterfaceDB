@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
-using TransactionManager.Abstraction.Attributes;
+using TransactionManager.Implementation.Attributes;
 using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Implementation.Dtos;

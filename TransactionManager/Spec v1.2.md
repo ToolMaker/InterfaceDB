@@ -54,7 +54,7 @@
   - The scope service singleton (`ILocalScopeService`).
   - Configurable root directory selection.
   - Assembly scanning for `[StorageScope]` types.
-- Additional helper extensions (`AddJsonSerializer`, `AddDefaultObjectWriterAndReader`, etc.) register serializers and the repository pipeline. A higher-level convenience method may compose them for common scenarios.
+- Additional helper extension `AddDefaultObjectWriterAndReader` registers the MessagePack serializer alongside the repository pipeline. A higher-level convenience method may compose them for common scenarios.
 - Applications must register a concrete `IObjectSerializer` (and optional encryptor/key provider) matching their storage requirements.
 
 ## 7. Operational Notes

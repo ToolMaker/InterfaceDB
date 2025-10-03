@@ -1,4 +1,4 @@
-namespace TransactionManager.Abstraction.Attributes
+namespace TransactionManager.Implementation.Attributes
 {
     /// <summary>
     /// Marks an interface contract as an on-disk storage scope.

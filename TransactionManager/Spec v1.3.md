@@ -31,7 +31,7 @@
 
 ## 3. Serialization Pipeline
 - IObjectSerializer contract remains runtime-aware with Serialize(object, Type) / Deserialize(byte[], Type).
-- Built-in implementations (Json, MessagePack, Encrypted) continue to operate unchanged.
+- MessagePack is the baseline storage serializer; Json or Encrypted variants remain optional opt-in components.
 
 ## 4. Persistence Services
 - IObjectWriter.WriteAsync<TContract>:

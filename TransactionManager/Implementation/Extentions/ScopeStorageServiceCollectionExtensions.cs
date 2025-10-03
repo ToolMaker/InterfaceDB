@@ -1,10 +1,13 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using TransactionManager.Abstraction.Migrations;
 using TransactionManager.Abstraction.Repository;
 using TransactionManager.Abstraction.Serialization;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Implementation.Builders;
 using TransactionManager.Implementation.Dtos;
+using TransactionManager.Implementation.Migrations;
 using TransactionManager.Implementation.Repository;
 using TransactionManager.Implementation.Serializers;
 using TransactionManager.Implementation.Services;
@@ -20,6 +23,9 @@ namespace TransactionManager.Implementation.Extentions
             Action<ScopeStorageBuilder>? configure = null)
         {
             services.TryAddSingleton<IStoragePolicyProvider, DefaultStoragePolicyProvider>();
+            services.TryAddSingleton<StorageContractManifestBuilder>();
+            services.TryAddSingleton<StorageContractManifestStore>();
+            services.TryAddSingleton<IStorageContractManifestService, StorageContractManifestService>();
 
             var builder = new ScopeStorageBuilder();
             configure?.Invoke(builder);
@@ -38,29 +44,54 @@ namespace TransactionManager.Implementation.Extentions
 
             services.AddSingleton<ILocalScopeService>(_ => new ScopeService(tree));
 
+            RegisterMigrations(services, assemblies);
+
             return services;
         }
 
         public static IServiceCollection AddDefaultObjectWriterAndReader(this IServiceCollection services)
         {
+            services.AddScoped<IObjectSerializer, MessagePackObjectSerializer>();
             services.AddScoped<IObjectWriter, ObjectWriter>();
             services.AddScoped<IObjectReader, ObjectReader>();
             services.AddScoped<IRepository, FileSystemRepository>();
+            services.AddScoped<IStorageMigrationRunner, StorageMigrationRunner>();
 
             return services;
         }
 
-        public static IServiceCollection AddJsonSerializer(this IServiceCollection services)
-        {
-            services.AddScoped<IObjectSerializer, JsonObjectSerializer>();
-
-            return services;
-        }
         public static IServiceCollection AddFileSystemRepository(this IServiceCollection services)
         {
             services.AddScoped<IRepository, FileSystemRepository>();
 
             return services;
         }
+
+        private static void RegisterMigrations(IServiceCollection services, Assembly[] assemblies)
+        {
+            var migrationTypes = assemblies
+                .SelectMany(GetLoadableTypes)
+                .Where(t => typeof(IStorageMigration).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface)
+                .Distinct()
+                .ToArray();
+
+            foreach (var migrationType in migrationTypes)
+            {
+                services.AddTransient(typeof(IStorageMigration), migrationType);
+            }
+        }
+
+        private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.Where(t => t != null)!;
+            }
+        }
     }
 }
+

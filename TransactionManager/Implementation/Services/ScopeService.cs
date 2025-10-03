@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TransactionManager.Abstraction.Dtos;
 using TransactionManager.Abstraction.Services;
 using TransactionManager.Implementation.Dtos;
@@ -18,9 +19,17 @@ namespace TransactionManager.Implementation.Services
                 EnsureDirectory(descriptor.Directory);
             }
 
-            _reverse = scopes.Values.ToDictionary(d => d.Directory.FullName,
-                                                  d => d.ContractType,
-                                                  StringComparer.OrdinalIgnoreCase);
+                        var reverse = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
+            foreach (var descriptor in scopes.Values)
+            {
+                var key = descriptor.Directory.FullName;
+                if (!reverse.ContainsKey(key))
+                {
+                    reverse.Add(key, descriptor.ContractType);
+                }
+            }
+
+            _reverse = reverse;
         }
 
         public DirectoryInfo? GetDirectory<TContract>()

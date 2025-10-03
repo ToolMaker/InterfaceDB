@@ -1,4 +1,4 @@
-﻿namespace TransactionManager.Abstraction.Encruption
+﻿namespace TransactionManager.Abstraction.Encryption
 {
 
     public interface IKeyProvider
