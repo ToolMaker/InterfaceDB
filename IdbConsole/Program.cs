@@ -5,12 +5,11 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using TransactionManager.Abstraction.Enums;
-using TransactionManager.Abstraction.Migrations;
-using TransactionManager.Implementation.Migrations;
+using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Migrations;
+using Idb.Libraries.Implementation.Migrations;
 
-using Idb.Libraries.Baselines;
-using Idb.Libraries.Migrations;
+using Idb.Libraries.Implementation.Baselines;
 
 namespace IdbConsole
 {

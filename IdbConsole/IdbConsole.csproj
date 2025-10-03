@@ -13,10 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Idb\Idb.csproj" />
     <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
   </ItemGroup>
 
-
 </Project>
-
