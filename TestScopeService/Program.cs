@@ -309,10 +309,6 @@ namespace TestScopeService
                     }
                 }
 
-                if (implementations.Count == 0)
-                {
-                    implementations.Add($"{contractName}Implementation");
-                }
 
                 return new BaselineOptions(contractName, namespaceRoot, rootFolder, implementations, increment, explicitVersion);
             }
