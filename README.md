@@ -26,12 +26,20 @@ This repository contains the sample storage stack that powers the `Idb` projects
 The `baseline` command creates or advances a contract under `MigrationTool/Contracts/<Contract>/<version>/`.
 
 ```bash
-dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog
+dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Abstractions --storage-dir Migrations
 ```
 
-The command resolves the next semantic version, copies the previous baseline (if any), and prints follow-up instructions. You can force a particular version or change the increment strategy through options such as `--version`, `--increment`, `--namespace`, and `--impl`.
+Key switches you can supply:
+
+- `--contracts-dir <path>`: where versioned interfaces live (relative to the project root by default).
+- `--storage-dir <path>`: base folder used for generated migration stubs.
+- `--existing <prompt|skip|force>`: control how the tool behaves when a target version folder already exists.
+- `--increment <auto|prompt|skip>` (alias `--increment-mode`): choose whether to auto-increment, prompt, or skip when a previous version is present.
+- `--version`, `--increment major|minor|patch`, `--namespace`, `--impl`: fine-tune the semantic versioning and namespace layout.
 
 ### Dog Example
+
+> Whenever a new baseline builds on top of an existing version, the tool automatically scaffolds the migration stubs into the directory supplied via `--migration-dir`.
 
 The repo currently ships with a simple `Dog` contract that demonstrates the flow:
 
@@ -43,12 +51,12 @@ The repo currently ships with a simple `Dog` contract that demonstrates the flow
    ```bash
    dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog
 ```
-   The folder `MigrationTool/Contracts/Dog/v1_0_1/` now holds the updated interface and implementation stub.
+   The folder `MigrationTool/Contracts/Dog/v1_0_1/` (or the path you supplied via `--contracts-dir`) now holds the updated interface and implementation stub.
 3. Scaffold migrations only after you are happy with the contract shape:
    ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- migrate scaffold Dog
+   dotnet run --project MigrationTool/MigrationTool.csproj -- migrate scaffold Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
 ```
-   This creates `MigrationTool/Migrations/Dog/IDog_v1_0_0_To_v1_0_1_Migration.cs`, which reads legacy payloads and writes the upgraded version.
+   This creates `Migrations/Dog/IDog_v1_0_0_To_v1_0_1_Migration.cs` (relative to the migration directory you specified), which reads legacy payloads and writes the upgraded version.
 
 > **TODO**: Flesh out the `Dog` migration so real data can be upgraded. The sample currently maps the `Name` across and hard-codes `Age` to zero. Add whatever transformation logic your scenario requires and remove the console trace once finalized.
 
@@ -75,3 +83,7 @@ Use the generated comment blocks as placeholders for your conversion logic.
 * When adding new samples, mirror the structure used by `Dog` or `Person` so the scaffolding features stay consistent.
 
 Happy migrating!
+
+
+
+

@@ -1,17 +1,17 @@
-﻿using Idb.Libraries.Abstractions.Migrations;
-using Idb.Libraries.Abstractions.Repository;
-using Idb.Libraries.Abstractions.Serialization;
+﻿using Idb.Libraries.Abstractions.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Implementation.Builders;
 using Idb.Libraries.Implementation.Dtos;
-using Idb.Libraries.Implementation.Migrations;
-using Idb.Libraries.Implementation.Repository;
-using Idb.Libraries.Implementation.Serialization;
-using Idb.Libraries.Implementation.Serializers;
+using Idb.Libraries.Implementation.Services.Repository;
 using Idb.Libraries.Implementation.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
+using Idb.Libraries.Implementation.Services.Migrations;
+using Idb.Libraries.Implementation.Services.Serializers;
+using Idb.Libraries.Implementation.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Extentions;
 

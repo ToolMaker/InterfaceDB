@@ -1,13 +1,16 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
-using Idb.Libraries.Abstractions.Repository;
-using Idb.Libraries.Abstractions.Serialization;
-using Idb.Libraries.Implementation.Repository;
+using Idb.Libraries.Abstractions.Services.Indexes;
+using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Services.Caching;
+using Idb.Libraries.Implementation.Services.Indexes;
+using Idb.Libraries.Implementation.Services.Repository;
 using Xunit;
 
 namespace IdbConsole.Tests.Repository;

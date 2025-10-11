@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using Idb.Libraries.Abstractions.Attributes;
-using Idb.Libraries.Abstractions.Serialization;
-using Idb.Libraries.Implementation.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Services.Serialization;
 
 namespace IdbConsole.Tests;
 
