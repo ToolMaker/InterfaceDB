@@ -80,11 +80,7 @@ namespace Idb.Libraries.Implementation.Migrations
                         continue;
                     }
 
-                    var context = new StorageMigrationContext(scope,
-                                                               legacy.Name,
-                                                               targetVersion,
-                                                               _serializer,
-                                                               _repository);
+                    var context = new StorageMigrationContext(scope, legacy.Name, targetVersion, _serializer, _repository);
 
                     _logger.LogInformation(
                         "Running migration {Migration} for contract {Contract} from {Source} to {Target}.",
@@ -99,3 +95,4 @@ namespace Idb.Libraries.Implementation.Migrations
         }
     }
 }
+

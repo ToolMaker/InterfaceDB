@@ -2,8 +2,9 @@ namespace Idb.Libraries.Abstractions.Serialization
 {
     public interface IObjectEnvelope
     {
-        byte[] Payload { get; init; }
-        string VersionTag { get; init; }
-        string? TypeName { get; init; }
+        byte[] Payload { get; set; }
+        string VersionTag { get; set; }
+        string? TypeName { get; set; }
+        ObjectFingerprint Fingerprint { get; set; }
     }
 }

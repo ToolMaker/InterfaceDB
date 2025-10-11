@@ -7,7 +7,7 @@ namespace IdbConsole.Tests;
 
 public sealed class BaselineOptionsParseTests
 {
-    private const string DefaultNamespace = "IdbConsole.Contracts";
+    private const string DefaultNamespace = "MigrationTool.Contracts";
     private const string DefaultRoot = "Contracts";
 
     [Fact]
