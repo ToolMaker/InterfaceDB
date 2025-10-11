@@ -35,7 +35,7 @@ public sealed class BaselineOptionsParseTests
         Assert.Equal(DefaultStorage, options.StorageFolder);
         Assert.Equal(DefaultMigrations, options.MigrationFolder);
         Assert.Empty(options.Implementations);
-        Assert.Equal(VersionIncrement.Patch, options.Increment);
+        Assert.Equal(VersionIncrementType.Patch, options.Increment);
         Assert.Null(options.ExplicitVersion);
         Assert.Null(options.ProjectRoot);
         Assert.Equal(BaselineExistingBehavior.Prompt, options.ExistingBehavior);
@@ -96,11 +96,11 @@ public sealed class BaselineOptionsParseTests
     }
 
     [Theory]
-    [InlineData("major", VersionIncrement.Major)]
-    [InlineData("minor", VersionIncrement.Minor)]
-    [InlineData("patch", VersionIncrement.Patch)]
-    [InlineData("MaJoR", VersionIncrement.Major)]
-    public void Parse_WithVersionIncrementOverride_ParsesEnum(string input, VersionIncrement expected)
+    [InlineData("major", VersionIncrementType.Major)]
+    [InlineData("minor", VersionIncrementType.Minor)]
+    [InlineData("patch", VersionIncrementType.Patch)]
+    [InlineData("MaJoR", VersionIncrementType.Major)]
+    public void Parse_WithVersionIncrementOverride_ParsesEnum(string input, VersionIncrementType expected)
     {
         var args = new[] { "baseline", "Account", "--contracts-dir", DefaultContracts, "--increment", input };
 

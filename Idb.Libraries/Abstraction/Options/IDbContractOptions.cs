@@ -1,3 +1,4 @@
+using Idb.Libraries.Abstraction.Enums;
 using Idb.Libraries.Abstractions.Services.Indexes;
 
 namespace Idb.Libraries.Abstractions.Options;
@@ -7,6 +8,11 @@ namespace Idb.Libraries.Abstractions.Options;
 /// </summary>
 public interface IDbContractOptions
 {
+    /// <summary>
+    /// Unique key used to register contract-specific services (e.g., keyed DI lookups).
+    /// </summary>
+    string Key { get; }
+
     /// <summary>
     /// Absolute or project-relative path to the folder containing contract implementations (maps to the tool's storage/implementations option).
     /// </summary>
@@ -35,10 +41,20 @@ public interface IDbContractOptions
     /// <summary>
     /// Controls whether indexes are provisioned dynamically, fixed from configuration, or both.
     /// </summary>
-    ContractIndexProvisioningMode IndexProvisioningMode { get; }
+    ContractIndexProvisioningModeType IndexProvisioningMode { get; }
 
     /// <summary>
     /// Repository implementation used to service this contract.
     /// </summary>
     ContractRepositoryType RepositoryType { get; }
+
+    /// <summary>
+    /// Optional override for the object writer used when persisting contract instances.
+    /// </summary>
+    ContractObjectWriterType ObjectWriter { get; }
+
+    /// <summary>
+    /// Optional override for the object reader used when loading contract instances.
+    /// </summary>
+    ContractObjectReaderType ObjectReader { get; }
 }

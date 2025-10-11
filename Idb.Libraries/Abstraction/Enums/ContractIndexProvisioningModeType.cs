@@ -1,9 +1,9 @@
-namespace Idb.Libraries.Abstractions.Options;
+namespace Idb.Libraries.Abstraction.Enums;
 
 /// <summary>
 /// Specifies how repository indexes are provisioned for a contract.
 /// </summary>
-public enum ContractIndexProvisioningMode
+public enum ContractIndexProvisioningModeType
 {
     /// <summary>
     /// Indexes are created on demand when clients register them.

@@ -1,6 +1,6 @@
 namespace Idb.Libraries.Abstractions.Enums
 {
-    public enum UpgradeMode
+    public enum UpgradeModeType
     {
         StrongTyped,   
         RawBytes       

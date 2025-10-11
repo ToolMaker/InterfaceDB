@@ -12,7 +12,7 @@ public sealed record BaselineOptions(
     string StorageFolder,
     string MigrationFolder,
     IReadOnlyList<string> Implementations,
-    VersionIncrement Increment,
+    VersionIncrementType Increment,
     string? ExplicitVersion,
     string? ProjectRoot,
     BaselineExistingBehavior ExistingBehavior,
@@ -38,7 +38,7 @@ public sealed record BaselineOptions(
         var contractsFolder = defaultContractsFolder;
         var storageFolder = defaultStorageFolder;
         var migrationFolder = defaultMigrationFolder;
-        var increment = VersionIncrement.Patch;
+        var increment = VersionIncrementType.Patch;
         var existingBehavior = defaultExistingBehavior;
         var incrementBehavior = defaultIncrementBehavior;
         string? explicitVersion = null;
@@ -97,13 +97,13 @@ public sealed record BaselineOptions(
                     switch (incrementToken)
                     {
                         case "major":
-                            increment = VersionIncrement.Major;
+                            increment = VersionIncrementType.Major;
                             break;
                         case "minor":
-                            increment = VersionIncrement.Minor;
+                            increment = VersionIncrementType.Minor;
                             break;
                         case "patch":
-                            increment = VersionIncrement.Patch;
+                            increment = VersionIncrementType.Patch;
                             break;
                         default:
                             throw new ArgumentException($"Unknown increment option '{incrementToken}'. Expected major, minor, or patch.");
