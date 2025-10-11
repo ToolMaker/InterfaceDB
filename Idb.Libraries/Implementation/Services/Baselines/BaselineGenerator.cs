@@ -234,8 +234,8 @@ public static class BaselineGenerator
 
         return options.Increment switch
         {
-            VersionIncrement.Major => new Version(previousVersion.Major + 1, 0, 0),
-            VersionIncrement.Minor => new Version(previousVersion.Major, previousVersion.Minor + 1, 0),
+            VersionIncrementType.Major => new Version(previousVersion.Major + 1, 0, 0),
+            VersionIncrementType.Minor => new Version(previousVersion.Major, previousVersion.Minor + 1, 0),
             _ => new Version(previousVersion.Major, previousVersion.Minor, previousVersion.Build + 1)
         };
     }

@@ -288,6 +288,7 @@ internal static class Program
 
         var namespaceOwner = new DirectoryInfo(optionsBaseFull).Name;
         var namespaceName = namespaceOwner + ".Options";
+        var sanitizedKey = options.ContractName.Replace("\"", "\\\"");
 
         var lines = new[]
         {
@@ -299,6 +300,7 @@ internal static class Program
             string.Empty,
             $"public sealed class {className} : IDbContractOptions",
             "{",
+            $"    public string Key {{ get; }} = \"{sanitizedKey}\";",
             $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, implementationsPath)};",
             $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, contractPath)};",
             $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, migrationsPath)};",
@@ -306,6 +308,8 @@ internal static class Program
             "    public IRepositoryIndexConfiguration[]? Indexes { get; } = Array.Empty<IRepositoryIndexConfiguration>();",
             "    public ContractIndexProvisioningMode IndexProvisioningMode { get; } = ContractIndexProvisioningMode.Dynamic;",
             "    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;",
+            "    public ContractObjectWriterKind ObjectWriter { get; } = ContractObjectWriterKind.None;",
+            "    public ContractObjectReaderKind ObjectReader { get; } = ContractObjectReaderKind.None;",
             "}",
             string.Empty,
         };
@@ -331,7 +335,7 @@ internal static class Program
             DefaultStorageRoot,
             DefaultMigrationsRoot,
             implementations,
-            VersionIncrement.Patch,
+            VersionIncrementType.Patch,
             "1.0.0",
             null,
             BaselineExistingBehavior.Force,

@@ -1,6 +1,6 @@
 namespace Idb.Libraries.Abstractions.Enums
 {
-    public enum VersionIncrement
+    public enum VersionIncrementType
     {
         Patch,
         Minor,
