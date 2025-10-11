@@ -46,7 +46,7 @@
 - `ExistsAsync<T>` allows cheap probes for a specific version when a scope for `T` exists.
 
 ## 5. Repository Facade
-- `IRepository` composes reader/writer services to expose `SaveAsync`, `LoadAsync`, and `ExistsAsync` with matching signatures.
+- `IRepository` composes reader/writer services to expose `SaveAsync`, `LoadAsync`, and `ExistsAsync` with matching signatures while allowing repository-specific indexing strategies.
 - `FileSystemRepository` is the default implementation registered by `AddScopeStorage`/`AddDefaultObjectWriterAndReader`.
 
 ## 6. Dependency Injection
@@ -72,3 +72,4 @@
 - **Cross-Process Coordination**: File locking or transactional writes for multi-writer scenarios.
 - **Test Harness**: Add automated integration tests covering repository operations against temporary storage roots.
 - **Interface Scopes**: Extend exists/lookup helpers so interface-first calls avoid scanning when a matching concrete scope is known upfront.
+

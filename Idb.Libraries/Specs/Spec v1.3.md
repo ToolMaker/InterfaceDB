@@ -37,12 +37,12 @@
 - IObjectWriter.WriteAsync<TContract>:
   - Validates that TContract is a registered interface scope.
   - Ensures the supplied object implements TContract.
-  - Uses the contract’s declared default version when the caller omits schemaVersion; otherwise honours the explicit version parameter.
+  - Uses the contract?s declared default version when the caller omits schemaVersion; otherwise honours the explicit version parameter.
   - Creates (or reuses) the version sub-folder and serializes <Id><ext> within it.
 - IObjectReader.ReadAsync<TContract>:
   - Resolves the interface directory, then either the requested version or the highest available version when unspecified.
   - Rehydrates the concrete implementation using TypeName; returns the value cast to TContract.
-- ExistsAsync<TContract> checks the requested version folder, defaulting to the contract’s version when none is provided.
+- ExistsAsync<TContract> checks the requested version folder, defaulting to the contract?s version when none is provided.
 
 ## 5. Repository Facade
 - IRepository.SaveAsync<TContract> / LoadAsync<TContract> operate in terms of interface contracts and apply the default version semantics above.
@@ -64,3 +64,4 @@
 - **Deduplicated Multi-Interface Persistence**: Investigate cross-interface linking to avoid redundant payloads.
 - **Tooling**: Provide diagnostics for missing implementations or ambiguous mappings.
 - **Version Folder Conventions**: Consider enforcing stricter parsing/validation.
+

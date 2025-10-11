@@ -83,6 +83,7 @@ namespace Idb.Libraries.Implementation.Migrations
         }
 
         public async ValueTask WriteAsync<TContract>(string id, TContract entity, CancellationToken cancellationToken = default)
+        where TContract : class
         {
             if (entity is null)
             {
@@ -162,4 +163,7 @@ namespace Idb.Libraries.Implementation.Migrations
         }
     }
 }
+
+
+
 

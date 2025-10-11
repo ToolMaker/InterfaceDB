@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using Idb.Libraries.Abstractions.Encryption;
-using Idb.Libraries.Implementation.Options;
+using Idb.Libraries.Abstraction.Encryption.Options;
 
 namespace Idb.Libraries.Implementation.Encryption
 {

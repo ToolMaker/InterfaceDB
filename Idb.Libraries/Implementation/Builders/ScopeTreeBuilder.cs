@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
-using Idb.Libraries.Implementation.Attributes;
+using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Implementation.Dtos;

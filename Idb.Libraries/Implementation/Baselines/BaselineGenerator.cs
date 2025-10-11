@@ -123,7 +123,7 @@ public static class BaselineGenerator
         {
             $"namespace {contractNamespace};",
             string.Empty,
-            "using Idb.Libraries.Implementation.Attributes;",
+            "using Idb.Libraries.Abstractions.Attributes;",
             string.Empty,
             $"[StorageScope(VersionTag = \"{version}\")]",
             $"public interface I{options.ContractName}",

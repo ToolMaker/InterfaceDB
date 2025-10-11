@@ -26,7 +26,8 @@ namespace Idb.Libraries.Abstractions.Migrations
         IAsyncEnumerable<IStorageMigrationRecord<T>> ReadSourceAsync<T>(CancellationToken cancellationToken = default);
 
         /// <summary>Writes the upgraded entity (using the target contract) keeping the supplied identifier.</summary>
-        ValueTask WriteAsync<TContract>(string id, TContract entity, CancellationToken cancellationToken = default);
+        ValueTask WriteAsync<TContract>(string id, TContract entity, CancellationToken cancellationToken = default)
+        where TContract : class;
 
         /// <summary>Deletes the legacy payload once the upgraded entity has been persisted.</summary>
         ValueTask DeleteSourceAsync(string id, CancellationToken cancellationToken = default);

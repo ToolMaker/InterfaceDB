@@ -100,7 +100,7 @@ public sealed class BaselineGeneratorTests
         try
         {
             var args = new[] { "baseline", "Customer", "--dbpath", overrideRoot };
-            var options = BaselineOptions.Parse(args, "IdbConsole.Contracts", "Contracts");
+            var options = BaselineOptions.Parse(args, "MigrationTool.Contracts", "Contracts");
             Assert.NotNull(options.ProjectRoot);
 
             var projectRoot = options.ProjectRoot!;
