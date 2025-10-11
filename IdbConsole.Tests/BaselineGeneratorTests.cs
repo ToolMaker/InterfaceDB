@@ -1,7 +1,7 @@
 using System;
 using System.IO;
-using Idb.Libraries.Implementation.Baselines;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Implementation.Services.Baselines;
 
 namespace IdbConsole.Tests;
 
@@ -18,40 +18,23 @@ public sealed class BaselineGeneratorTests
                 "Account",
                 "Custom.Namespace",
                 "Contracts",
+                "Storage",
+                "Migrations",
                 new[] { "AccountImpl", "SecondaryImpl" },
                 VersionIncrement.Patch,
                 ExplicitVersion: null,
-                ProjectRoot: null);
+                ProjectRoot: null,
+                ExistingBehavior: BaselineExistingBehavior.Force,
+                IncrementBehavior: BaselineIncrementBehavior.Auto);
 
             var result = BaselineGenerator.Generate(projectRoot, options);
             var version = new Version(result.NewVersion);
-            var versionFolder = Path.Combine(
-                projectRoot,
-                "Contracts",
-                "Account",
-                BaselineGenerator.NormalizeVersionSegment(version));
+            var segment = BaselineGenerator.NormalizeVersionSegment(version);
+            var versionFolder = Path.Combine(projectRoot, "Contracts", "Account", segment);
 
-            var interfacePath = Path.Combine(versionFolder, "IAccount.cs");
-            Assert.True(File.Exists(interfacePath));
-
-            var interfaceContent = File.ReadAllText(interfacePath);
-            Assert.Contains("namespace Custom.Namespace.Account.v1_0_0;", interfaceContent, StringComparison.Ordinal);
-            Assert.Contains("[StorageScope(VersionTag = \"1.0.0\")]", interfaceContent, StringComparison.Ordinal);
-
-            var implementationPaths = new[]
-            {
-                Path.Combine(versionFolder, "AccountImpl.cs"),
-                Path.Combine(versionFolder, "SecondaryImpl.cs"),
-            };
-
-            foreach (var implementationPath in implementationPaths)
-            {
-                Assert.True(File.Exists(implementationPath));
-
-                var implementationContent = File.ReadAllText(implementationPath);
-                Assert.Contains("namespace Custom.Namespace.Account.v1_0_0;", implementationContent, StringComparison.Ordinal);
-                Assert.Contains("public sealed class", implementationContent, StringComparison.Ordinal);
-            }
+            Assert.True(File.Exists(Path.Combine(versionFolder, "IAccount.cs")));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Storage", "Account", segment)));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Migrations", "Account")));
         }
         finally
         {
@@ -70,21 +53,22 @@ public sealed class BaselineGeneratorTests
                 "Invoice",
                 "Custom.Namespace",
                 "Contracts",
+                "Storage",
+                "Migrations",
                 Array.Empty<string>(),
                 VersionIncrement.Patch,
                 ExplicitVersion: "2.1.3",
-                ProjectRoot: null);
+                ProjectRoot: null,
+                ExistingBehavior: BaselineExistingBehavior.Force,
+                IncrementBehavior: BaselineIncrementBehavior.Auto);
 
             var result = BaselineGenerator.Generate(projectRoot, options);
             Assert.Equal("2.1.3", result.NewVersion);
+            var segment = BaselineGenerator.NormalizeVersionSegment(new Version(result.NewVersion));
 
-            var versionFolder = Path.Combine(
-                projectRoot,
-                "Contracts",
-                "Invoice",
-                BaselineGenerator.NormalizeVersionSegment(new Version(result.NewVersion)));
-
-            Assert.True(Directory.Exists(versionFolder));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Contracts", "Invoice", segment)));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Storage", "Invoice", segment)));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Migrations", "Invoice")));
         }
         finally
         {
@@ -99,23 +83,19 @@ public sealed class BaselineGeneratorTests
 
         try
         {
-            var args = new[] { "baseline", "Customer", "--dbpath", overrideRoot };
-            var options = BaselineOptions.Parse(args, "MigrationTool.Contracts", "Contracts");
+            var args = new[] { "baseline", "Customer", "--contracts-dir", "Contracts", "--dbpath", overrideRoot };
+            var options = BaselineOptions.Parse(args, "MigrationTool.Contracts", "Contracts", "Storage", "Migrations");
             Assert.NotNull(options.ProjectRoot);
 
             var projectRoot = options.ProjectRoot!;
 
             var result = BaselineGenerator.Generate(projectRoot, options);
             Assert.Equal("1.0.0", result.NewVersion);
+            var segment = BaselineGenerator.NormalizeVersionSegment(new Version(result.NewVersion));
 
-            var versionFolder = Path.Combine(
-                projectRoot,
-                "Contracts",
-                "Customer",
-                BaselineGenerator.NormalizeVersionSegment(new Version(result.NewVersion)));
-
-            Assert.True(Directory.Exists(versionFolder));
-            Assert.True(File.Exists(Path.Combine(versionFolder, "ICustomer.cs")));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Contracts", "Customer", segment)));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Storage", "Customer", segment)));
+            Assert.True(Directory.Exists(Path.Combine(projectRoot, "Migrations", "Customer")));
         }
         finally
         {

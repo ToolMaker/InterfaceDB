@@ -1,11 +1,12 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using Idb.Libraries.Abstractions.Dtos;
-using Idb.Libraries.Abstractions.Repository;
-using Idb.Libraries.Abstractions.Serialization;
-using Idb.Libraries.Implementation.Repository;
+using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Services.Indexes;
+using Idb.Libraries.Implementation.Services.Repository;
 
 namespace IdbConsole.Tests.Repository.Shared;
 

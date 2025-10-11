@@ -1,9 +1,9 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Idb.Libraries.Abstractions.Dtos;
-using Idb.Libraries.Abstractions.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Implementation.Dtos;
 

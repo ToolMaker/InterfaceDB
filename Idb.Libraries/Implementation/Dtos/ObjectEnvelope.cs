@@ -1,6 +1,6 @@
-using System;
+﻿using System;
 using Idb.Libraries.Abstractions.Dtos;
-using Idb.Libraries.Abstractions.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Dtos
 {

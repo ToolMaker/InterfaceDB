@@ -1,5 +1,6 @@
 using System.Collections.Generic;
-using Idb.Libraries.Abstractions.Repository;
+using Idb.Libraries.Abstractions.Services.Indexes;
+using Idb.Libraries.Abstractions.Services.Repository;
 using IdbConsole.Tests.Repository.Shared;
 using Xunit;
 
