@@ -24,6 +24,7 @@ public sealed class BaselineGeneratorTests
                 VersionIncrementType.Patch,
                 ExplicitVersion: null,
                 ProjectRoot: null,
+                ConfigFilePath: null,
                 ExistingBehavior: BaselineExistingBehavior.Force,
                 IncrementBehavior: BaselineIncrementBehavior.Auto);
 
@@ -59,6 +60,7 @@ public sealed class BaselineGeneratorTests
                 VersionIncrementType.Patch,
                 ExplicitVersion: "2.1.3",
                 ProjectRoot: null,
+                ConfigFilePath: null,
                 ExistingBehavior: BaselineExistingBehavior.Force,
                 IncrementBehavior: BaselineIncrementBehavior.Auto);
 
@@ -79,7 +81,7 @@ public sealed class BaselineGeneratorTests
     [Fact]
     public void Generate_WithProjectRootOverride_UsesOverrideDirectory()
     {
-        var overrideRoot = CreateTempDirectory();
+            var overrideRoot = CreateTempDirectory();
 
         try
         {

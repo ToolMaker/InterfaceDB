@@ -15,6 +15,7 @@ public sealed record BaselineOptions(
     VersionIncrementType Increment,
     string? ExplicitVersion,
     string? ProjectRoot,
+    string? ConfigFilePath,
     BaselineExistingBehavior ExistingBehavior,
     BaselineIncrementBehavior IncrementBehavior)
 {
@@ -29,10 +30,17 @@ public sealed record BaselineOptions(
     {
         if (args.Length < 2)
         {
-            throw new ArgumentException("Contract name argument is required.");
+            throw new ArgumentException("At least one argument is required for the baseline command.");
         }
 
-        var contractName = args[1];
+        var contractName = string.Empty;
+        var index = 1;
+        if (args.Length > 1 && !IsOption(args[1]))
+        {
+            contractName = args[1];
+            index = 2;
+        }
+
         var implementations = new List<string>();
         var namespaceRoot = defaultNamespaceRoot;
         var contractsFolder = defaultContractsFolder;
@@ -43,9 +51,11 @@ public sealed record BaselineOptions(
         var incrementBehavior = defaultIncrementBehavior;
         string? explicitVersion = null;
         string? projectRoot = null;
+        string? configFilePath = null;
         var contractsDirProvided = false;
+        var configFileProvided = false;
 
-        for (var i = 2; i < args.Length; i++)
+        for (var i = index; i < args.Length; i++)
         {
             switch (args[i])
             {
@@ -77,6 +87,16 @@ public sealed record BaselineOptions(
                     contractsDirProvided = true;
                     break;
 
+                case "--config-file-dir":
+                    if (i + 1 >= args.Length)
+                    {
+                        throw new ArgumentException($"Missing value for {args[i]} option.");
+                    }
+
+                    configFilePath = args[++i];
+                    configFileProvided = true;
+                    break;
+
                 case "--storage":
                 case "--storage-dir":
                     if (i + 1 >= args.Length)
@@ -105,8 +125,63 @@ public sealed record BaselineOptions(
                         case "patch":
                             increment = VersionIncrementType.Patch;
                             break;
+                        case "auto":
+                            incrementBehavior = BaselineIncrementBehavior.Auto;
+                            break;
+                        case "prompt":
+                            incrementBehavior = BaselineIncrementBehavior.Prompt;
+                            break;
+                        case "skip":
+                            incrementBehavior = BaselineIncrementBehavior.Skip;
+                            break;
                         default:
-                            throw new ArgumentException($"Unknown increment option '{incrementToken}'. Expected major, minor, or patch.");
+                            throw new ArgumentException($"Unknown increment option '{incrementToken}'. Expected major, minor, patch, auto, prompt, or skip.");
+                    }
+                    break;
+
+                case "--increment-behavior":
+                    if (i + 1 >= args.Length)
+                    {
+                        throw new ArgumentException("Missing value for --increment-behavior option.");
+                    }
+
+                    var incrementBehaviorToken = args[++i].ToLowerInvariant();
+                    switch (incrementBehaviorToken)
+                    {
+                        case "auto":
+                            incrementBehavior = BaselineIncrementBehavior.Auto;
+                            break;
+                        case "prompt":
+                            incrementBehavior = BaselineIncrementBehavior.Prompt;
+                            break;
+                        case "skip":
+                            incrementBehavior = BaselineIncrementBehavior.Skip;
+                            break;
+                        default:
+                            throw new ArgumentException($"Unknown increment behavior option '{incrementBehaviorToken}'. Expected auto, prompt, or skip.");
+                    }
+                    break;
+
+                case "--existing":
+                    if (i + 1 >= args.Length)
+                    {
+                        throw new ArgumentException("Missing value for --existing option.");
+                    }
+
+                    var existingToken = args[++i].ToLowerInvariant();
+                    switch (existingToken)
+                    {
+                        case "force":
+                            existingBehavior = BaselineExistingBehavior.Force;
+                            break;
+                        case "skip":
+                            existingBehavior = BaselineExistingBehavior.Skip;
+                            break;
+                        case "prompt":
+                            existingBehavior = BaselineExistingBehavior.Prompt;
+                            break;
+                        default:
+                            throw new ArgumentException($"Unknown existing option '{existingToken}'. Expected force, skip, or prompt.");
                     }
                     break;
 
@@ -143,9 +218,14 @@ public sealed record BaselineOptions(
             }
         }
 
-        if (!contractsDirProvided)
+        if (contractsDirProvided && configFileProvided)
         {
-            throw new ArgumentException("The '--contracts-dir' option is required.");
+            throw new ArgumentException("Specify either '--contracts-dir' or '--config-file-dir', not both.");
+        }
+
+        if (!contractsDirProvided && !configFileProvided)
+        {
+            throw new ArgumentException("The baseline command requires either '--contracts-dir' or '--config-file-dir'.");
         }
 
         return new BaselineOptions(
@@ -158,6 +238,7 @@ public sealed record BaselineOptions(
             increment,
             explicitVersion,
             projectRoot,
+            configFilePath,
             existingBehavior,
             incrementBehavior);
     }
@@ -207,4 +288,7 @@ public sealed record BaselineOptions(
             ? MigrationFolder
             : Path.Combine(projectRoot, MigrationFolder);
     }
+
+    private static bool IsOption(string token)
+        => token.StartsWith("--", StringComparison.Ordinal);
 }
