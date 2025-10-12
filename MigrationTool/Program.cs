@@ -1,9 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstraction.Enums;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Implementation.Services.Baselines;
 using Idb.Libraries.Implementation.Services.Migrations;
@@ -640,39 +643,39 @@ internal static class Program
         var contractsRootResolved = Path.GetFullPath(options.GetContractsRoot(projectRoot));
         var migrationsRootFull = Path.GetFullPath(options.GetMigrationRoot(projectRoot));
 
-        var implementationsPath = Path.Combine(storageRootFull, options.ContractName, versionSegment);
-        var contractPath = Path.Combine(contractsRootResolved, options.ContractName, versionSegment);
-        var migrationsPath = Path.Combine(migrationsRootFull, options.ContractName);
+        var contractRoot = Path.Combine(contractsRootResolved, options.ContractName);
+        var implementationsRoot = Path.Combine(storageRootFull, options.ContractName);
+        var migrationsRoot = Path.Combine(migrationsRootFull, options.ContractName);
 
-        Directory.CreateDirectory(contractPath);
-        Directory.CreateDirectory(implementationsPath);
-        Directory.CreateDirectory(migrationsPath);
+        var contractVersionPath = Path.Combine(contractRoot, versionSegment);
+        var implementationsVersionPath = Path.Combine(implementationsRoot, versionSegment);
+
+        Directory.CreateDirectory(contractVersionPath);
+        Directory.CreateDirectory(implementationsVersionPath);
+        Directory.CreateDirectory(migrationsRoot);
 
         var namespaceOwner = new DirectoryInfo(optionsBaseFull).Name;
         var namespaceName = namespaceOwner + ".Options";
         var sanitizedKey = options.ContractName.Replace("\"", "\\\"");
 
+        // NOTE: Please keep the generated code below consistant. Make use of the 'nameof' operator where possible. This allow refactoring across the projects
+        //       without breaking the generated code. Also, keep the formatting consistant to avoid unnecessary diffs. I removed using namspaces for flexability.
         var lines = new[]
         {
-            "using System;",
-            "using Idb.Libraries.Abstractions.Options;",
-            "using Idb.Libraries.Abstractions.Services.Indexes;",
-            string.Empty,
-            $"namespace {namespaceName};",
-            string.Empty,
-            $"public sealed class {className} : IDbContractOptions",
-            "{",
-            $"    public string Key {{ get; }} = \"{sanitizedKey}\";",
-            $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsPath)};",
-            $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractPath)};",
-            $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsPath)};",
-            $"    public string? ActiveVersion {{ get; }} = \"{result.NewVersion}\";",
-            "    public IRepositoryIndexConfiguration[]? Indexes { get; } = Array.Empty<IRepositoryIndexConfiguration>();",
-            "    public ContractIndexProvisioningMode IndexProvisioningMode { get; } = ContractIndexProvisioningMode.Dynamic;",
-            "    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;",
-            "    public ContractObjectWriterKind ObjectWriter { get; } = ContractObjectWriterKind.None;",
-            "    public ContractObjectReaderKind ObjectReader { get; } = ContractObjectReaderKind.None;",
-            "}",
+            $@"namespace {namespaceName};
+            public sealed class {className} : {nameof(IDbContractOptions)}
+            {{
+                public string {nameof(IDbContractOptions.Key)} {{ get; }} = ""{sanitizedKey}"";
+                public string? {nameof(IDbContractOptions.ImplementationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};
+                public string? {nameof(IDbContractOptions.ContractPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};
+                public string? {nameof(IDbContractOptions.MigrationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};
+                public string? {nameof(IDbContractOptions.ActiveVersion)} {{ get; }} = ""{result.NewVersion}"";
+                public {nameof(IRepositoryIndexConfiguration)}[]? {nameof(IDbContractOptions.Indexes)} {{ get; }} = Array.Empty<{nameof(IRepositoryIndexConfiguration)}>();
+                public {nameof(ContractIndexProvisioningModeType)} {nameof(IDbContractOptions.IndexProvisioningMode)} {{ get; }} = {nameof(ContractIndexProvisioningModeType)}.{ContractIndexProvisioningModeType.Dynamic.ToString()};
+                public {nameof(ContractRepositoryType)} {nameof(IDbContractOptions.RepositoryType)} {{ get; }} = {nameof(ContractRepositoryType)}.{ContractRepositoryType.FileSystem.ToString()};
+                public {nameof(ContractObjectWriterType)} {nameof(IDbContractOptions.ObjectWriter)} {{ get; }} = {nameof(ContractObjectWriterType)}.{ContractObjectWriterType.None.ToString()};
+                public {nameof(ContractObjectReaderType)} {nameof(IDbContractOptions.ObjectReader)} {{ get; }} = {nameof(ContractObjectReaderType)}.{ContractObjectReaderType.None.ToString()};
+            }}",
             string.Empty,
         };
 
@@ -902,4 +905,5 @@ internal static class Program
             || string.Equals(response, "yes", StringComparison.OrdinalIgnoreCase);
     }
 }
+
 
