@@ -39,24 +39,41 @@ internal static class Program
 
     private static int HandleBaselineCommand(string[] args)
     {
-        if (!ContainsContractsDirOption(args))
+        if (!ContainsContractsDirOption(args) && !ContainsConfigFileOption(args))
         {
-            Console.WriteLine("The '--contracts-dir' option is required when running the baseline command.");
+            Console.WriteLine("Specify either '--contracts-dir' or '--config-file-dir' when running the baseline command.");
             return PrintUsage();
         }
 
-        var options = BaselineOptions.Parse(
-            args,
-            DefaultContractsNamespace,
-            DefaultContractsRoot,
-            DefaultStorageRoot,
-            DefaultMigrationsRoot,
-            BaselineExistingBehavior.Prompt,
-            BaselineIncrementBehavior.Auto);
+        BaselineOptions options;
+        try
+        {
+            options = BaselineOptions.Parse(
+                args,
+                DefaultContractsNamespace,
+                DefaultContractsRoot,
+                DefaultStorageRoot,
+                DefaultMigrationsRoot,
+                BaselineExistingBehavior.Prompt,
+                BaselineIncrementBehavior.Auto);
+        }
+        catch (ArgumentException ex)
+        {
+            Console.WriteLine(ex.Message);
+            return PrintUsage();
+        }
+
+        options = NormalizeUserSuppliedPaths(options, args);
+
+        if (!TryApplyConfigOverrides(options, out options, out var configError))
+        {
+            Console.WriteLine(configError);
+            return 1;
+        }
 
         if (string.IsNullOrWhiteSpace(options.ContractName))
         {
-            Console.WriteLine("Contract name argument is required.");
+            Console.WriteLine("Unable to determine the contract name. Supply it explicitly or ensure the options file exposes a Key value.");
             return 1;
         }
 
@@ -191,7 +208,7 @@ internal static class Program
     {
         if (args.Length < 3 || !string.Equals(args[1], "scaffold", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine("Usage: dotnet run --project MigrationTool -- migrate scaffold <ContractName> --contracts-dir <path> [--dbpath path] [--storage-dir path] [--migration-dir path]");
+            Console.WriteLine("Usage: dotnet run --project MigrationTool -- migrate scaffold <ContractName> (--contracts-dir <path> | --config-file-dir <path>) [--dbpath path] [--storage-dir path] [--migration-dir path]");
             return 1;
         }
 
@@ -203,20 +220,37 @@ internal static class Program
             normalizedArgs.AddRange(args[3..]);
         }
 
-        if (!ContainsContractsDirOption(normalizedArgs))
+        if (!ContainsContractsDirOption(normalizedArgs) && !ContainsConfigFileOption(normalizedArgs))
         {
-            Console.WriteLine("The '--contracts-dir' option is required when scaffolding migrations.");
+            Console.WriteLine("Specify either '--contracts-dir' or '--config-file-dir' when scaffolding migrations.");
             return 1;
         }
 
-        var baselineOptions = BaselineOptions.Parse(
-            normalizedArgs.ToArray(),
-            DefaultContractsNamespace,
-            DefaultContractsRoot,
-            DefaultStorageRoot,
-            DefaultMigrationsRoot,
-            BaselineExistingBehavior.Prompt,
-            BaselineIncrementBehavior.Auto);
+        BaselineOptions baselineOptions;
+        try
+        {
+            baselineOptions = BaselineOptions.Parse(
+                normalizedArgs.ToArray(),
+                DefaultContractsNamespace,
+                DefaultContractsRoot,
+                DefaultStorageRoot,
+                DefaultMigrationsRoot,
+                BaselineExistingBehavior.Prompt,
+                BaselineIncrementBehavior.Auto);
+        }
+        catch (ArgumentException ex)
+        {
+            Console.WriteLine(ex.Message);
+            return 1;
+        }
+
+        baselineOptions = NormalizeUserSuppliedPaths(baselineOptions, normalizedArgs);
+
+        if (!TryApplyConfigOverrides(baselineOptions, out baselineOptions, out var migrateConfigError))
+        {
+            Console.WriteLine(migrateConfigError);
+            return 1;
+        }
 
         var projectRoot = baselineOptions.ProjectRoot ?? LocateProjectRoot();
         baselineOptions = ResolveImplicitPaths(baselineOptions, projectRoot);
@@ -240,6 +274,333 @@ internal static class Program
         return 0;
     }
 
+    private static bool TryApplyConfigOverrides(BaselineOptions options, out BaselineOptions updatedOptions, out string? error)
+    {
+        if (string.IsNullOrWhiteSpace(options.ConfigFilePath))
+        {
+            updatedOptions = options;
+            error = null;
+            return true;
+        }
+
+        var suppliedPath = NormalizeRelativeToExe(options.ConfigFilePath);
+        string? optionsFilePath = null;
+
+        if (File.Exists(suppliedPath))
+        {
+            optionsFilePath = suppliedPath;
+        }
+        else if (Directory.Exists(suppliedPath))
+        {
+            var optionFiles = Directory
+                .EnumerateFiles(suppliedPath, "*Options.cs", SearchOption.AllDirectories)
+                .ToList();
+            if (optionFiles.Count == 0)
+            {
+                updatedOptions = options;
+                error = $"No '*Options.cs' files were found under '{suppliedPath}'.";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.ContractName))
+            {
+                var expectedFile = options.ContractName + "Options.cs";
+                optionsFilePath = optionFiles.FirstOrDefault(file =>
+                    string.Equals(Path.GetFileName(file), expectedFile, StringComparison.OrdinalIgnoreCase));
+
+                if (optionsFilePath is null)
+                {
+                    foreach (var candidate in optionFiles)
+                    {
+                        if (TryParseContractOptions(candidate, out var candidateConfig, out _))
+                        {
+                            var candidateName = ResolveContractName(candidateConfig, candidate);
+                            if (string.Equals(candidateName, options.ContractName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                optionsFilePath = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            else if (optionFiles.Count == 1)
+            {
+                optionsFilePath = optionFiles[0];
+            }
+
+            if (optionsFilePath is null)
+            {
+                updatedOptions = options;
+                if (!string.IsNullOrWhiteSpace(options.ContractName))
+                {
+                    error = $"Unable to locate an options file for contract '{options.ContractName}' under '{suppliedPath}'.";
+                }
+                else
+                {
+                    error = $"Multiple options files were found under '{suppliedPath}'. Specify the contract name or point to a directory containing only one contract options file.";
+                }
+
+                return false;
+            }
+        }
+        else
+        {
+            updatedOptions = options;
+            error = $"The config path '{suppliedPath}' does not exist.";
+            return false;
+        }
+
+        if (!TryParseContractOptions(optionsFilePath, out var config, out error))
+        {
+            updatedOptions = options;
+            return false;
+        }
+
+        var resolvedContractName = string.IsNullOrWhiteSpace(options.ContractName)
+            ? ResolveContractName(config, optionsFilePath)
+            : options.ContractName;
+
+        if (string.IsNullOrWhiteSpace(resolvedContractName))
+        {
+            updatedOptions = options;
+            error = $"Unable to determine contract name from '{optionsFilePath}'. Add a Key property or specify the contract name explicitly.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ContractName)
+            && !string.Equals(options.ContractName, resolvedContractName, StringComparison.OrdinalIgnoreCase))
+        {
+            updatedOptions = options;
+            error = $"Contract name '{options.ContractName}' does not match the options file '{optionsFilePath}' (resolved contract '{resolvedContractName}').";
+            return false;
+        }
+
+        var contractPathFull = ResolvePathRelativeToOptionsFile(optionsFilePath, config.ContractPath);
+        var implementationsPathFull = ResolvePathRelativeToOptionsFile(optionsFilePath, config.ImplementationsPath);
+        var migrationsPathFull = ResolvePathRelativeToOptionsFile(optionsFilePath, config.MigrationsPath);
+        var versionSegment = DetectVersionSegment(contractPathFull, config.ActiveVersion);
+
+        if (!TryDeriveRootFromConfigPath(contractPathFull, resolvedContractName, versionSegment, includesVersionSegment: true, out var contractsRoot, out error)
+            || !TryDeriveRootFromConfigPath(implementationsPathFull, resolvedContractName, versionSegment, includesVersionSegment: true, out var storageRoot, out error)
+            || !TryDeriveRootFromConfigPath(migrationsPathFull, resolvedContractName, versionSegment, includesVersionSegment: false, out var migrationsRoot, out error))
+        {
+            updatedOptions = options;
+            return false;
+        }
+
+        updatedOptions = options with
+        {
+            ContractName = resolvedContractName,
+            ContractsFolder = contractsRoot,
+            StorageFolder = storageRoot,
+            MigrationFolder = migrationsRoot,
+            ConfigFilePath = optionsFilePath
+        };
+
+        Console.WriteLine($"Baseline paths resolved from '{optionsFilePath}'.");
+        error = null;
+        return true;
+    }
+
+    private sealed record ContractOptionsConfig(
+        string? Key,
+        string ContractPath,
+        string ImplementationsPath,
+        string MigrationsPath,
+        string? ActiveVersion);
+
+    private static bool TryParseContractOptions(string optionsFilePath, out ContractOptionsConfig config, out string? error)
+    {
+        var lines = File.ReadAllLines(optionsFilePath);
+        var key = ExtractStringLiteral(lines, "Key");
+        var contractPath = ExtractStringLiteral(lines, "ContractPath");
+        var implementationsPath = ExtractStringLiteral(lines, "ImplementationsPath");
+        var migrationsPath = ExtractStringLiteral(lines, "MigrationsPath");
+        var activeVersion = ExtractStringLiteral(lines, "ActiveVersion");
+
+        if (string.IsNullOrWhiteSpace(contractPath) || string.IsNullOrWhiteSpace(implementationsPath) || string.IsNullOrWhiteSpace(migrationsPath))
+        {
+            error = $"The options file '{optionsFilePath}' must contain ContractPath, ImplementationsPath, and MigrationsPath values.";
+            config = default!;
+            return false;
+        }
+
+        config = new ContractOptionsConfig(key, contractPath, implementationsPath, migrationsPath, activeVersion);
+        error = null;
+        return true;
+    }
+
+    private static string? ExtractStringLiteral(IEnumerable<string> lines, string propertyName)
+    {
+        foreach (var raw in lines)
+        {
+            var trimmed = raw.Trim();
+            if (!trimmed.StartsWith("public", StringComparison.Ordinal)
+                || !trimmed.Contains(propertyName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var equalsIndex = trimmed.IndexOf('=');
+            if (equalsIndex < 0)
+            {
+                continue;
+            }
+
+            var valuePortion = trimmed[(equalsIndex + 1)..].Trim();
+            if (valuePortion.EndsWith(";"))
+            {
+                valuePortion = valuePortion[..^1].TrimEnd();
+            }
+
+            if (string.Equals(valuePortion, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return ParseStringLiteral(valuePortion);
+        }
+
+        return null;
+    }
+
+    private static string ParseStringLiteral(string literal)
+    {
+        literal = literal.Trim();
+
+        if (literal.StartsWith("@\"", StringComparison.Ordinal) && literal.EndsWith("\"", StringComparison.Ordinal))
+        {
+            var inner = literal.Substring(2, literal.Length - 3);
+            return inner.Replace("\"\"", "\"");
+        }
+
+        if (literal.StartsWith("\"", StringComparison.Ordinal) && literal.EndsWith("\"", StringComparison.Ordinal))
+        {
+            var inner = literal.Substring(1, literal.Length - 2);
+            return System.Text.RegularExpressions.Regex.Unescape(inner);
+        }
+
+        return literal;
+    }
+
+    private static string ResolvePathRelativeToOptionsFile(string optionsFilePath, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, ".", StringComparison.Ordinal))
+        {
+            return NormalizeRelativeToExe(".");
+        }
+
+        if (Path.IsPathRooted(value))
+        {
+            return Path.GetFullPath(value);
+        }
+
+        return NormalizeRelativeToExe(value);
+    }
+
+    private static string? DetectVersionSegment(string contractPathFull, string? activeVersion)
+    {
+        if (!string.IsNullOrWhiteSpace(activeVersion) && Version.TryParse(activeVersion, out var parsedVersion))
+        {
+            return BaselineGenerator.NormalizeVersionSegment(parsedVersion);
+        }
+
+        var directory = new DirectoryInfo(contractPathFull);
+        return LooksLikeVersionSegment(directory.Name) ? directory.Name : null;
+    }
+
+    private static string? ResolveContractName(ContractOptionsConfig config, string optionsFilePath)
+    {
+        if (!string.IsNullOrWhiteSpace(config.Key))
+        {
+            var key = config.Key.Trim();
+            if (key.StartsWith("nameof(", StringComparison.Ordinal))
+            {
+                var inner = key.Substring("nameof(".Length).TrimEnd(')', ' ').Trim();
+                var segments = inner.Split('.', StringSplitOptions.RemoveEmptyEntries);
+                key = segments.Length > 0 ? segments[^1] : inner;
+            }
+
+            if (!string.Equals(key, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                return key;
+            }
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(optionsFilePath);
+        if (fileName.EndsWith("Options", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = fileName[..^"Options".Length];
+        }
+
+        return string.IsNullOrWhiteSpace(fileName) ? null : fileName;
+    }
+
+    private static bool LooksLikeVersionSegment(string? segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment) || char.ToLowerInvariant(segment[0]) != 'v')
+        {
+            return false;
+        }
+
+        var parts = segment[1..].Split('_', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || parts.Length > 3)
+        {
+            return false;
+        }
+
+        foreach (var part in parts)
+        {
+            if (!int.TryParse(part, out _))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryDeriveRootFromConfigPath(
+        string path,
+        string contractName,
+        string? versionSegment,
+        bool includesVersionSegment,
+        out string root,
+        out string? error)
+    {
+        var directory = new DirectoryInfo(Path.GetFullPath(path));
+
+        if (includesVersionSegment)
+        {
+            if (!string.IsNullOrWhiteSpace(versionSegment) && string.Equals(directory.Name, versionSegment, StringComparison.OrdinalIgnoreCase))
+            {
+                directory = directory.Parent ?? directory;
+            }
+            else if (LooksLikeVersionSegment(directory.Name))
+            {
+                directory = directory.Parent ?? directory;
+            }
+        }
+
+        var contractDirectory = directory;
+        while (contractDirectory is not null && !string.Equals(contractDirectory.Name, contractName, StringComparison.OrdinalIgnoreCase))
+        {
+            contractDirectory = contractDirectory.Parent;
+        }
+
+        if (contractDirectory?.Parent is null)
+        {
+            root = string.Empty;
+            error = $"Unable to derive root directory from '{path}'. Ensure the configuration paths for '{contractName}' include the contract folder.";
+            return false;
+        }
+
+        root = contractDirectory.Parent.FullName;
+        error = null;
+        return true;
+    }
+
     private static void ScaffoldContractOptions(string projectRoot, BaselineOptions options, BaselineResult result)
     {
         projectRoot = Path.GetFullPath(projectRoot);
@@ -260,6 +621,7 @@ internal static class Program
         }
 
         var optionsBaseFull = Path.GetFullPath(optionsBase);
+        var exeBaseFull = Path.GetFullPath(AppContext.BaseDirectory ?? Directory.GetCurrentDirectory());
 
         static string ToVerbatimLiteral(string basePath, string targetFullPath)
         {
@@ -301,9 +663,9 @@ internal static class Program
             $"public sealed class {className} : IDbContractOptions",
             "{",
             $"    public string Key {{ get; }} = \"{sanitizedKey}\";",
-            $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, implementationsPath)};",
-            $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, contractPath)};",
-            $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(optionsBaseFull, migrationsPath)};",
+            $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsPath)};",
+            $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractPath)};",
+            $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsPath)};",
             $"    public string? ActiveVersion {{ get; }} = \"{result.NewVersion}\";",
             "    public IRepositoryIndexConfiguration[]? Indexes { get; } = Array.Empty<IRepositoryIndexConfiguration>();",
             "    public ContractIndexProvisioningMode IndexProvisioningMode { get; } = ContractIndexProvisioningMode.Dynamic;",
@@ -337,6 +699,7 @@ internal static class Program
             implementations,
             VersionIncrementType.Patch,
             "1.0.0",
+            null,
             null,
             BaselineExistingBehavior.Force,
             BaselineIncrementBehavior.Auto);
@@ -408,13 +771,66 @@ internal static class Program
         return options;
     }
 
+    private static BaselineOptions NormalizeUserSuppliedPaths(BaselineOptions options, IEnumerable<string> args)
+    {
+        var updated = options;
+
+        if (ContainsContractsDirOption(args) && !Path.IsPathRooted(updated.ContractsFolder))
+        {
+            updated = updated with { ContractsFolder = NormalizeRelativeToExe(updated.ContractsFolder) };
+        }
+
+        if (ContainsStorageDirOption(args) && !Path.IsPathRooted(updated.StorageFolder))
+        {
+            updated = updated with { StorageFolder = NormalizeRelativeToExe(updated.StorageFolder) };
+        }
+
+        if (ContainsMigrationDirOption(args) && !Path.IsPathRooted(updated.MigrationFolder))
+        {
+            updated = updated with { MigrationFolder = NormalizeRelativeToExe(updated.MigrationFolder) };
+        }
+
+        return updated;
+    }
+
+    private static string NormalizeRelativeToExe(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return Path.GetFullPath(AppContext.BaseDirectory ?? Directory.GetCurrentDirectory());
+        }
+
+        var baseDirectory = AppContext.BaseDirectory;
+        if (string.IsNullOrWhiteSpace(baseDirectory))
+        {
+            baseDirectory = Directory.GetCurrentDirectory();
+        }
+
+        return Path.GetFullPath(Path.Combine(baseDirectory, path));
+    }
+
     private static bool ContainsContractsDirOption(IEnumerable<string> args)
+        => ContainsOption(args, "--contracts-dir");
+
+    private static bool ContainsConfigFileOption(IEnumerable<string> args)
+        => ContainsOption(args, "--config-file-dir");
+
+    private static bool ContainsStorageDirOption(IEnumerable<string> args)
+        => ContainsOption(args, "--storage-dir", "--storage");
+
+    private static bool ContainsMigrationDirOption(IEnumerable<string> args)
+        => ContainsOption(args, "--migration-dir", "--migration");
+
+    private static bool ContainsOption(IEnumerable<string> args, params string[] optionNames)
     {
         foreach (var arg in args)
         {
-            if (string.Equals(arg, "--contracts-dir", StringComparison.OrdinalIgnoreCase))
+            foreach (var option in optionNames)
             {
-                return true;
+                if (string.Equals(arg, option, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
         }
 
@@ -426,23 +842,29 @@ internal static class Program
         Console.WriteLine("Migration Tool");
         Console.WriteLine("Commands:");
         Console.WriteLine("  baseline <ContractName> --contracts-dir <path>");
-        Console.WriteLine("      Required:");
-        Console.WriteLine("        <ContractName>          Name used to create or increment the baseline.");
-        Console.WriteLine("        --contracts-dir path    Root folder where the contract baselines are generated.");
-        Console.WriteLine("      Optional:");
-        Console.WriteLine("        --storage-dir path      Alternate root for storage artifacts.");
-        Console.WriteLine("        --migration-dir path    Alternate root for migration files.");
-        Console.WriteLine("        --increment major|minor|patch  Choose the semantic version component to increment (default patch).");
-        Console.WriteLine("        other options           See documentation or source for advanced switches.");
-        Console.WriteLine("      Notes:");
-        Console.WriteLine("        The contract name must follow 'baseline'.");
-        Console.WriteLine("        Storage and migration paths default to the tool project unless overridden.");
-        Console.WriteLine("        Overriding --contracts-dir keeps Storage/Migrations alongside that folder unless explicitly set.");
-        Console.WriteLine("        Options files are scaffolded beside the contracts root (../Options).");
-        Console.WriteLine("        A contract options file is created if missing; existing files are left untouched.");
-        Console.WriteLine("        Relative paths are resolved from the tool project directory.");
+        Console.WriteLine("  baseline [<ContractName>] --config-file-dir <path>");
         Console.WriteLine("  baseline-sequence");
         Console.WriteLine("  migrate scaffold <ContractName>");
+        Console.WriteLine("  Required option sets:");
+        Console.WriteLine("    <ContractName> with --contracts-dir <path>    Root folder where the contract baselines are generated.");
+        Console.WriteLine("    [<ContractName>] with --config-file-dir <path>  Contract options C# file (or directory) used to infer baseline locations.");
+        Console.WriteLine("  Parameter descriptions:");
+        Console.WriteLine("    <ContractName>          Name used to create or increment the baseline.");
+        Console.WriteLine("    --contracts-dir path    Root folder where the contract baselines are generated.");
+        Console.WriteLine("    --config-file-dir path  Path to a contract options C# file or directory that contains options used to infer baseline locations (contract name derived when omitted).");
+        Console.WriteLine("    --storage-dir path      Alternate root for storage artifacts.");
+        Console.WriteLine("    --migration-dir path    Alternate root for migration files.");
+        Console.WriteLine("    --existing force|skip|prompt  Choose how the tool reacts when the target baseline already exists.");
+        Console.WriteLine("    --increment-behavior auto|prompt|skip  Control whether new versions are created automatically or interactively.");
+        Console.WriteLine("    --increment major|minor|patch  Choose the semantic version component to increment (default patch).");
+        Console.WriteLine("    other options           See documentation or source for advanced switches.");
+        Console.WriteLine("  Notes:");
+        Console.WriteLine("    The contract name must follow 'baseline' when specified.");
+        Console.WriteLine("    Storage and migration paths default to the tool project unless overridden.");
+        Console.WriteLine("    Options files are scaffolded beside the contracts root (../Options).");
+        Console.WriteLine("    A contract options file is created if missing; existing files are left untouched.");
+        Console.WriteLine("    Relative paths are resolved from the tool project directory.");
+        Console.WriteLine("    When using --config-file-dir, the tool reads the specified options class to derive baseline locations.");
         return 1;
     }
 

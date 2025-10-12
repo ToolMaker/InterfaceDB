@@ -12,18 +12,19 @@ public sealed class BaselineOptionsParseTests
     private const string DefaultContracts = "Contracts";
     private const string DefaultStorage = "Storage";
     private const string DefaultMigrations = "Migrations";
+    private const string SampleConfigFile = @"Options\PersonOptions.cs";
 
     [Fact]
-    public void Parse_WithoutContractsDir_Throws()
+    public void Parse_WithoutLocationOption_Throws()
     {
         var args = new[] { "baseline", "Person" };
 
         var ex = Assert.Throws<ArgumentException>(() => BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations));
-        Assert.Equal("The '--contracts-dir' option is required.", ex.Message);
+        Assert.Equal("The baseline command requires either '--contracts-dir' or '--config-file-dir'.", ex.Message);
     }
 
     [Fact]
-    public void Parse_WithContractNameAndContractsDir_UsesDefaults()
+    public void Parse_WithContractsDir_UsesDefaults()
     {
         var args = new[] { "baseline", "Person", "--contracts-dir", DefaultContracts };
 
@@ -34,12 +35,28 @@ public sealed class BaselineOptionsParseTests
         Assert.Equal(DefaultContracts, options.ContractsFolder);
         Assert.Equal(DefaultStorage, options.StorageFolder);
         Assert.Equal(DefaultMigrations, options.MigrationFolder);
+        Assert.Null(options.ConfigFilePath);
         Assert.Empty(options.Implementations);
         Assert.Equal(VersionIncrementType.Patch, options.Increment);
         Assert.Null(options.ExplicitVersion);
         Assert.Null(options.ProjectRoot);
         Assert.Equal(BaselineExistingBehavior.Prompt, options.ExistingBehavior);
         Assert.Equal(BaselineIncrementBehavior.Auto, options.IncrementBehavior);
+    }
+
+    [Fact]
+    public void Parse_WithConfigFile_SetsConfigPath()
+    {
+        var args = new[] { "baseline", "--config-file-dir", SampleConfigFile };
+
+        var options = BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations);
+
+        Assert.Equal(string.Empty, options.ContractName);
+        Assert.Equal(DefaultNamespace, options.NamespaceRoot);
+        Assert.Equal(DefaultContracts, options.ContractsFolder);
+        Assert.Equal(DefaultStorage, options.StorageFolder);
+        Assert.Equal(DefaultMigrations, options.MigrationFolder);
+        Assert.Equal(SampleConfigFile, options.ConfigFilePath);
     }
 
     [Fact]
@@ -63,16 +80,6 @@ public sealed class BaselineOptionsParseTests
         var options = BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations);
 
         Assert.Equal("Custom.Namespace", options.NamespaceRoot);
-    }
-
-    [Fact]
-    public void Parse_WithContractsOverride_UsesProvidedFolder()
-    {
-        var args = new[] { "baseline", "Account", "--contracts-dir", "ContractsRoot" };
-
-        var options = BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations);
-
-        Assert.Equal("ContractsRoot", options.ContractsFolder);
     }
 
     [Fact]
@@ -130,13 +137,24 @@ public sealed class BaselineOptionsParseTests
     }
 
     [Fact]
-    public void Parse_WithIncrementPromptBehavior_Throws()
+    public void Parse_WithIncrementPromptToken_SetsIncrementBehaviorPrompt()
     {
         var args = new[] { "baseline", "Account", "--contracts-dir", DefaultContracts, "--increment", "prompt" };
 
-        var ex = Assert.Throws<ArgumentException>(() => BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations));
+        var options = BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations);
 
-        Assert.Equal("Unknown increment option 'prompt'. Expected major, minor, or patch.", ex.Message);
+        Assert.Equal(BaselineIncrementBehavior.Prompt, options.IncrementBehavior);
+        Assert.Equal(VersionIncrementType.Patch, options.Increment);
+    }
+
+    [Fact]
+    public void Parse_WithExplicitIncrementBehaviorOption_OverridesSetting()
+    {
+        var args = new[] { "baseline", "Account", "--contracts-dir", DefaultContracts, "--increment-behavior", "skip" };
+
+        var options = BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations);
+
+        Assert.Equal(BaselineIncrementBehavior.Skip, options.IncrementBehavior);
     }
 
     [Fact]
@@ -155,6 +173,7 @@ public sealed class BaselineOptionsParseTests
     [InlineData("--impl")]
     [InlineData("--namespace")]
     [InlineData("--contracts-dir")]
+    [InlineData("--config-file-dir")]
     [InlineData("--storage-dir")]
     [InlineData("--migration-dir")]
     [InlineData("--increment")]
@@ -176,7 +195,7 @@ public sealed class BaselineOptionsParseTests
 
         var ex = Assert.Throws<ArgumentException>(() => BaselineOptions.Parse(args, DefaultNamespace, DefaultContracts, DefaultStorage, DefaultMigrations));
 
-        Assert.Equal("Unknown increment option 'build'. Expected major, minor, or patch.", ex.Message);
+        Assert.Equal("Unknown increment option 'build'. Expected major, minor, patch, auto, prompt, or skip.", ex.Message);
     }
 
     [Fact]

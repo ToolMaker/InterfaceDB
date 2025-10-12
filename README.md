@@ -26,12 +26,15 @@ This repository contains the sample storage stack that powers the `Idb` projects
 The `baseline` command creates or advances a contract under `MigrationTool/Contracts/<Contract>/<version>/`.
 
 ```bash
-dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Abstractions --storage-dir Migrations
+dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Person --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
+# or derive everything from an options file
+dotnet run --project MigrationTool/MigrationTool.csproj -- baseline --config-file-dir MigrationTool/Options/PersonOptions.cs
 ```
 
 Key switches you can supply:
 
 - `--contracts-dir <path>`: where versioned interfaces live (relative to the project root by default).
+- `--config-file-dir <path>`: contract options C# file (or directory) used to infer the contract name and baseline locations.
 - `--storage-dir <path>`: base folder used for generated migration stubs.
 - `--existing <prompt|skip|force>`: control how the tool behaves when a target version folder already exists.
 - `--increment <auto|prompt|skip>` (alias `--increment-mode`): choose whether to auto-increment, prompt, or skip when a previous version is present.
@@ -45,11 +48,11 @@ The repo currently ships with a simple `Dog` contract that demonstrates the flow
 
 1. Generate an initial baseline:
    ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --version 1.0.0 --impl JackRussel
+   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations --version 1.0.0 --impl JackRussel
    ```
-2. Evolve the contract (adds an `Age` property) and generate the next baseline:
+2. Evolve the contract (adds a property) and generate the next baseline:
    ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog
+   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
 ```
    The folder `MigrationTool/Contracts/Dog/v1_0_1/` (or the path you supplied via `--contracts-dir`) now holds the updated interface and implementation stub.
 3. Scaffold migrations only after you are happy with the contract shape:
