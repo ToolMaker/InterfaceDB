@@ -169,9 +169,12 @@ public sealed class BaselineCommandTests : IDisposable
         var storageRoot = Path.Combine(_tempRoot, "Implementations");
         var migrationsRoot = Path.Combine(_tempRoot, "Migrations");
 
-        var contractVersionPath = Path.Combine(contractsRoot, contractName, versionSegment);
-        var implementationVersionPath = Path.Combine(storageRoot, contractName, versionSegment);
-        var migrationsContractPath = Path.Combine(migrationsRoot, contractName);
+        var contractRootPath = Path.Combine(contractsRoot, contractName);
+        var implementationsRootPath = Path.Combine(storageRoot, contractName);
+        var migrationsRootPath = Path.Combine(migrationsRoot, contractName);
+
+        var contractVersionPath = Path.Combine(contractRootPath, versionSegment);
+        var implementationVersionPath = Path.Combine(implementationsRootPath, versionSegment);
 
         var optionsFile = Path.Combine(optionsRoot, $"{contractName}Options.cs");
         var optionLines = new[]
@@ -186,9 +189,9 @@ public sealed class BaselineCommandTests : IDisposable
             $"public sealed class {contractName}Options : IDbContractOptions",
             "{",
             $"    public string Key {{ get; }} = \"{contractName}\";",
-            $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(implementationVersionPath)};",
-            $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(contractVersionPath)};",
-            $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(migrationsContractPath)};",
+            $"    public string? ImplementationsPath {{ get; }} = {ToVerbatimLiteral(implementationsRootPath)};",
+            $"    public string? ContractPath {{ get; }} = {ToVerbatimLiteral(contractRootPath)};",
+            $"    public string? MigrationsPath {{ get; }} = {ToVerbatimLiteral(migrationsRootPath)};",
             $"    public string? ActiveVersion {{ get; }} = \"{version}\";",
             "    public IRepositoryIndexConfiguration[]? Indexes { get; } = Array.Empty<IRepositoryIndexConfiguration>();",
             "    public ContractIndexProvisioningModeType IndexProvisioningMode { get; } = ContractIndexProvisioningModeType.Dynamic;",
@@ -200,7 +203,7 @@ public sealed class BaselineCommandTests : IDisposable
         };
         File.WriteAllLines(optionsFile, optionLines);
 
-        return new OptionsFixture(optionsFile, contractVersionPath, implementationVersionPath, migrationsContractPath);
+        return new OptionsFixture(optionsFile, contractVersionPath, implementationVersionPath, migrationsRootPath);
     }
 
     private static int InvokeBaseline(params string[] args)
@@ -245,3 +248,4 @@ public sealed class BaselineCommandTests : IDisposable
         return "@\"" + fullPath.Replace("\"", "\"\"") + "\"";
     }
 }
+
