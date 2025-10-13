@@ -14,8 +14,12 @@ public sealed class IPerson_v1_0_0_To_v1_0_1_Migration : StorageMigrationBase<Mi
     {
         await foreach (var record in context.ReadSourceAsync<MigrationTool.Contracts.Person.v1_0_0.IPerson>(cancellationToken).ConfigureAwait(false))
         {
-            // TODO: inspect record.Value and map to the new contract shape.
-            throw new NotImplementedException();
+            var upgraded = new MigrationTool.Contracts.Person.v1_0_1.Person(
+                record.Value.FirstName,
+                record.Value.LastName,
+                string.Empty);
+
+            await context.WriteAsync(record.Id, upgraded, cancellationToken).ConfigureAwait(false);
         }
     }
 }

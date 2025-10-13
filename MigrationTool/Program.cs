@@ -408,18 +408,22 @@ internal static class Program
 
     private sealed record ContractOptionsConfig(
         string? Key,
+        string? ContractName,
         string ContractPath,
         string ImplementationsPath,
         string MigrationsPath,
-        string? ActiveVersion);
+        string? ActiveVersion,
+        string? DataRoot);
 
     private static bool TryParseContractOptions(string optionsFilePath, out ContractOptionsConfig config, out string? error)
     {
         var lines = File.ReadAllLines(optionsFilePath);
         var key = ExtractStringLiteral(lines, "Key");
+        var contractName = ExtractStringLiteral(lines, "ContractName");
         var contractPath = ExtractStringLiteral(lines, "ContractPath");
         var implementationsPath = ExtractStringLiteral(lines, "ImplementationsPath");
         var migrationsPath = ExtractStringLiteral(lines, "MigrationsPath");
+        var dataRoot = ExtractStringLiteral(lines, "DataRoot");
         var activeVersion = ExtractStringLiteral(lines, "ActiveVersion");
 
         if (string.IsNullOrWhiteSpace(contractPath) || string.IsNullOrWhiteSpace(implementationsPath) || string.IsNullOrWhiteSpace(migrationsPath))
@@ -429,7 +433,7 @@ internal static class Program
             return false;
         }
 
-        config = new ContractOptionsConfig(key, contractPath, implementationsPath, migrationsPath, activeVersion);
+        config = new ContractOptionsConfig(key, contractName, contractPath, implementationsPath, migrationsPath, activeVersion, dataRoot);
         error = null;
         return true;
     }
@@ -513,22 +517,38 @@ internal static class Program
         return LooksLikeVersionSegment(directory.Name) ? directory.Name : null;
     }
 
+    private static string? NormalizeContractIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var token = value.Trim();
+        if (token.StartsWith("nameof(", StringComparison.Ordinal))
+        {
+            var inner = token.Substring("nameof(".Length).TrimEnd(')', ' ').Trim();
+            var segments = inner.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            token = segments.Length > 0 ? segments[^1] : inner;
+        }
+
+        return string.Equals(token, "null", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(token)
+            ? null
+            : token;
+    }
+
     private static string? ResolveContractName(ContractOptionsConfig config, string optionsFilePath)
     {
-        if (!string.IsNullOrWhiteSpace(config.Key))
+        var resolvedFromContract = NormalizeContractIdentifier(config.ContractName);
+        if (!string.IsNullOrWhiteSpace(resolvedFromContract))
         {
-            var key = config.Key.Trim();
-            if (key.StartsWith("nameof(", StringComparison.Ordinal))
-            {
-                var inner = key.Substring("nameof(".Length).TrimEnd(')', ' ').Trim();
-                var segments = inner.Split('.', StringSplitOptions.RemoveEmptyEntries);
-                key = segments.Length > 0 ? segments[^1] : inner;
-            }
+            return resolvedFromContract;
+        }
 
-            if (!string.Equals(key, "null", StringComparison.OrdinalIgnoreCase))
-            {
-                return key;
-            }
+        var resolvedFromKey = NormalizeContractIdentifier(config.Key);
+        if (!string.IsNullOrWhiteSpace(resolvedFromKey))
+        {
+            return resolvedFromKey;
         }
 
         var fileName = Path.GetFileNameWithoutExtension(optionsFilePath);
@@ -656,26 +676,30 @@ internal static class Program
 
         var namespaceOwner = new DirectoryInfo(optionsBaseFull).Name;
         var namespaceName = namespaceOwner + ".Options";
-        var sanitizedKey = options.ContractName.Replace("\"", "\\\"");
+        var sanitizedContractName = options.ContractName.Replace("\"", "\\\"");
+        var sanitizedKey = sanitizedContractName;
 
         // NOTE: Please keep the generated code below consistant. Make use of the 'nameof' operator where possible. This allow refactoring across the projects
         //       without breaking the generated code. Also, keep the formatting consistant to avoid unnecessary diffs. I removed using namspaces for flexability.
         var lines = new[]
         {
-            $@"namespace {namespaceName};
-            public sealed class {className} : {nameof(IDbContractOptions)}
-            {{
-                public string {nameof(IDbContractOptions.Key)} {{ get; }} = ""{sanitizedKey}"";
-                public string? {nameof(IDbContractOptions.ImplementationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};
-                public string? {nameof(IDbContractOptions.ContractPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};
-                public string? {nameof(IDbContractOptions.MigrationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};
-                public string? {nameof(IDbContractOptions.ActiveVersion)} {{ get; }} = ""{result.NewVersion}"";
-                public {nameof(IRepositoryIndexConfiguration)}[]? {nameof(IDbContractOptions.Indexes)} {{ get; }} = Array.Empty<{nameof(IRepositoryIndexConfiguration)}>();
-                public {nameof(ContractIndexProvisioningModeType)} {nameof(IDbContractOptions.IndexProvisioningMode)} {{ get; }} = {nameof(ContractIndexProvisioningModeType)}.{ContractIndexProvisioningModeType.Dynamic.ToString()};
-                public {nameof(ContractRepositoryType)} {nameof(IDbContractOptions.RepositoryType)} {{ get; }} = {nameof(ContractRepositoryType)}.{ContractRepositoryType.FileSystem.ToString()};
-                public {nameof(ContractObjectWriterType)} {nameof(IDbContractOptions.ObjectWriter)} {{ get; }} = {nameof(ContractObjectWriterType)}.{ContractObjectWriterType.None.ToString()};
-                public {nameof(ContractObjectReaderType)} {nameof(IDbContractOptions.ObjectReader)} {{ get; }} = {nameof(ContractObjectReaderType)}.{ContractObjectReaderType.None.ToString()};
-            }}",
+$@"namespace {namespaceName};
+public sealed class {className} : {nameof(IDbContractOptions)}
+{{
+    public string {nameof(IDbContractOptions.Key)} {{ get; }} = ""{sanitizedKey}"";
+    public string {nameof(IDbContractOptions.ContractName)} {{ get; }} = ""{sanitizedContractName}"";
+    public string? {nameof(IDbContractOptions.ImplementationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};
+    public string? {nameof(IDbContractOptions.ContractPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};
+    public string? {nameof(IDbContractOptions.MigrationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};
+    public string? {nameof(IDbContractOptions.DataRoot)} {{ get; }} = ""Data"";
+    public string? {nameof(IDbContractOptions.ActiveVersion)} {{ get; }} = ""{result.NewVersion}"";
+    public {nameof(IRepositoryIndexConfiguration)}[]? {nameof(IDbContractOptions.Indexes)} {{ get; }} = Array.Empty<{nameof(IRepositoryIndexConfiguration)}>();
+    public {nameof(ContractIndexProvisioningModeType)} {nameof(IDbContractOptions.IndexProvisioningMode)} {{ get; }} = {nameof(ContractIndexProvisioningModeType)}.{ContractIndexProvisioningModeType.Dynamic.ToString()};
+    public {nameof(ContractRepositoryType)} {nameof(IDbContractOptions.RepositoryType)} {{ get; }} = {nameof(ContractRepositoryType)}.{ContractRepositoryType.FileSystem.ToString()};
+    public {nameof(RepositoryLoadStrategyType)} {nameof(IDbContractOptions.LoadStrategy)} {{ get; }} = {nameof(RepositoryLoadStrategyType)}.{RepositoryLoadStrategyType.Lazy.ToString()};
+    public {nameof(ContractObjectWriterType)} {nameof(IDbContractOptions.ObjectWriter)} {{ get; }} = {nameof(ContractObjectWriterType)}.{ContractObjectWriterType.Binary.ToString()};
+    public {nameof(ContractObjectReaderType)} {nameof(IDbContractOptions.ObjectReader)} {{ get; }} = {nameof(ContractObjectReaderType)}.{ContractObjectReaderType.Binary.ToString()};
+}}",
             string.Empty,
         };
 

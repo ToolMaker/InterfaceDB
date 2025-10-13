@@ -1,6 +1,13 @@
-﻿using System.Linq;
-using System.Reflection;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
+using Idb.Libraries.Abstraction.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -8,9 +15,12 @@ using Idb.Libraries.Implementation.Extentions;
 using Idb.Libraries.Implementation.Services.Caching;
 using Idb.Libraries.Implementation.Services.Indexes;
 using Idb.Libraries.Implementation.Services.Repository;
+using IdbDemoStorage.Options;
+using MigrationTool.Contracts.Person.v1_0_0;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace IdbDemoStorage.ConsoleHost;
 
@@ -20,48 +30,163 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
-        var paths = DemoPaths.Discover();
+        // Step 1: Build configuration
         var configuration = BuildConfiguration();
-        var contractSettings = StorageContractSettings.FromConfiguration(configuration);
+
+        // Step 2: Build intermediate service provider to retrieve configured options
+        var intermediateServices = new ServiceCollection();
+        intermediateServices.AddSingleton<IConfiguration>(configuration);
+        
+        // Register and configure PersonOptions from appsettings.json
+        intermediateServices.AddOptions<PersonOptions>()
+            .Bind(configuration.GetSection(nameof(PersonOptions)));
+        
+        using var intermediateProvider = intermediateServices.BuildServiceProvider();
+        
+        // Step 3: Retrieve the configured PersonOptions
+        var personOptions = intermediateProvider.GetRequiredService<IOptions<PersonOptions>>().Value;
+        
+        // Step 4: Normalize and resolve paths from the configured options
+        var contractPath = NormalizePath(personOptions.ContractPath);
+        var implementationPath = NormalizePath(personOptions.ImplementationsPath);
+        var migrationPath = NormalizePath(personOptions.MigrationsPath);
+        
+        var contractsRoot = GetRootPath(contractPath);
+        var implementationsRoot = GetRootPath(implementationPath);
+        var migrationsRoot = GetRootPath(migrationPath);
+        
+        // Ensure all contract implementations are visible to DI consumers.
+        intermediateServices.RegisterContractTransient(personOptions);
+        var dataRoot = ResolveDataRoot(personOptions.DataRoot);
+        Directory.CreateDirectory(dataRoot);
+
+        // Single source of truth for the requested version
+        var requestedVersion = string.IsNullOrWhiteSpace(personOptions.ActiveVersion) ? "1.0.0" : personOptions.ActiveVersion;
 
         System.Console.WriteLine("IDB Demo Storage Console");
-        System.Console.WriteLine($"Contracts root:        {paths.ContractsRoot}");
-        System.Console.WriteLine($"Implementations root:  {paths.ImplementationsRoot}");
-        System.Console.WriteLine($"Migrations root:       {paths.MigrationsRoot}");
-        System.Console.WriteLine($"Data root:             {paths.DataRoot}");
+        System.Console.WriteLine($"Contract path:         {contractPath}");
+        System.Console.WriteLine($"Contracts root:        {contractsRoot}");
+        System.Console.WriteLine($"Implementation path:   {implementationPath}");
+        System.Console.WriteLine($"Implementations root:  {implementationsRoot}");
+        System.Console.WriteLine($"Migration path:        {migrationPath}");
+        System.Console.WriteLine($"Migrations root:       {migrationsRoot}");
+        System.Console.WriteLine($"Data root:             {dataRoot}");
+        System.Console.WriteLine($"Active version:        {requestedVersion}");
         System.Console.WriteLine();
 
-        PrintAvailableVersions(paths.ContractsRoot, PersonContractName, contractSettings.Person.RunningVersion);
+        PrintAvailableVersions(contractsRoot, PersonContractName, requestedVersion);
         System.Console.WriteLine();
-        PrintAvailableVersions(paths.ImplementationsRoot, PersonContractName, contractSettings.Person.RunningVersion);
+        PrintAvailableVersions(implementationsRoot, PersonContractName, requestedVersion);
         System.Console.WriteLine();
 
-        var personContext = ResolveContractVersion(PersonContractName, contractSettings.Person.RunningVersion, paths.ContractsRoot, paths.ImplementationsRoot);
+        var personContext = ResolveContractVersion(
+            PersonContractName, 
+            requestedVersion, 
+            contractsRoot, 
+            implementationsRoot);
+        
         System.Console.WriteLine($"Active {PersonContractName} version: {personContext.Version}");
         System.Console.WriteLine();
 
-        using var provider = BuildServiceProvider(paths, personContext, contractSettings);
-        var repository = provider.GetRequiredService<CachingRepositoryNode>();
+        // Step 5: Build the final service provider with all registrations
+        var contractOptions = new List<IDbContractOptions> { personOptions };
+        using var provider = BuildServiceProvider(configuration, dataRoot, personContext, contractOptions);
+        var repository = provider.GetRequiredService<IRepositoryNode>();
+
+        var loadHandlers = provider.GetRequiredService<IEnumerable<IRepositoryLoadStrategyHandler>>();
+        var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
+        var loadLogger = loggerFactory.CreateLogger("RepositoryLoad");
+        await RepositoryLoadStrategyExecutor.ExecuteAsync(
+            loadHandlers,
+            personOptions,
+            personContext,
+            repository,
+            provider,
+            loadLogger,
+            CancellationToken.None).ConfigureAwait(false);
+
+        ConfigureLastNameIndex(repository, personContext, personOptions);
 
         var indexes = repository.GetIndexConfigurations(personContext.ContractType);
         System.Console.WriteLine($"Configured indexes for {personContext.ContractType.FullName}: {indexes.Count}");
 
-        await Task.CompletedTask.ConfigureAwait(false);
+        var people = new[]
+        {
+            ("person-001", new Person("Ada", "Lovelace")),
+            ("person-002", new Person("Alan", "Turing")),
+            ("person-003", new Person("Grace", "Hopper"))
+        };
+
+        System.Console.WriteLine();
+        System.Console.WriteLine("Saving sample persons...");
+        foreach (var (id, person) in people)
+        {
+            var writeResult = await repository
+                .SaveAsync<IPerson>(person, id, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            System.Console.WriteLine($"  Saved {person.FirstName} {person.LastName} (id {writeResult.Id})");
+        }
+
+        System.Console.WriteLine();
+        System.Console.WriteLine("Reloading persons...");
+        foreach (var (id, _) in people)
+        {
+            var readResult = await repository
+                .LoadAsync<IPerson>(id, cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var loaded = readResult.Value;
+            System.Console.WriteLine($"  {id}: {loaded.FirstName} {loaded.LastName}");
+        }
+
         return 0;
     }
+
+    private static string NormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new InvalidOperationException("Contract options must define all paths.");
+        }
+
+        return Path.GetFullPath(Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(AppContext.BaseDirectory, path));
+    }
+
+    private static string GetRootPath(string path)
+        => Path.GetDirectoryName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) ?? path;
 
     private static IConfiguration BuildConfiguration()
         => new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("appsettings.json", optional: true)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
             .Build();
 
     private static ServiceProvider BuildServiceProvider(
-        DemoPaths paths,
+        IConfiguration configuration,
+        string dataRoot,
         ContractVersionContext personContext,
-        StorageContractSettings contractSettings)
+        IReadOnlyList<IDbContractOptions> contractOptions)
     {
         var services = new ServiceCollection();
+
+        // Register configuration
+        services.AddSingleton(configuration);
+
+        // Register PersonOptions using IOptions pattern
+        services.AddOptions<PersonOptions>()
+            .Bind(configuration.GetSection("PersonOptions"));
+
+        // Register contract options
+        services.AddContractOptions(contractOptions);
+        foreach (var option in contractOptions)
+        {
+            services.RegisterContractTransient(option);
+        }
+
+        var contractOption = FindContractOption(contractOptions, PersonContractName);
 
         services.AddLogging(builder =>
         {
@@ -74,7 +199,7 @@ internal static class Program
 
         services.AddLocalScopeStorage(builder =>
         {
-            builder.RootDirectory = new DirectoryInfo(paths.DataRoot);
+            builder.RootDirectory = new DirectoryInfo(dataRoot);
             builder.AssembliesToScan = new[]
             {
                 personContext.ContractType.Assembly,
@@ -84,24 +209,75 @@ internal static class Program
 
         services.AddDefaultObjectWriterAndReader();
 
-        services.AddSingleton(sp =>
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(new NoOpRepositoryLoadStrategyHandler(RepositoryLoadStrategyType.None));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(new NoOpRepositoryLoadStrategyHandler(RepositoryLoadStrategyType.Lazy));
+        services.AddSingleton<IRepositoryLoadStrategyHandler, EagerWarmCacheRepositoryLoadStrategyHandler>();
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.IndexWarmup,
+            "Repository load strategy {Strategy} for contract {Contract} initialises indexes on demand. No eager action performed."));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.PartialPrefetch,
+            "Repository load strategy {Strategy} for contract {Contract} is not yet implemented. Defaulting to lazy behaviour."));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.BackgroundWarmup,
+            "Repository load strategy {Strategy} for contract {Contract} is not yet implemented. Defaulting to lazy behaviour."));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.AdaptiveCaching,
+            "Repository load strategy {Strategy} for contract {Contract} is not yet implemented. Defaulting to lazy behaviour."));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.SnapshotImport,
+            "Repository load strategy {Strategy} for contract {Contract} is not yet implemented. Defaulting to lazy behaviour."));
+        services.AddSingleton<IRepositoryLoadStrategyHandler>(sp => new LoggingOnlyRepositoryLoadStrategyHandler(
+            RepositoryLoadStrategyType.MetadataOnly,
+            "Repository load strategy {Strategy} for contract {Contract} only loads metadata. No payloads warmed."));
+
+        services.AddSingleton<CachingRepositoryNode>(sp =>
         {
             var writer = sp.GetRequiredService<IObjectWriter>();
             var reader = sp.GetRequiredService<IObjectReader>();
             var inner = new FileSystemRepository(writer, reader);
-            var cache = new CachingRepositoryNode(inner);
-
-            ConfigureLastNameIndex(cache, personContext);
-
-            return cache;
+            return new CachingRepositoryNode(inner);
         });
+
+        services.AddSingleton<ProvisionedRepositoryNode>(sp =>
+        {
+            var cache = sp.GetRequiredService<CachingRepositoryNode>();
+            return new ProvisionedRepositoryNode(cache, contractOption, personContext.ContractType);
+        });
+
+        services.AddSingleton<IRepositoryNode>(sp => sp.GetRequiredService<ProvisionedRepositoryNode>());
+        services.AddSingleton<IRepository>(sp => sp.GetRequiredService<IRepositoryNode>());
 
         return services.BuildServiceProvider();
     }
 
-    private static void ConfigureLastNameIndex(CachingRepositoryNode cache, ContractVersionContext context)
+    private static void ConfigureLastNameIndex(
+        IRepositoryNode repository,
+        ContractVersionContext context,
+        IDbContractOptions contractOption)
     {
+        var mode = contractOption.IndexProvisioningMode;
+        var allowsDynamic = mode is ContractIndexProvisioningModeType.Dynamic
+                                 or ContractIndexProvisioningModeType.Mixed
+                                 or ContractIndexProvisioningModeType.None;
+
         var contractType = context.ContractType;
+        var existing = repository
+            .GetIndexConfigurations(contractType)
+            .Any(c => string.Equals(c.Name, "ByLastName", StringComparison.OrdinalIgnoreCase));
+
+        if (existing)
+        {
+            System.Console.WriteLine("ByLastName index already configured.");
+            return;
+        }
+
+        if (!allowsDynamic)
+        {
+            System.Console.WriteLine($"Provisioning mode {mode} prevents registering the ByLastName index at runtime.");
+            return;
+        }
+
         var property = contractType.GetProperty("LastName");
         if (property is null)
         {
@@ -120,12 +296,13 @@ internal static class Program
         var delegateInstance = lambda.Compile();
 
         var indexType = typeof(SortedListIndexConfiguration<,>).MakeGenericType(contractType, typeof(string));
-        var indexInstance = Activator.CreateInstance(indexType, "ByLastName", delegateInstance, null, null);
+        if (Activator.CreateInstance(indexType, "ByLastName", delegateInstance, null, null) is not IRepositoryIndexConfiguration configuration)
+        {
+            throw new InvalidOperationException("Failed to construct sorted-list index configuration.");
+        }
 
-        var configureIndexMethod = typeof(CachingRepositoryNode).GetMethod(nameof(CachingRepositoryNode.ConfigureIndex))
-            ?? throw new InvalidOperationException("Unable to locate ConfigureIndex method.");
-
-        configureIndexMethod.Invoke(cache, new[] { indexInstance });
+        repository.ConfigureIndex(configuration);
+        System.Console.WriteLine("Registered ByLastName sorted index at runtime.");
     }
 
     private static ContractVersionContext ResolveContractVersion(
@@ -241,11 +418,34 @@ internal static class Program
         }
     }
 
-    private sealed record ContractVersionContext(
+    private static string ResolveDataRoot(string? configuredPath)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return Path.Combine(AppContext.BaseDirectory, "Data");
+        }
+
+        return Path.GetFullPath(Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.Combine(AppContext.BaseDirectory, configuredPath));
+    }
+
+    internal sealed record ContractVersionContext(
         Version Version,
         string Segment,
         Type ContractType,
         Type ImplementationType);
+
+    private static IDbContractOptions FindContractOption(
+        IReadOnlyList<IDbContractOptions> options,
+        string contractName)
+    {
+        var option = options.FirstOrDefault(o =>
+            string.Equals(o.ContractName, contractName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(o.Key, contractName, StringComparison.OrdinalIgnoreCase));
+
+        return option ?? throw new InvalidOperationException($"No contract options were registered for '{contractName}'.");
+    }
 
     private sealed record StorageContractSettings(StorageContractSettings.ContractSetting Person)
     {
@@ -264,44 +464,6 @@ internal static class Program
                 => string.IsNullOrWhiteSpace(RunningVersion)
                     ? new ContractSetting()
                     : this;
-        }
-    }
-
-    private sealed record DemoPaths(
-        string SolutionRoot,
-        string DemoRoot,
-        string ContractsRoot,
-        string ImplementationsRoot,
-        string MigrationsRoot,
-        string DataRoot)
-    {
-        public static DemoPaths Discover()
-        {
-            var current = new DirectoryInfo(AppContext.BaseDirectory);
-            while (current is not null && !current.GetDirectories("IdbDemoStorage").Any())
-            {
-                current = current.Parent;
-            }
-
-            if (current is null)
-            {
-                throw new InvalidOperationException("Unable to locate IdbDemoStorage project directory.");
-            }
-
-            var demoRoot = Path.Combine(current.FullName, "IdbDemoStorage");
-            var contractsRoot = Path.Combine(demoRoot, "Abstractions");
-            var implementationsRoot = Path.Combine(demoRoot, "Implementations");
-            var migrationsRoot = Path.Combine(demoRoot, "Migrations");
-            var dataRoot = Path.Combine(demoRoot, "Data");
-            Directory.CreateDirectory(dataRoot);
-
-            return new DemoPaths(
-                current.FullName,
-                demoRoot,
-                contractsRoot,
-                implementationsRoot,
-                migrationsRoot,
-                dataRoot);
         }
     }
 }
