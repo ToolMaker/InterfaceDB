@@ -6,9 +6,14 @@ namespace Idb.Libraries.Abstraction.Enums;
 public enum ContractIndexProvisioningModeType
 {
     /// <summary>
+    /// No indexes will be provisioned. Consumers must register them manually.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
     /// Indexes are created on demand when clients register them.
     /// </summary>
-    Dynamic = 0,
+    Dynamic,
 
     /// <summary>
     /// Only indexes defined in configuration are created.

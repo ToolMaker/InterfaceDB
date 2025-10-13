@@ -14,6 +14,11 @@ public interface IDbContractOptions
     string Key { get; }
 
     /// <summary>
+    /// Logical contract name used to resolve scoped interfaces and storage roots.
+    /// </summary>
+    string ContractName { get; }
+
+    /// <summary>
     /// Absolute or project-relative path to the folder containing contract implementations (maps to the tool's storage/implementations option).
     /// </summary>
     string? ImplementationsPath { get; }
@@ -27,6 +32,11 @@ public interface IDbContractOptions
     /// Path to the migrations directory produced by the tooling for this contract.
     /// </summary>
     string? MigrationsPath { get; }
+
+    /// <summary>
+    /// Optional data root directory where persisted artifacts are stored.
+    /// </summary>
+    string? DataRoot { get; }
 
     /// <summary>
     /// Version tag representing the currently active contract baseline (e.g., "1.0.1").
@@ -57,4 +67,9 @@ public interface IDbContractOptions
     /// Optional override for the object reader used when loading contract instances.
     /// </summary>
     ContractObjectReaderType ObjectReader { get; }
+
+    /// <summary>
+    /// Startup loading strategy applied when the repository is created.
+    /// </summary>
+    RepositoryLoadStrategyType LoadStrategy { get; }
 }

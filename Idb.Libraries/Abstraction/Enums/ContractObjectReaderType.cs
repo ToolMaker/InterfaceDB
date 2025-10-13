@@ -6,13 +6,12 @@ namespace Idb.Libraries.Abstraction.Enums;
 public enum ContractObjectReaderType
 {
     /// <summary>
-    /// Use the default reader registered in DI.
+    /// A reader must be supplied by the host; no built-in registration will be provided.
     /// </summary>
     None = 0,
 
     /// <summary>
-    /// Use the built-in MessagePack-based reader.
+    /// Use the built-in binary reader implementation.
     /// </summary>
-    MessagePack,
+    Binary,
 }
-

@@ -6,13 +6,12 @@ namespace Idb.Libraries.Abstraction.Enums;
 public enum ContractObjectWriterType
 {
     /// <summary>
-    /// Use the default writer registered in DI.
+    /// A writer must be supplied by the host; no built-in registration will be provided.
     /// </summary>
     None = 0,
 
     /// <summary>
-    /// Use the built-in MessagePack-based writer.
+    /// Use the built-in binary writer implementation.
     /// </summary>
-    MessagePack,
+    Binary,
 }
-

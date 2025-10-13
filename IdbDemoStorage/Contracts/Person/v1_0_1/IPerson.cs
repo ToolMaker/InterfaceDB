@@ -5,5 +5,10 @@ using Idb.Libraries.Abstractions.Attributes;
 [StorageScope(VersionTag = "1.0.1")]
 public interface IPerson
 {
-    // TODO: Define contract members for this version.
+    string FirstName { get; }
+
+    string LastName { get; }
+
+    string Address { get; }
 }
+
