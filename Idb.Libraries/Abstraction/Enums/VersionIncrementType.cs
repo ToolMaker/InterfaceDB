@@ -7,3 +7,4 @@ namespace Idb.Libraries.Abstractions.Enums
         Major
     }
 }
+

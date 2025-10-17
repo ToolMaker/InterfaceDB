@@ -1,4 +1,4 @@
-namespace Idb.Libraries.Abstraction.Enums;
+namespace Idb.Libraries.Abstractions.Enums;
 
 /// <summary>
 /// Enumerates repository implementations available for contract storage.
@@ -15,3 +15,4 @@ public enum ContractRepositoryType
     /// </summary>
     FileSystem,
 }
+

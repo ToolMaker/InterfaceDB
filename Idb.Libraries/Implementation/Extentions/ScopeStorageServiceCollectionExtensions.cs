@@ -1,4 +1,5 @@
-﻿using Idb.Libraries.Abstractions.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Repository.FileRepository;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Services;
@@ -11,7 +12,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
 using Idb.Libraries.Implementation.Services.Migrations;
 using Idb.Libraries.Implementation.Services.Serializers;
-using Idb.Libraries.Implementation.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Extentions;
 
@@ -57,7 +57,6 @@ public static class ScopeStorageServiceCollectionExtensions
         services.AddScoped<IObjectWriter, ObjectWriter>();
         services.AddScoped<IObjectReader, ObjectReader>();
         services.AddScoped<IRepository, FileSystemRepository>();
-        services.AddScoped<IStorageMigrationRunner, StorageMigrationRunner>();
 
         return services;
     }
@@ -95,4 +94,5 @@ public static class ScopeStorageServiceCollectionExtensions
         }
     }
 }
+
 

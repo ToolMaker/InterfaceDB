@@ -8,3 +8,4 @@ namespace Idb.Libraries.Abstractions.Services
         IStoragePolicy GetPolicy(DirectoryInfo rootDirectory);
     }
 }
+

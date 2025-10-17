@@ -10,3 +10,4 @@ namespace Idb.Libraries.Abstractions.Dtos
         string VersionTag { get; }
     }
 }
+

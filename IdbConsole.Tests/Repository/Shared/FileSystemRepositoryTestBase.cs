@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
@@ -7,6 +7,7 @@ using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Services.Indexes;
 using Idb.Libraries.Implementation.Services.Repository;
+using Idb.Libraries.Implementation.Services.Serializers;
 
 namespace IdbConsole.Tests.Repository.Shared;
 
@@ -62,6 +63,7 @@ public abstract class FileSystemRepositoryTestBase
 
         public object? LastEntity { get; private set; }
         public string? LastId { get; private set; }
+        public IObjectEnvelope? LastEnvelope { get; private set; }
         public CancellationToken LastCancellationToken { get; private set; }
 
         public ValueTask<IObjectWriteResult> WriteAsync<T>(

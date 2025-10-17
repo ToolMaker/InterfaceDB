@@ -19,4 +19,10 @@
     <None Include="..\Contracts\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Abstraction\Services\Caching\" />
+    <Folder Include="Implementation\Services\Caching\" />
+    <Folder Include="Implementation\Services\Serialization\" />
+  </ItemGroup>
+
 </Project>

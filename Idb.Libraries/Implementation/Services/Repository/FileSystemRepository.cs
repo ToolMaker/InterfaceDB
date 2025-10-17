@@ -1,45 +1,133 @@
-﻿using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Indexes;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Services.Indexes;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
 
 namespace Idb.Libraries.Implementation.Services.Repository;
 
-public sealed class FileSystemRepository : IRepositoryNode
+public sealed class FileSystemRepository : IRepository
 {
     private readonly IObjectWriter _writer;
     private readonly IObjectReader _reader;
-    private readonly ConcurrentDictionary<Type, ConcurrentDictionary<string, IRepositoryIndexConfiguration>> _indexConfigurations = new();
-    private readonly ConcurrentDictionary<Type, ConcurrentDictionary<string, ISortedListIndex>> _sortedListIndexes = new();
-    private readonly ConcurrentDictionary<IndexSubscription, ConcurrentDictionary<Action<IndexChange>, byte>> _subscribers = new();
+    private readonly IRepositoryIndexManager? _indexManager;
+    private readonly IMigrationManager? _migrationManager;
+    private readonly ILogger<FileSystemRepository> _logger;
 
-    public FileSystemRepository(IObjectWriter writer, IObjectReader reader)
+    private readonly ConcurrentDictionary<Type, ConcurrentDictionary<string, object>> _entities = new();
+    private readonly ConcurrentDictionary<IndexSubscription, ConcurrentDictionary<Action<IndexChange>, byte>> _subscriptions = new();
+
+    private static readonly ConcurrentDictionary<Type, EntityMetadata> MetadataCache = new();
+
+    public FileSystemRepository(
+        IObjectWriter writer,
+        IObjectReader reader)
+        : this(writer, reader, indexManager: null, migrationManager: null, logger: null)
+    {
+    }
+
+    public FileSystemRepository(
+        IObjectWriter writer,
+        IObjectReader reader,
+        IMigrationManager migrationManager)
+        : this(writer, reader, indexManager: null, migrationManager: migrationManager, logger: null)
+    {
+    }
+
+    public FileSystemRepository(
+        IObjectWriter writer,
+        IObjectReader reader,
+        IRepositoryIndexManager? indexManager = null,
+        IMigrationManager? migrationManager = null,
+        ILogger<FileSystemRepository>? logger = null)
     {
         _writer = writer ?? throw new ArgumentNullException(nameof(writer));
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+        _indexManager = indexManager;
+        _migrationManager = migrationManager;
+        _logger = logger ?? NullLogger<FileSystemRepository>.Instance;
     }
 
+    public ContractRepositoryType RepositoryType => ContractRepositoryType.FileSystem;
+
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        if (_migrationManager is null)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return _migrationManager.InitializeAsync(this, cancellationToken);
+    }
+
+    public ValueTask<IObjectWriteResult> SaveAsync<TContract>(TContract entityToSave, CancellationToken cancellationToken = default)
+        where TContract : class
+        => SaveAsync(entityToSave, id: null, cancellationToken);
+
     public async ValueTask<IObjectWriteResult> SaveAsync<TContract>(
-        TContract entity,
-        string? id = null,
+        TContract entityToSave,
+        string? id,
         CancellationToken cancellationToken = default)
         where TContract : class
     {
-        if (entity is null)
+        if (entityToSave is null)
         {
-            throw new ArgumentNullException(nameof(entity));
+            throw new ArgumentNullException(nameof(entityToSave));
         }
 
-        EnsureContractIsInterface<TContract>();
+        if (!typeof(TContract).IsInterface)
+        {
+            throw new InvalidOperationException($"Contract type '{typeof(TContract).FullName}' must be an interface.");
+        }
 
-        var result = await _writer.WriteAsync(entity, id, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var indexKeys = UpdateIndexes(entity);
-        PublishIndexChanges(typeof(TContract), result.Id, entity!, indexKeys);
+        var metadata = GetMetadata(typeof(TContract));
+        var desiredId = !string.IsNullOrWhiteSpace(id) ? id : metadata.GetId(entityToSave);
+
+        var result = await _writer.WriteAsync(entityToSave, envelope: null, id: desiredId, cancellationToken).ConfigureAwait(false);
+
+        if (metadata.CanWriteId && string.IsNullOrWhiteSpace(metadata.GetId(entityToSave)) && !string.IsNullOrWhiteSpace(result.Id))
+        {
+            metadata.SetId(entityToSave, result.Id);
+        }
+
+        TrackEntity(typeof(TContract), result.Id, entityToSave);
+
+        var indexKeys = _indexManager?.UpdateIndexes(entityToSave) ?? new Dictionary<string, object?>();
+        PublishIndexChanges(typeof(TContract), entityToSave, result.Id, indexKeys);
+
+        _logger.LogDebug(
+            "Saved entity of contract {Contract} with id {Id}.",
+            typeof(TContract).FullName,
+            result.Id);
 
         return result;
+    }
+
+    public async ValueTask<IObjectReadResult<TContract>> LoadAsync<TContract>(
+        Expression<Func<TContract, bool>> predicate,
+        CancellationToken cancellationToken = default)
+        where TContract : class
+    {
+        if (predicate is null)
+        {
+            throw new ArgumentNullException(nameof(predicate));
+        }
+
+        if (TryExtractIdFromPredicate(predicate, out var id, out var version))
+        {
+            return await LoadAsync<TContract>(id, version, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new NotSupportedException("Only simple equality predicates against an Id property are supported.");
     }
 
     public ValueTask<IObjectReadResult<TContract>> LoadAsync<TContract>(
@@ -48,8 +136,34 @@ public sealed class FileSystemRepository : IRepositoryNode
         CancellationToken cancellationToken = default)
         where TContract : class
     {
-        EnsureContractIsInterface<TContract>();
-        return _reader.ReadAsync<TContract>(id, versionTag, cancellationToken);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("Id cannot be null or whitespace.", nameof(id));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return _reader.ReadAsync<TContract>(id.Trim(), versionTag, cancellationToken);
+    }
+
+    public ValueTask<bool> ExistsAsync<TContract>(
+        TContract entityToCheck,
+        CancellationToken cancellationToken = default)
+        where TContract : class
+    {
+        if (entityToCheck is null)
+        {
+            throw new ArgumentNullException(nameof(entityToCheck));
+        }
+
+        var metadata = GetMetadata(typeof(TContract));
+        var id = metadata.GetId(entityToCheck);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return ValueTask.FromResult(false);
+        }
+
+        return ExistsAsync<TContract>(id!, versionTag: null, cancellationToken);
     }
 
     public ValueTask<bool> ExistsAsync<TContract>(
@@ -58,8 +172,13 @@ public sealed class FileSystemRepository : IRepositoryNode
         CancellationToken cancellationToken = default)
         where TContract : class
     {
-        EnsureContractIsInterface<TContract>();
-        return _reader.ExistsAsync<TContract>(id, versionTag, cancellationToken);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("Id cannot be null or whitespace.", nameof(id));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return _reader.ExistsAsync<TContract>(id.Trim(), versionTag, cancellationToken);
     }
 
     public ValueTask<IReadOnlyList<TContract>> QueryAsync<TContract>(
@@ -72,27 +191,55 @@ public sealed class FileSystemRepository : IRepositoryNode
             throw new ArgumentNullException(nameof(query));
         }
 
-        EnsureContractTypeIsInterface(query.ContractType);
-
-        if (query.ContractType != typeof(TContract))
-        {
-            throw new InvalidOperationException($"Query contract type '{query.ContractType.FullName}' does not match requested type '{typeof(TContract).FullName}'.");
-        }
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (string.IsNullOrWhiteSpace(query.IndexName))
         {
-            throw new ArgumentException("Index name must be provided for query.", nameof(query));
+            return ValueTask.FromResult(GetTrackedEntities<TContract>());
         }
 
-        if (_sortedListIndexes.TryGetValue(query.ContractType, out var registry) &&
-            registry.TryGetValue(query.IndexName, out var index))
+        if (query.Key is null)
         {
-            var snapshot = index.Snapshot(query.Key);
-            var typed = snapshot.Cast<TContract>().ToList();
-            return ValueTask.FromResult<IReadOnlyList<TContract>>(typed);
+            return ValueTask.FromResult(GetTrackedEntities<TContract>());
         }
 
-        return ValueTask.FromResult<IReadOnlyList<TContract>>(Array.Empty<TContract>());
+        var results = QueryByKey<TContract>(query.IndexName!, query.Key);
+        return ValueTask.FromResult(results);
+    }
+
+    public void ConfigureIndex(IRepositoryIndexConfiguration configuration)
+    {
+        _indexManager?.ConfigureIndex(configuration);
+    }
+
+    public void ConfigureIndexes(IEnumerable<IRepositoryIndexConfiguration> configurations)
+    {
+        _indexManager?.ConfigureIndexes(configurations);
+    }
+
+    public IReadOnlyCollection<IRepositoryIndexConfiguration> GetIndexConfigurations(Type contractType)
+    {
+        if (contractType is null)
+        {
+            throw new ArgumentNullException(nameof(contractType));
+        }
+
+        return _indexManager?.GetIndexConfigurations(contractType) ?? Array.Empty<IRepositoryIndexConfiguration>();
+    }
+
+    public bool TryGetSortedListIndex<TContract, TKey>(
+        string name,
+        out SortedList<TKey, List<TContract>> index)
+        where TContract : class
+        where TKey : notnull
+    {
+        if (_indexManager is null)
+        {
+            index = null!;
+            return false;
+        }
+
+        return _indexManager.TryGetSortedListIndex<TContract, TKey>(name, out index);
     }
 
     public void Subscribe(IndexSubscription subscription, Action<IndexChange> handler)
@@ -107,9 +254,7 @@ public sealed class FileSystemRepository : IRepositoryNode
             throw new ArgumentNullException(nameof(handler));
         }
 
-        EnsureContractTypeIsInterface(subscription.ContractType);
-
-        var handlers = _subscribers.GetOrAdd(subscription, _ => new ConcurrentDictionary<Action<IndexChange>, byte>());
+        var handlers = _subscriptions.GetOrAdd(subscription, static _ => new ConcurrentDictionary<Action<IndexChange>, byte>());
         handlers[handler] = 0;
     }
 
@@ -120,164 +265,226 @@ public sealed class FileSystemRepository : IRepositoryNode
             return;
         }
 
-        if (_subscribers.TryGetValue(subscription, out var handlers))
+        if (_subscriptions.TryGetValue(subscription, out var handlers))
         {
             handlers.TryRemove(handler, out _);
             if (handlers.IsEmpty)
             {
-                _subscribers.TryRemove(subscription, out _);
+                _subscriptions.TryRemove(subscription, out _);
             }
         }
     }
 
-    public void ConfigureIndex(IRepositoryIndexConfiguration configuration)
+    private IReadOnlyList<TContract> QueryByKey<TContract>(string indexName, object key)
+        where TContract : class
     {
-        if (configuration is null)
-        {
-            throw new ArgumentNullException(nameof(configuration));
-        }
+        var keyType = key.GetType();
 
-        var contractType = configuration.ContractType ?? throw new ArgumentException("Index configuration must specify a contract type.", nameof(configuration));
-        EnsureContractTypeIsInterface(contractType);
+        var method = typeof(FileSystemRepository)
+            .GetMethod(nameof(QueryByKeyInternal), BindingFlags.NonPublic | BindingFlags.Instance)!
+            .MakeGenericMethod(typeof(TContract), keyType);
 
-        var name = configuration.Name;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            throw new ArgumentException("Index configuration must have a name.", nameof(configuration));
-        }
-
-        var registry = _indexConfigurations.GetOrAdd(contractType, _ => new ConcurrentDictionary<string, IRepositoryIndexConfiguration>(StringComparer.OrdinalIgnoreCase));
-        registry[name] = configuration;
-
-        if (configuration.Kind == RepositoryIndexKind.SortedList)
-        {
-            if (configuration is not ISortedListIndexFactory factory)
-            {
-                throw new InvalidOperationException($"Configuration '{configuration.GetType().FullName}' must implement {nameof(ISortedListIndexFactory)} to register a sorted-list index.");
-            }
-
-            var sortedRegistry = _sortedListIndexes.GetOrAdd(contractType, _ => new ConcurrentDictionary<string, ISortedListIndex>(StringComparer.OrdinalIgnoreCase));
-            sortedRegistry[name] = factory.CreateIndex();
-        }
+        var result = method.Invoke(this, new[] { indexName, key });
+        return result as IReadOnlyList<TContract> ?? Array.Empty<TContract>();
     }
 
-    public void ConfigureIndexes(IEnumerable<IRepositoryIndexConfiguration> configurations)
-    {
-        if (configurations is null)
-        {
-            throw new ArgumentNullException(nameof(configurations));
-        }
-
-        foreach (var configuration in configurations)
-        {
-            ConfigureIndex(configuration);
-        }
-    }
-
-    public IReadOnlyCollection<IRepositoryIndexConfiguration> GetIndexConfigurations(Type contractType)
-    {
-        if (contractType is null)
-        {
-            throw new ArgumentNullException(nameof(contractType));
-        }
-
-        return _indexConfigurations.TryGetValue(contractType, out var registry)
-            ? registry.Values.ToArray()
-            : Array.Empty<IRepositoryIndexConfiguration>();
-    }
-
-        public bool TryGetSortedListIndex<TContract, TKey>(
-        string name,
-        out SortedList<TKey, List<TContract>> index)
+    private IReadOnlyList<TContract> QueryByKeyInternal<TContract, TKey>(string indexName, TKey key)
         where TContract : class
         where TKey : notnull
     {
-        if (string.IsNullOrWhiteSpace(name))
+        if (_indexManager is not null &&
+            _indexManager.TryGetSortedListIndex<TContract, TKey>(indexName, out var index) &&
+            index.TryGetValue(key, out var bucket))
         {
-            throw new ArgumentException("Index name cannot be null or whitespace.", nameof(name));
+            return bucket.ToList();
         }
 
-        EnsureContractIsInterface<TContract>();
-
-        if (_sortedListIndexes.TryGetValue(typeof(TContract), out var registry) &&
-            registry.TryGetValue(name, out var raw) &&
-            raw.TryAs<TContract, TKey>(out index))
-        {
-            return true;
-        }
-
-        index = null!;
-        return false;
-    }
-    private Dictionary<string, object?> UpdateIndexes<TContract>(TContract entity)
-        where TContract : class
-    {
-        var keys = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-
-        if (_sortedListIndexes.TryGetValue(typeof(TContract), out var registry))
-        {
-            foreach (var (name, index) in registry)
-            {
-                var key = index.Add(entity!);
-                keys[name] = key;
-            }
-        }
-
-        return keys;
+        return Array.Empty<TContract>();
     }
 
-    private void PublishIndexChanges(Type contractType, string id, object entity, Dictionary<string, object?> indexKeys)
+    private void PublishIndexChanges(Type contractType, object entity, string id, IReadOnlyDictionary<string, object?> indexKeys)
     {
-        if (indexKeys.Count == 0 || _subscribers.IsEmpty)
+        if (_subscriptions.IsEmpty || indexKeys.Count == 0)
         {
             return;
         }
 
-        foreach (var (indexName, key) in indexKeys)
+        foreach (var subscription in _subscriptions)
         {
-            var change = new IndexChange(contractType, indexName, IndexChangeKind.Updated, entity, key, id);
-            NotifySubscribers(change);
+            if (subscription.Key.ContractType != contractType)
+            {
+                continue;
+            }
+
+            foreach (var indexEntry in indexKeys)
+            {
+                if (!string.Equals(subscription.Key.IndexName, indexEntry.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (subscription.Key.Key is not null && !Equals(subscription.Key.Key, indexEntry.Value))
+                {
+                    continue;
+                }
+
+                var change = new IndexChange(contractType, indexEntry.Key, IndexChangeKind.Updated, entity, indexEntry.Value, id);
+
+                foreach (var handler in subscription.Value.Keys)
+                {
+                    try
+                    {
+                        handler(change);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Index change handler threw an exception.");
+                    }
+                }
+            }
         }
     }
 
-    private void NotifySubscribers(IndexChange change)
+    private IReadOnlyList<TContract> GetTrackedEntities<TContract>()
+        where TContract : class
     {
-        foreach (var kvp in _subscribers.ToArray())
+        if (_entities.TryGetValue(typeof(TContract), out var map))
         {
-            var subscription = kvp.Key;
-            if (subscription.ContractType != change.ContractType)
-            {
-                continue;
-            }
+            return map.Values.OfType<TContract>().ToList();
+        }
 
-            if (!string.Equals(subscription.IndexName, change.IndexName, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+        return Array.Empty<TContract>();
+    }
 
-            if (subscription.Key is not null && !Equals(subscription.Key, change.Key))
-            {
-                continue;
-            }
+    private void TrackEntity(Type contractType, string id, object entity)
+    {
+        var map = _entities.GetOrAdd(contractType, static _ => new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase));
+        map[id] = entity;
+    }
 
-            foreach (var handler in kvp.Value.Keys)
-            {
-                handler(change);
-            }
+    private static bool TryExtractIdFromPredicate<TContract>(
+        Expression<Func<TContract, bool>> predicate,
+        out string id,
+        out string? version)
+        where TContract : class
+    {
+        id = string.Empty;
+        version = null;
+
+        ExtractPredicate(predicate.Body, ref id, ref version);
+
+        return !string.IsNullOrWhiteSpace(id);
+    }
+
+    private static void ExtractPredicate(Expression expression, ref string id, ref string? version)
+    {
+        switch (expression)
+        {
+            case BinaryExpression binary when binary.NodeType == ExpressionType.AndAlso:
+                ExtractPredicate(binary.Left, ref id, ref version);
+                ExtractPredicate(binary.Right, ref id, ref version);
+                break;
+
+            case BinaryExpression binary when binary.NodeType == ExpressionType.Equal:
+                ProcessEquality(binary.Left, binary.Right, ref id, ref version);
+                ProcessEquality(binary.Right, binary.Left, ref id, ref version);
+                break;
         }
     }
 
-    private static void EnsureContractIsInterface<TContract>()
+    private static void ProcessEquality(Expression memberExpression, Expression valueExpression, ref string id, ref string? version)
     {
-        EnsureContractTypeIsInterface(typeof(TContract));
+        if (memberExpression is not MemberExpression member || member.Member is not PropertyInfo property)
+        {
+            return;
+        }
+
+        if (property.PropertyType != typeof(string))
+        {
+            return;
+        }
+
+        if (!TryEvaluateString(valueExpression, out var stringValue))
+        {
+            return;
+        }
+
+        if (stringValue is null)
+        {
+            return;
+        }
+
+        if (string.Equals(property.Name, "Id", StringComparison.OrdinalIgnoreCase))
+        {
+            id = stringValue;
+        }
+        else if (string.Equals(property.Name, "VersionTag", StringComparison.OrdinalIgnoreCase))
+        {
+            version = stringValue;
+        }
     }
 
-    private static void EnsureContractTypeIsInterface(Type contractType)
+    private static bool TryEvaluateString(Expression expression, out string? value)
     {
-        if (!contractType.IsInterface)
+        value = null;
+
+        try
         {
-            throw new InvalidOperationException($"Storage contract '{contractType.FullName}' must be an interface marked with [StorageScope].");
+            var converted = Expression.Convert(expression, typeof(string));
+            var lambda = Expression.Lambda<Func<string?>>(converted);
+            value = lambda.Compile().Invoke();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static EntityMetadata GetMetadata(Type contractType)
+        => MetadataCache.GetOrAdd(contractType, EntityMetadata.Create);
+
+    private sealed class EntityMetadata
+    {
+        private EntityMetadata(Func<object, string?> getter, Action<object, string>? setter)
+        {
+            GetId = getter;
+            SetId = setter ?? ((_, _) => { });
+            CanWriteId = setter is not null;
+        }
+
+        public Func<object, string?> GetId { get; }
+        public Action<object, string> SetId { get; }
+        public bool CanWriteId { get; }
+
+        public static EntityMetadata Create(Type type)
+        {
+            if (type is null)
+            {
+                throw new ArgumentNullException(nameof(type));
+            }
+
+            var property = type.GetProperty("Id", BindingFlags.Instance | BindingFlags.Public);
+            if (property is null || property.PropertyType != typeof(string))
+            {
+                return new EntityMetadata(_ => null, null);
+            }
+
+            var instance = Expression.Parameter(typeof(object), "instance");
+            var castInstance = Expression.Convert(instance, type);
+            var propertyAccess = Expression.Property(castInstance, property);
+            var convertResult = Expression.Convert(propertyAccess, typeof(string));
+            var getter = Expression.Lambda<Func<object, string?>>(convertResult, instance).Compile();
+
+            Action<object, string>? setter = null;
+            if (property.CanWrite)
+            {
+                var valueParameter = Expression.Parameter(typeof(string), "value");
+                var assign = Expression.Assign(propertyAccess, valueParameter);
+                setter = Expression.Lambda<Action<object, string>>(assign, instance, valueParameter).Compile();
+            }
+
+            return new EntityMetadata(getter, setter);
         }
     }
 }
-

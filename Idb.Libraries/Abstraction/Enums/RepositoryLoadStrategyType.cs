@@ -1,4 +1,4 @@
-namespace Idb.Libraries.Abstraction.Enums;
+namespace Idb.Libraries.Abstractions.Enums;
 
 /// <summary>
 /// Controls how a repository hydrates data when it starts.
@@ -50,3 +50,4 @@ public enum RepositoryLoadStrategyType
     /// </summary>
     MetadataOnly
 }
+

@@ -7,3 +7,4 @@ public sealed record IndexChange(
     object Entity,
     object? Key,
     string Id);
+

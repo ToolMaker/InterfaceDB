@@ -10,3 +10,4 @@ namespace Idb.Libraries.Abstractions.Dtos
         bool UseAsync { get; }
     }
 }
+

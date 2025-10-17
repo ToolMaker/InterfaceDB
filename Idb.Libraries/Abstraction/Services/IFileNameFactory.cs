@@ -15,3 +15,4 @@ namespace Idb.Libraries.Abstractions.Services
         string Create(object value, string normalizedId, Type contractType);
     }
 }
+

@@ -1,4 +1,4 @@
-namespace Idb.Libraries.Abstraction.Enums;
+namespace Idb.Libraries.Abstractions.Enums;
 
 /// <summary>
 /// Specifies how repository indexes are provisioned for a contract.
@@ -25,3 +25,4 @@ public enum ContractIndexProvisioningModeType
     /// </summary>
     Mixed
 }
+

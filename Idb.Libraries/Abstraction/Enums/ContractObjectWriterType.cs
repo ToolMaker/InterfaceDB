@@ -1,4 +1,4 @@
-namespace Idb.Libraries.Abstraction.Enums;
+namespace Idb.Libraries.Abstractions.Enums;
 
 /// <summary>
 /// Specifies the object writer implementation to use for a contract.
@@ -15,3 +15,4 @@ public enum ContractObjectWriterType
     /// </summary>
     Binary,
 }
+

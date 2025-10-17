@@ -1,4 +1,4 @@
-﻿using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstractions.Dtos
 {
@@ -11,3 +11,4 @@ namespace Idb.Libraries.Abstractions.Dtos
         T Value { get; }
     }
 }
+

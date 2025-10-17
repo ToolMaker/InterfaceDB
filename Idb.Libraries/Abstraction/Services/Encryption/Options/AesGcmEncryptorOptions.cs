@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Encryption.Options;
+namespace Idb.Libraries.Abstractions.Services.Encryption.Options;
 
 public sealed class AesGcmEncryptorOptions
 {
@@ -11,3 +11,4 @@ public sealed class AesGcmEncryptorOptions
     /// <summary>Add future flags here, e.g., compression or encoding scheme.</summary>
     // public bool UseCompression { get; init; }
 }
+

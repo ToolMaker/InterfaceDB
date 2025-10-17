@@ -85,7 +85,7 @@ public sealed class BaselineCommandTests : IDisposable
         Assert.True(Directory.Exists(migrationsFolder));
 
         var migrationStub = Directory
-            .EnumerateFiles(migrationsFolder, "IPerson_v1_0_0_To_v1_0_1_Migration.cs", SearchOption.TopDirectoryOnly)
+            .EnumerateFiles(migrationsFolder, "Person_v1_0_0_To_v1_0_1_Migration.cs", SearchOption.TopDirectoryOnly)
             .FirstOrDefault();
 
         Assert.NotNull(migrationStub);
@@ -182,6 +182,7 @@ public sealed class BaselineCommandTests : IDisposable
             "using System;",
             "using Idb.Libraries.Abstraction.Enums;",
             "using Idb.Libraries.Abstractions.Options;",
+            "using Idb.Libraries.Implementation.Options;",
             "using Idb.Libraries.Abstractions.Services.Indexes;",
             string.Empty,
             "namespace Test.Options;",
@@ -199,6 +200,7 @@ public sealed class BaselineCommandTests : IDisposable
             "    public ContractIndexProvisioningModeType IndexProvisioningMode { get; } = ContractIndexProvisioningModeType.Dynamic;",
             "    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;",
             "    public RepositoryLoadStrategyType LoadStrategy { get; } = RepositoryLoadStrategyType.Lazy;",
+            "    public IMigrationStrategyOptions MigrationStrategy { get; } = new MigrationStrategyOptions();",
             "    public ContractObjectWriterType ObjectWriter { get; } = ContractObjectWriterType.Binary;",
             "    public ContractObjectReaderType ObjectReader { get; } = ContractObjectReaderType.Binary;",
             "}",

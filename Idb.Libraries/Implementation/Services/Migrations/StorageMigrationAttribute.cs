@@ -22,3 +22,4 @@ namespace Idb.Libraries.Implementation.Services.Migrations
         public string TargetVersionTag { get; }
     }
 }
+

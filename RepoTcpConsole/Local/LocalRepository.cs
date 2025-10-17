@@ -1,16 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
-using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Options;
 using Idb.Libraries.Implementation.Services.Caching;
-using Idb.Libraries.Implementation.Services.Indexes;
 using Idb.Libraries.Implementation.Services.Repository;
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,9 +29,6 @@ internal sealed class LocalRepository : IAsyncDisposable
 
     public string RootPath { get; }
 
-    public IReadOnlyCollection<IRepositoryIndexConfiguration> Indexes
-        => _cache.GetIndexConfigurations(typeof(IStoredPerson));
-
     public static LocalRepository Create(string? rootOverride)
     {
         var root = ResolveRoot(rootOverride);
@@ -50,48 +44,35 @@ internal sealed class LocalRepository : IAsyncDisposable
 
         services.AddDefaultObjectWriterAndReader();
 
-        services.AddSingleton(sp =>
+        services.AddScoped(sp =>
         {
             var writer = sp.GetRequiredService<IObjectWriter>();
             var reader = sp.GetRequiredService<IObjectReader>();
-            var inner = new FileSystemRepository(writer, reader);
-            var indexes = new IRepositoryIndexConfiguration[]
-            {
-                new SortedListIndexConfiguration<IStoredPerson, string>("ByLastName", p => p.LastName),
-                new SortedListIndexConfiguration<IStoredPerson, string>("ByFirstName", p => p.FirstName),
-                new SortedListIndexConfiguration<IStoredPerson, int>("ByAge", p => p.Age),
-            };
-
-            var cache = new CachingRepositoryNode(inner);
-            cache.ConfigureIndexes(indexes);
-            return cache;
+            var migrationManager = sp.GetRequiredService<IMigrationManager>();
+            var repository = new FileSystemRepository(writer, reader, migrationManager);
+            return new CachingRepositoryNode(repository);
         });
 
         var provider = services.BuildServiceProvider();
         var cacheInstance = provider.GetRequiredService<CachingRepositoryNode>();
+        cacheInstance.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
         return new LocalRepository(provider, cacheInstance, root);
     }
+
+    public ValueTask InitializeAsync(CancellationToken cancellationToken)
+        => _cache.InitializeAsync(cancellationToken);
 
     public async Task SaveAsync(Person person, CancellationToken cancellationToken)
     {
         var stored = new StoredPerson(person.Id, person.FirstName, person.LastName, person.Age);
-        await _cache.SaveAsync<IStoredPerson>(stored, stored.Id, cancellationToken).ConfigureAwait(false);
+        await _cache.SaveAsync<IStoredPerson>(stored, person.Id, cancellationToken).ConfigureAwait(false);
     }
 
     public ValueTask<IObjectReadResult<IStoredPerson>> LoadAsync(string id, CancellationToken cancellationToken)
-        => _cache.LoadAsync<IStoredPerson>(id, cancellationToken: cancellationToken);
+        => _cache.LoadAsync<IStoredPerson>(p => p.Id == id, cancellationToken);
 
-    public ValueTask<bool> ExistsAsync(string id, CancellationToken cancellationToken)
-        => _cache.ExistsAsync<IStoredPerson>(id, cancellationToken: cancellationToken);
-
-    public ValueTask<IReadOnlyList<IStoredPerson>> QueryAsync(string indexName, object key, CancellationToken cancellationToken)
-        => _cache.QueryAsync<IStoredPerson>(new IndexQuery(typeof(IStoredPerson), indexName, key), cancellationToken);
-
-    public bool TryGetSortedListIndex<TKey>(
-        string name,
-        out SortedList<TKey, List<IStoredPerson>> index)
-        where TKey : notnull
-        => _cache.TryGetSortedListIndex<IStoredPerson, TKey>(name, out index);
+    public ValueTask<bool> ExistsAsync(Person person, CancellationToken cancellationToken)
+        => _cache.ExistsAsync<IStoredPerson>(new StoredPerson(person.Id, person.FirstName, person.LastName, person.Age), cancellationToken);
 
     public async ValueTask DisposeAsync()
     {

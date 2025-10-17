@@ -1,4 +1,4 @@
-﻿using Idb.Libraries.Abstractions.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Services.Migrations
@@ -25,3 +25,4 @@ namespace Idb.Libraries.Implementation.Services.Migrations
         public T Value { get; }
     }
 }
+

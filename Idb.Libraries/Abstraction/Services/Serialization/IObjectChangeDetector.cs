@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -8,3 +8,4 @@ public interface IObjectChangeDetector
     ObjectFingerprint ComputeFingerprint(object? value, Type valueType);
     bool HasChanged(ObjectFingerprint previous, ObjectFingerprint current);
 }
+

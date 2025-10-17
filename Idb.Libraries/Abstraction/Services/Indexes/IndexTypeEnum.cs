@@ -1,6 +1,6 @@
 namespace Idb.Libraries.Abstractions.Services.Indexes;
 
-public enum RepositoryIndexKind
+public enum IndexTypeEnum
 {
     None = 0,
     SortedList,
@@ -8,3 +8,4 @@ public enum RepositoryIndexKind
     HashBucket,
     Custom
 }
+

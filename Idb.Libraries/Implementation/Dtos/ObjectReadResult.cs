@@ -1,4 +1,4 @@
-﻿using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Dtos
@@ -10,3 +10,4 @@ namespace Idb.Libraries.Implementation.Dtos
         IObjectEnvelope Envelope,
         T Value) : IObjectReadResult<T>;
 }
+

@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using Idb.Libraries.Implementation.Services.Baselines;
 
 namespace Idb.Libraries.Implementation.Services.Migrations;
@@ -33,7 +34,7 @@ public static class MigrationScaffolder
 
             var previousSegment = BaselineGenerator.NormalizeVersionSegment(previous.Version);
             var currentSegment = BaselineGenerator.NormalizeVersionSegment(current.Version);
-            var className = $"I{options.ContractName}_{previousSegment}_To_{currentSegment}_Migration";
+            var className = $"{options.ContractName}_{previousSegment}_To_{currentSegment}_Migration";
             var filePath = Path.Combine(migrationsRoot, className + ".cs");
 
             if (File.Exists(filePath))
@@ -49,25 +50,47 @@ public static class MigrationScaffolder
                 : options.NamespaceRoot + ".Migrations";
 
             var builder = new StringBuilder();
+            var previousInterfacePath = Path.Combine(previous.Directory.FullName, $"I{options.ContractName}.cs");
+            var currentInterfacePath = Path.Combine(current.Directory.FullName, $"I{options.ContractName}.cs");
+
+            var propertyMap = new Dictionary<string, string>(StringComparer.Ordinal);
+            MergeProperties(propertyMap, previousInterfacePath);
+            MergeProperties(propertyMap, currentInterfacePath);
+
             builder.AppendLine($"namespace {migrationsNamespace};");
             builder.AppendLine();
-            builder.AppendLine("using System.Threading;");
-            builder.AppendLine("using System.Threading.Tasks;");
+            builder.AppendLine("using MessagePack;");
             builder.AppendLine($"using {previousNamespace};");
             builder.AppendLine($"using {currentNamespace};");
             builder.AppendLine("using Idb.Libraries.Abstractions.Services.Migrations;");
-            builder.AppendLine("using Idb.Libraries.Implementation.Services.Migrations;");
             builder.AppendLine();
-            builder.AppendLine($"[StorageMigration(typeof({currentNamespace}.I{options.ContractName}), \"{previous.Version}\", \"{current.Version}\")]");
-            builder.AppendLine($"public sealed class {className} : StorageMigrationBase<{currentNamespace}.I{options.ContractName}>");
+            builder.AppendLine("[MessagePackObject(keyAsPropertyName: true, AllowPrivate = true)]");
+            builder.AppendLine($"public sealed class {className} : {previousNamespace}.I{options.ContractName}, {currentNamespace}.I{options.ContractName}, IMigration");
             builder.AppendLine("{");
-            builder.AppendLine("    protected override async Task ExecuteCoreAsync(IStorageMigrationContext context, CancellationToken cancellationToken)");
+
+            if (propertyMap.Count == 0)
+            {
+                builder.AppendLine("    // TODO: Define contract members shared by both versions.");
+            }
+            else
+            {
+                foreach (var property in propertyMap)
+                {
+                    builder.AppendLine($"    public {property.Value} {property.Key} {{ get; set; }}");
+                    builder.AppendLine();
+                }
+            }
+
+            builder.AppendLine("    public bool Up()");
             builder.AppendLine("    {");
-            builder.AppendLine($"        await foreach (var record in context.ReadSourceAsync<{previousNamespace}.I{options.ContractName}>(cancellationToken).ConfigureAwait(false))");
-            builder.AppendLine("        {");
-            builder.AppendLine("            // TODO: inspect record.Value and map to the new contract shape.");
-            builder.AppendLine("            throw new NotImplementedException();");
-            builder.AppendLine("        }");
+            builder.AppendLine("        // TODO: Map legacy state to the new schema. Return false when migration cannot be completed.");
+            builder.AppendLine("        return true;");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.AppendLine("    public bool Down()");
+            builder.AppendLine("    {");
+            builder.AppendLine("        // TODO: Map current state back to the legacy schema. Return false when rollback cannot be completed.");
+            builder.AppendLine("        return true;");
             builder.AppendLine("    }");
             builder.AppendLine("}");
 
@@ -95,4 +118,39 @@ public static class MigrationScaffolder
             output.WriteLine(message);
         }
     }
+
+    private static void MergeProperties(IDictionary<string, string> propertyMap, string interfacePath)
+    {
+        if (!File.Exists(interfacePath))
+        {
+            return;
+        }
+
+        var propertyPattern = new Regex(@"^\s*(?:public\s+)?(?<type>[\w<>\[\],\?\.]+)\s+(?<name>[A-Za-z_][\w]*)\s*\{\s*get;.*$", RegexOptions.Compiled);
+        foreach (var rawLine in File.ReadAllLines(interfacePath))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith("//", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var match = propertyPattern.Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var type = match.Groups["type"].Value;
+            var name = match.Groups["name"].Value;
+
+            if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            propertyMap[name] = type;
+        }
+    }
 }
+

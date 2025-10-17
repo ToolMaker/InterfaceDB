@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Encryption
+namespace Idb.Libraries.Abstractions.Services.Encryption
 {
 
     public interface IKeyProvider
@@ -8,3 +8,4 @@
     }
 
 }
+

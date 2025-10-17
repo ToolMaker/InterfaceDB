@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Encryption.Options;
@@ -67,3 +67,4 @@ namespace Idb.Libraries.Implementation.Services.Encryption
         public void Dispose() => _aes.Dispose();
     }
 }
+

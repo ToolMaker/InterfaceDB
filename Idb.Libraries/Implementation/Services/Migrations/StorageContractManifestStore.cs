@@ -1,104 +1,164 @@
-﻿using System.Text.Json;
+using System.Linq;
+using System.Text.Json;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Migrations;
 
-namespace Idb.Libraries.Implementation.Services.Migrations
+namespace Idb.Libraries.Implementation.Services.Migrations;
+
+public sealed class StorageContractManifestStore
 {
-    public sealed class StorageContractManifestStore
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.General)
     {
-        private const string ManifestFolderName = ".manifests";
-        private const string ManifestFileSuffix = ".manifest.json";
-        private readonly JsonSerializerOptions _jsonOptions = new()
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    public async Task SaveAsync(IScopeDescriptor scope, IStorageContractManifest manifest, CancellationToken cancellationToken)
+    {
+        if (scope is null)
         {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
-
-        public async Task SaveAsync(IScopeDescriptor scope, StorageContractManifest manifest, CancellationToken cancellationToken)
-        {
-            if (scope is null)
-            {
-                throw new ArgumentNullException(nameof(scope));
-            }
-
-            if (manifest is null)
-            {
-                throw new ArgumentNullException(nameof(manifest));
-            }
-
-            var file = EnsureManifestFile(scope.Directory, manifest.VersionTag);
-
-            await using var stream = new FileStream(file.FullName, FileMode.Create, FileAccess.Write, FileShare.None);
-            await JsonSerializer.SerializeAsync(stream, manifest, _jsonOptions, cancellationToken).ConfigureAwait(false);
+            throw new ArgumentNullException(nameof(scope));
         }
 
-        public async Task<StorageContractManifest?> LoadAsync(IScopeDescriptor scope, string versionTag, CancellationToken cancellationToken)
+        if (manifest is null)
         {
-            if (scope is null)
-            {
-                throw new ArgumentNullException(nameof(scope));
-            }
-
-            if (string.IsNullOrWhiteSpace(versionTag))
-            {
-                throw new ArgumentException("Version tag cannot be null or whitespace.", nameof(versionTag));
-            }
-
-            var directory = GetManifestDirectory(scope.Directory);
-            if (!directory.Exists)
-            {
-                return null;
-            }
-
-            var file = new FileInfo(Path.Combine(directory.FullName, versionTag + ManifestFileSuffix));
-            if (!file.Exists)
-            {
-                return null;
-            }
-
-            await using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read);
-            return await JsonSerializer.DeserializeAsync<StorageContractManifest>(stream, _jsonOptions, cancellationToken).ConfigureAwait(false);
+            throw new ArgumentNullException(nameof(manifest));
         }
 
-        public StorageContractManifest? LoadLatest(IScopeDescriptor scope)
+        var file = EnsureManifestFile(scope.Directory, manifest.VersionTag);
+
+        await using var stream = new FileStream(file.FullName, new FileStreamOptions
         {
-            if (scope is null)
-            {
-                throw new ArgumentNullException(nameof(scope));
-            }
+            Mode = FileMode.Create,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            Options = FileOptions.Asynchronous,
+            BufferSize = 16 * 1024,
+        });
 
-            var directory = GetManifestDirectory(scope.Directory);
-            if (!directory.Exists)
-            {
-                return null;
-            }
+        var payload = SerializableManifest.FromInterface(manifest);
+        await JsonSerializer.SerializeAsync(stream, payload, SerializerOptions, cancellationToken).ConfigureAwait(false);
+    }
 
-            var candidate = directory.EnumerateFiles("*" + ManifestFileSuffix, SearchOption.TopDirectoryOnly)
-                                     .OrderByDescending(f => f.Name, StringComparer.Ordinal)
-                                     .FirstOrDefault();
-
-            if (candidate is null)
-            {
-                return null;
-            }
-
-            return JsonSerializer.Deserialize<StorageContractManifest>(File.ReadAllText(candidate.FullName), _jsonOptions);
+    public async Task<IStorageContractManifest?> LoadAsync(IScopeDescriptor scope, string versionTag, CancellationToken cancellationToken)
+    {
+        if (scope is null)
+        {
+            throw new ArgumentNullException(nameof(scope));
         }
 
-        private FileInfo EnsureManifestFile(DirectoryInfo scopeDirectory, string versionTag)
+        if (string.IsNullOrWhiteSpace(versionTag))
         {
-            var directory = GetManifestDirectory(scopeDirectory);
-            if (!directory.Exists)
-            {
-                Directory.CreateDirectory(directory.FullName);
-                directory.Refresh();
-            }
-
-            var path = Path.Combine(directory.FullName, versionTag + ManifestFileSuffix);
-            return new FileInfo(path);
+            throw new ArgumentException("Version tag cannot be null or whitespace.", nameof(versionTag));
         }
 
-        private static DirectoryInfo GetManifestDirectory(DirectoryInfo scopeDirectory)
-            => new DirectoryInfo(Path.Combine(scopeDirectory.FullName, ManifestFolderName));
+        var directory = GetManifestDirectory(scope.Directory);
+        var file = new FileInfo(Path.Combine(directory.FullName, versionTag + ".json"));
+        if (!file.Exists)
+        {
+            return null;
+        }
+
+        await using var stream = new FileStream(file.FullName, new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            Options = FileOptions.Asynchronous,
+            BufferSize = 16 * 1024,
+        });
+
+        var payload = await JsonSerializer.DeserializeAsync<SerializableManifest>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false);
+        return payload?.ToManifest();
+    }
+
+    public async Task<IStorageContractManifest?> LoadLatestAsync(IScopeDescriptor scope, CancellationToken cancellationToken)
+    {
+        if (scope is null)
+        {
+            throw new ArgumentNullException(nameof(scope));
+        }
+
+        var directory = GetManifestDirectory(scope.Directory);
+        if (!directory.Exists)
+        {
+            return null;
+        }
+
+        var latest = directory
+            .EnumerateFiles("*.json", SearchOption.TopDirectoryOnly)
+            .OrderByDescending(static file => file.LastWriteTimeUtc)
+            .ThenByDescending(static file => file.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        if (latest is null)
+        {
+            return null;
+        }
+
+        await using var stream = new FileStream(latest.FullName, new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            Options = FileOptions.Asynchronous,
+            BufferSize = 16 * 1024,
+        });
+
+        var payload = await JsonSerializer.DeserializeAsync<SerializableManifest>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false);
+        return payload?.ToManifest();
+    }
+
+    private static FileInfo EnsureManifestFile(DirectoryInfo scopeDirectory, string versionTag)
+    {
+        var directory = GetManifestDirectory(scopeDirectory);
+        if (!directory.Exists)
+        {
+            directory.Create();
+            directory.Refresh();
+        }
+
+        return new FileInfo(Path.Combine(directory.FullName, versionTag + ".json"));
+    }
+
+    private static DirectoryInfo GetManifestDirectory(DirectoryInfo scopeDirectory)
+    {
+        if (scopeDirectory is null)
+        {
+            throw new ArgumentNullException(nameof(scopeDirectory));
+        }
+
+        return new DirectoryInfo(Path.Combine(scopeDirectory.FullName, ".manifests"));
     }
 }
+
+internal sealed record SerializableManifest(
+    string ContractTypeName,
+    string ContractAssemblyName,
+    string VersionTag,
+    DateTimeOffset CreatedAt,
+    SerializableMember[] Members,
+    string Hash)
+{
+    public static SerializableManifest FromInterface(IStorageContractManifest manifest)
+        => new(
+            manifest.ContractTypeName,
+            manifest.ContractAssemblyName,
+            manifest.VersionTag,
+            manifest.CreatedAt,
+            manifest.Members.Select(m => new SerializableMember(m.Name, m.MemberTypeFullName, m.IsCollection, m.IsNullable)).ToArray(),
+            manifest.Hash);
+
+    public StorageContractManifest ToManifest()
+        => new()
+        {
+            ContractTypeName = ContractTypeName,
+            ContractAssemblyName = ContractAssemblyName,
+            VersionTag = VersionTag,
+            CreatedAt = CreatedAt,
+            Members = Members.Select(m => (IStorageContractMember)new StorageContractMember(m.Name, m.MemberTypeFullName, m.IsCollection, m.IsNullable)).ToArray(),
+            Hash = Hash
+        };
+}
+
+internal sealed record SerializableMember(string Name, string MemberTypeFullName, bool IsCollection, bool IsNullable);

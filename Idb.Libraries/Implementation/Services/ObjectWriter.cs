@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -6,6 +6,7 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Implementation.Dtos;
+using Idb.Libraries.Abstractions.Services.Repository.FileRepository;
 
 namespace Idb.Libraries.Implementation.Services
 {
@@ -37,8 +38,10 @@ namespace Idb.Libraries.Implementation.Services
 
         public async ValueTask<IObjectWriteResult> WriteAsync<T>(
             T obj,
+            IObjectEnvelope? envelope = null,
             string? id = null,
             CancellationToken cancellationToken = default)
+            where T : class
         {
             if (obj is null)
             {
@@ -87,14 +90,12 @@ namespace Idb.Libraries.Implementation.Services
                 var targetPath = Path.Combine(versionDirectory.FullName, fileName + _extension);
 
                 var payload = _serializer.Serialize(obj, runtimeType);
-                var envelope = new ObjectEnvelope
-                {
-                    VersionTag = scope.VersionTag,
-                    Payload = payload,
-                    TypeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName
-                };
+                var outboundEnvelope = envelope as ObjectEnvelope ?? new ObjectEnvelope();
+                outboundEnvelope.VersionTag = scope.VersionTag;
+                outboundEnvelope.Payload = payload;
+                outboundEnvelope.TypeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName;
 
-                var bytes = _serializer.Serialize(envelope);
+                var bytes = _serializer.Serialize(outboundEnvelope);
 
                 var options = CreateWriteStreamOptions(policy);
 
@@ -116,7 +117,7 @@ namespace Idb.Libraries.Implementation.Services
                                              scope.VersionTag,
                                              contractType,
                                              new FileInfo(targetPath),
-                                             envelope);
+                                             outboundEnvelope);
             }
             finally
             {
@@ -234,3 +235,4 @@ namespace Idb.Libraries.Implementation.Services
         }
     }
 }
+
