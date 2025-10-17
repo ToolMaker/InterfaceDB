@@ -1,7 +1,8 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Serialization
+namespace Idb.Libraries.Abstractions.Services.Serialization
 {
     public interface IObjectCache<TObject>
     { 
         
     }
 }
+

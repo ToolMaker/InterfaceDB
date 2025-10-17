@@ -20,3 +20,4 @@ public sealed class StorageScopeAttribute : Attribute
     /// </summary>
     public Type? FileNameFactory { get; init; }
 }
+

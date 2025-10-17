@@ -4,6 +4,7 @@ public interface IRepositoryIndexConfiguration
 {
     Type ContractType { get; }
     string Name { get; }
-    RepositoryIndexKind Kind { get; }
+    IndexTypeEnum Kind { get; }
     IReadOnlyDictionary<string, object?> Settings { get; }
 }
+

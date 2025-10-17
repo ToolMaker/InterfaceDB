@@ -292,3 +292,4 @@ public sealed record BaselineOptions(
     private static bool IsOption(string token)
         => token.StartsWith("--", StringComparison.Ordinal);
 }
+

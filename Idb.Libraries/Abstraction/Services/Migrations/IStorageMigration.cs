@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Migrations
+namespace Idb.Libraries.Abstractions.Services.Migrations
 {
     /// <summary>
     /// Describes a migration that upgrades persisted storage data for a specific contract interface
@@ -19,3 +19,4 @@
         Task ExecuteAsync(IStorageMigrationContext context, CancellationToken cancellationToken);
     }
 }
+

@@ -1,91 +1,73 @@
-﻿using Microsoft.Extensions.Logging;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Migrations;
-using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Repository.FileRepository;
 
-namespace Idb.Libraries.Implementation.Services.Migrations
+namespace Idb.Libraries.Implementation.Services.Migrations;
+
+public sealed class StorageContractManifestService : IStorageContractManifestService
 {
-    public sealed class StorageContractManifestService : IStorageContractManifestService
+    private readonly ILocalScopeService _scopeService;
+    private readonly StorageContractManifestBuilder _builder;
+    private readonly StorageContractManifestStore _store;
+
+    public StorageContractManifestService(
+        ILocalScopeService scopeService,
+        StorageContractManifestBuilder builder,
+        StorageContractManifestStore store)
     {
-        private readonly StorageContractManifestBuilder _builder;
-        private readonly StorageContractManifestStore _store;
-        private readonly ILocalScopeService _scopeService;
-        private readonly ILogger<StorageContractManifestService> _logger;
+        _scopeService = scopeService ?? throw new ArgumentNullException(nameof(scopeService));
+        _builder = builder ?? throw new ArgumentNullException(nameof(builder));
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+    }
 
-        public StorageContractManifestService(
-            StorageContractManifestBuilder builder,
-            StorageContractManifestStore store,
-            ILocalScopeService scopeService,
-            ILogger<StorageContractManifestService> logger)
+    public Task<IStorageContractManifest> SnapshotAsync<TContract>(CancellationToken cancellationToken = default)
+        => SnapshotAsync(typeof(TContract), cancellationToken);
+
+    public async Task<IStorageContractManifest> SnapshotAsync(Type contractType, CancellationToken cancellationToken = default)
+    {
+        var scope = ResolveScope(contractType);
+        var manifest = _builder.Build(contractType, scope.VersionTag);
+        await _store.SaveAsync(scope, manifest, cancellationToken).ConfigureAwait(false);
+        return manifest;
+    }
+
+    public Task<IStorageContractDiff> CompareWithLatestAsync<TContract>(CancellationToken cancellationToken = default)
+        => CompareWithLatestAsync(typeof(TContract), cancellationToken);
+
+    public async Task<IStorageContractDiff> CompareWithLatestAsync(Type contractType, CancellationToken cancellationToken = default)
+    {
+        var scope = ResolveScope(contractType);
+        var current = _builder.Build(contractType, scope.VersionTag);
+        var previous = await _store.LoadLatestAsync(scope, cancellationToken).ConfigureAwait(false);
+        return new StorageContractDiff(current, previous);
+    }
+
+    private IScopeDescriptor ResolveScope(Type contractType)
+    {
+        if (contractType is null)
         {
-            _builder = builder ?? throw new ArgumentNullException(nameof(builder));
-            _store = store ?? throw new ArgumentNullException(nameof(store));
-            _scopeService = scopeService ?? throw new ArgumentNullException(nameof(scopeService));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            throw new ArgumentNullException(nameof(contractType));
         }
 
-        public Task<IStorageContractManifest> SnapshotAsync<TContract>(CancellationToken cancellationToken = default)
-            => SnapshotAsync(typeof(TContract), cancellationToken);
-
-        public async Task<IStorageContractManifest> SnapshotAsync(Type contractType, CancellationToken cancellationToken = default)
+        var scope = _scopeService.GetScope(contractType);
+        if (scope is null)
         {
-            var scope = ResolveScope(contractType);
-            var manifest = (StorageContractManifest)_builder.Build(scope.ContractType, scope.VersionTag);
-
-            await _store.SaveAsync(scope, manifest, cancellationToken).ConfigureAwait(false);
-
-            _logger.LogInformation(
-                "Snapshot persisted for {Contract} version {Version} (hash {Hash}).",
-                scope.ContractType.FullName,
-                scope.VersionTag,
-                manifest.Hash);
-
-            return manifest;
+            throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
         }
 
-        public Task<IStorageContractDiff> CompareWithLatestAsync<TContract>(CancellationToken cancellationToken = default)
-            => CompareWithLatestAsync(typeof(TContract), cancellationToken);
+        return scope;
+    }
 
-        public Task<IStorageContractDiff> CompareWithLatestAsync(Type contractType, CancellationToken cancellationToken = default)
+    private sealed class StorageContractDiff : IStorageContractDiff
+    {
+        public StorageContractDiff(IStorageContractManifest current, IStorageContractManifest? previous)
         {
-            var scope = ResolveScope(contractType);
-            return CompareInternalAsync(scope, cancellationToken);
+            Current = current;
+            Previous = previous;
         }
 
-        private IScopeDescriptor ResolveScope(Type contractType)
-        {
-            if (contractType is null)
-            {
-                throw new ArgumentNullException(nameof(contractType));
-            }
-
-            var scope = _scopeService.GetScope(contractType)
-                        ?? throw new InvalidOperationException($"No storage scope registered for interface '{contractType.FullName}'.");
-
-            return scope;
-        }
-
-        private Task<IStorageContractDiff> CompareInternalAsync(IScopeDescriptor scope, CancellationToken cancellationToken)
-        {
-            var latest = _store.LoadLatest(scope);
-            var current = _builder.Build(scope.ContractType, scope.VersionTag);
-
-            if (latest is null)
-            {
-                return Task.FromResult<IStorageContractDiff>(new StorageContractDiff(current, null, hasDifferences: false));
-            }
-
-            if (string.Equals(latest.Hash, current.Hash, StringComparison.Ordinal))
-            {
-                return Task.FromResult<IStorageContractDiff>(new StorageContractDiff(current, latest, hasDifferences: false));
-            }
-
-            return Task.FromResult<IStorageContractDiff>(new StorageContractDiff(current, latest, hasDifferences: true));
-        }
+        public IStorageContractManifest Current { get; }
+        public IStorageContractManifest? Previous { get; }
+        public bool HasDifferences => Previous is null || !string.Equals(Current.Hash, Previous.Hash, StringComparison.Ordinal);
     }
 }
-
-
-
-
-

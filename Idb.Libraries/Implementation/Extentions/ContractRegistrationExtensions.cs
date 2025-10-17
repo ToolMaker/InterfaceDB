@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Attributes;
-using Idb.Libraries.Abstractions.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -17,21 +17,21 @@ public static class ContractRegistrationExtensions
         this IServiceCollection services,
         TOptions options,
         ILogger? logger = null)
-        where TOptions : IDbContractOptions
+        where TOptions : IDbContractConfigDto
         => RegisterContractInternal(services, options, ServiceLifetime.Transient, logger);
 
     public static IServiceCollection RegisterContractScoped<TOptions>(
         this IServiceCollection services,
         TOptions options,
         ILogger? logger = null)
-        where TOptions : IDbContractOptions
+        where TOptions : IDbContractConfigDto
         => RegisterContractInternal(services, options, ServiceLifetime.Scoped, logger);
 
     public static IServiceCollection RegisterContractSingleton<TOptions>(
         this IServiceCollection services,
         TOptions options,
         ILogger? logger = null)
-        where TOptions : IDbContractOptions
+        where TOptions : IDbContractConfigDto
         => RegisterContractInternal(services, options, ServiceLifetime.Singleton, logger);
 
     private static IServiceCollection RegisterContractInternal<TOptions>(
@@ -39,7 +39,7 @@ public static class ContractRegistrationExtensions
         TOptions options,
         ServiceLifetime lifetime,
         ILogger? logger)
-        where TOptions : IDbContractOptions
+        where TOptions : IDbContractConfigDto
     {
         logger ??= NullLogger.Instance;
 
@@ -139,3 +139,4 @@ public static class ContractRegistrationExtensions
         }
     }
 }
+

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -10,3 +10,4 @@ public interface ITrackedStorageObject
     /// </summary>
     IObjectEnvelope? Envelope { get; set; }
 }
+

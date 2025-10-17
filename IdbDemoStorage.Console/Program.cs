@@ -7,7 +7,6 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstraction.Enums;
-using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -21,6 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Idb.Libraries.Abstraction.Dtos;
 
 namespace IdbDemoStorage.ConsoleHost;
 
@@ -89,9 +89,10 @@ internal static class Program
         System.Console.WriteLine();
 
         // Step 5: Build the final service provider with all registrations
-        var contractOptions = new List<IDbContractOptions> { personOptions };
+        var contractOptions = new List<IDbContractConfigDto> { personOptions };
         using var provider = BuildServiceProvider(configuration, dataRoot, personContext, contractOptions);
         var repository = provider.GetRequiredService<IRepositoryNode>();
+        await repository.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
         var loadHandlers = provider.GetRequiredService<IEnumerable<IRepositoryLoadStrategyHandler>>();
         var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
@@ -105,39 +106,37 @@ internal static class Program
             loadLogger,
             CancellationToken.None).ConfigureAwait(false);
 
-        ConfigureLastNameIndex(repository, personContext, personOptions);
-
-        var indexes = repository.GetIndexConfigurations(personContext.ContractType);
-        System.Console.WriteLine($"Configured indexes for {personContext.ContractType.FullName}: {indexes.Count}");
-
         var people = new[]
         {
-            ("person-001", new Person("Ada", "Lovelace")),
-            ("person-002", new Person("Alan", "Turing")),
-            ("person-003", new Person("Grace", "Hopper"))
+            new Person("Ada", "Lovelace"),
+            new Person("Alan", "Turing"),
+            new Person("Grace", "Hopper")
         };
 
         System.Console.WriteLine();
         System.Console.WriteLine("Saving sample persons...");
-        foreach (var (id, person) in people)
+        foreach (var person in people)
         {
-            var writeResult = await repository
-                .SaveAsync<IPerson>(person, id, CancellationToken.None)
+            await repository
+                .SaveAsync<IPerson>(person, cancellationToken: CancellationToken.None)
                 .ConfigureAwait(false);
 
-            System.Console.WriteLine($"  Saved {person.FirstName} {person.LastName} (id {writeResult.Id})");
+            System.Console.WriteLine($"  Saved {person.FirstName} {person.LastName}");
         }
 
         System.Console.WriteLine();
-        System.Console.WriteLine("Reloading persons...");
-        foreach (var (id, _) in people)
-        {
-            var readResult = await repository
-                .LoadAsync<IPerson>(id, cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
+        System.Console.WriteLine("Retrieving Ada via dynamic migration-aware load...");
+        var adaResult = await repository
+            .LoadAsync<IPerson>(p => p.LastName == "Lovelace", CancellationToken.None)
+            .ConfigureAwait(false);
+        System.Console.WriteLine($"  Loaded {adaResult.Value.FirstName} {adaResult.Value.LastName}");
 
-            var loaded = readResult.Value;
-            System.Console.WriteLine($"  {id}: {loaded.FirstName} {loaded.LastName}");
+        System.Console.WriteLine();
+        System.Console.WriteLine("Checking existence of stored people...");
+        foreach (var person in people)
+        {
+            var exists = await repository.ExistsAsync<IPerson>(person, CancellationToken.None).ConfigureAwait(false);
+            System.Console.WriteLine($"  {person.FirstName} {person.LastName}: {(exists ? "present" : "missing")}");
         }
 
         return 0;
@@ -168,7 +167,7 @@ internal static class Program
         IConfiguration configuration,
         string dataRoot,
         ContractVersionContext personContext,
-        IReadOnlyList<IDbContractOptions> contractOptions)
+        IReadOnlyList<IDbContractConfigDto> contractOptions)
     {
         var services = new ServiceCollection();
 
@@ -254,7 +253,7 @@ internal static class Program
     private static void ConfigureLastNameIndex(
         IRepositoryNode repository,
         ContractVersionContext context,
-        IDbContractOptions contractOption)
+        IDbContractConfigDto contractOption)
     {
         var mode = contractOption.IndexProvisioningMode;
         var allowsDynamic = mode is ContractIndexProvisioningModeType.Dynamic
@@ -292,11 +291,11 @@ internal static class Program
             body = Expression.Convert(body, typeof(string));
         }
 
-        var lambda = Expression.Lambda(body, parameter);
-        var delegateInstance = lambda.Compile();
+        var delegateType = typeof(Func<,>).MakeGenericType(contractType, typeof(string));
+        var lambda = Expression.Lambda(delegateType, body, parameter);
 
         var indexType = typeof(SortedListIndexConfiguration<,>).MakeGenericType(contractType, typeof(string));
-        if (Activator.CreateInstance(indexType, "ByLastName", delegateInstance, null, null) is not IRepositoryIndexConfiguration configuration)
+        if (Activator.CreateInstance(indexType, "ByLastName", lambda, null, null) is not IRepositoryIndexConfiguration configuration)
         {
             throw new InvalidOperationException("Failed to construct sorted-list index configuration.");
         }
@@ -336,9 +335,25 @@ internal static class Program
         var contractType = contractAssembly.GetType(contractTypeName)
             ?? throw new InvalidOperationException($"Unable to locate contract type {contractTypeName}.");
 
-        var implementationTypeName = $"IdbDemoStorage.Implementations.{contractName}.{desiredSegment}.{contractName}";
-        var implementationType = contractAssembly.GetType(implementationTypeName)
-            ?? throw new InvalidOperationException($"Unable to locate implementation type {implementationTypeName}.");
+        var implementationType = contractAssembly
+            .GetTypes()
+            .FirstOrDefault(t =>
+                t.IsClass &&
+                !t.IsAbstract &&
+                contractType.IsAssignableFrom(t) &&
+                (t.Namespace?.Contains(desiredSegment, StringComparison.OrdinalIgnoreCase) ?? false));
+
+        if (implementationType is null)
+        {
+            implementationType = contractAssembly
+                .GetTypes()
+                .FirstOrDefault(t => t.IsClass && !t.IsAbstract && contractType.IsAssignableFrom(t));
+        }
+
+        if (implementationType is null)
+        {
+            throw new InvalidOperationException($"Unable to locate implementation type for contract {contractType.FullName} (segment {desiredSegment}).");
+        }
 
         return new ContractVersionContext(desiredVersion, desiredSegment, contractType, implementationType);
     }
@@ -436,8 +451,8 @@ internal static class Program
         Type ContractType,
         Type ImplementationType);
 
-    private static IDbContractOptions FindContractOption(
-        IReadOnlyList<IDbContractOptions> options,
+    private static IDbContractConfigDto FindContractOption(
+        IReadOnlyList<IDbContractConfigDto> options,
         string contractName)
     {
         var option = options.FirstOrDefault(o =>

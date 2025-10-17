@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Serialization
+namespace Idb.Libraries.Abstractions.Services.Serialization
 {
     public interface IObjectEnvelope
     {
@@ -8,3 +8,4 @@
         ObjectFingerprint Fingerprint { get; set; }
     }
 }
+

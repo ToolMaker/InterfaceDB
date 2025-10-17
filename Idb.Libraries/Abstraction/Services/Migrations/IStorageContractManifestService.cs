@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Migrations
+namespace Idb.Libraries.Abstractions.Services.Migrations
 {
     public interface IStorageContractManifestService
     {
@@ -15,3 +15,4 @@
         bool HasDifferences { get; }
     }
 }
+

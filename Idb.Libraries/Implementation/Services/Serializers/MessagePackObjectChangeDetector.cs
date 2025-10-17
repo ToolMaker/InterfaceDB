@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.IO.Hashing;
@@ -10,7 +10,7 @@ using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using MessagePack;
 
-namespace Idb.Libraries.Implementation.Services.Serialization;
+namespace Idb.Libraries.Implementation.Services.Serializers;
 
 public sealed class MessagePackObjectChangeDetector : IObjectChangeDetector
 {
@@ -283,3 +283,4 @@ public sealed class MessagePackObjectChangeDetector : IObjectChangeDetector
         };
     }
 }
+

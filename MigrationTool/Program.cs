@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstraction.Dtos;
 using Idb.Libraries.Abstraction.Enums;
+using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Enums;
-using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Migrations;
+using Idb.Libraries.Implementation.Options;
 using Idb.Libraries.Implementation.Services.Baselines;
 using Idb.Libraries.Implementation.Services.Migrations;
 
@@ -683,22 +685,28 @@ internal static class Program
         //       without breaking the generated code. Also, keep the formatting consistant to avoid unnecessary diffs. I removed using namspaces for flexability.
         var lines = new[]
         {
-$@"namespace {namespaceName};
-public sealed class {className} : {nameof(IDbContractOptions)}
+$@"using Idb.Libraries.Abstraction.Enums;
+using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services.Indexes;
+using Idb.Libraries.Implementation.Options;
+
+namespace {namespaceName};
+public sealed class {className} : {nameof(IDbContractConfigDto)}
 {{
-    public string {nameof(IDbContractOptions.Key)} {{ get; }} = ""{sanitizedKey}"";
-    public string {nameof(IDbContractOptions.ContractName)} {{ get; }} = ""{sanitizedContractName}"";
-    public string? {nameof(IDbContractOptions.ImplementationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};
-    public string? {nameof(IDbContractOptions.ContractPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};
-    public string? {nameof(IDbContractOptions.MigrationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};
-    public string? {nameof(IDbContractOptions.DataRoot)} {{ get; }} = ""Data"";
-    public string? {nameof(IDbContractOptions.ActiveVersion)} {{ get; }} = ""{result.NewVersion}"";
-    public {nameof(IRepositoryIndexConfiguration)}[]? {nameof(IDbContractOptions.Indexes)} {{ get; }} = Array.Empty<{nameof(IRepositoryIndexConfiguration)}>();
-    public {nameof(ContractIndexProvisioningModeType)} {nameof(IDbContractOptions.IndexProvisioningMode)} {{ get; }} = {nameof(ContractIndexProvisioningModeType)}.{ContractIndexProvisioningModeType.Dynamic.ToString()};
-    public {nameof(ContractRepositoryType)} {nameof(IDbContractOptions.RepositoryType)} {{ get; }} = {nameof(ContractRepositoryType)}.{ContractRepositoryType.FileSystem.ToString()};
-    public {nameof(RepositoryLoadStrategyType)} {nameof(IDbContractOptions.LoadStrategy)} {{ get; }} = {nameof(RepositoryLoadStrategyType)}.{RepositoryLoadStrategyType.Lazy.ToString()};
-    public {nameof(ContractObjectWriterType)} {nameof(IDbContractOptions.ObjectWriter)} {{ get; }} = {nameof(ContractObjectWriterType)}.{ContractObjectWriterType.Binary.ToString()};
-    public {nameof(ContractObjectReaderType)} {nameof(IDbContractOptions.ObjectReader)} {{ get; }} = {nameof(ContractObjectReaderType)}.{ContractObjectReaderType.Binary.ToString()};
+    public string {nameof(IDbContractConfigDto.Key)} {{ get; }} = ""{sanitizedKey}"";
+    public string {nameof(IDbContractConfigDto.ContractName)} {{ get; }} = ""{sanitizedContractName}"";
+    public string? {nameof(IDbContractConfigDto.ImplementationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};
+    public string? {nameof(IDbContractConfigDto.ContractPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};
+    public string? {nameof(IDbContractConfigDto.MigrationsPath)} {{ get; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};
+    public string? {nameof(IDbContractConfigDto.DataRoot)} {{ get; }} = ""Data"";
+    public string? {nameof(IDbContractConfigDto.ActiveVersion)} {{ get; }} = ""{result.NewVersion}"";
+    public {nameof(IRepositoryIndexConfiguration)}[]? {nameof(IDbContractConfigDto.Indexes)} {{ get; }} = Array.Empty<{nameof(IRepositoryIndexConfiguration)}>();
+    public {nameof(ContractIndexProvisioningModeType)} {nameof(IDbContractConfigDto.IndexProvisioningMode)} {{ get; }} = {nameof(ContractIndexProvisioningModeType)}.{ContractIndexProvisioningModeType.Dynamic.ToString()};
+    public {nameof(ContractRepositoryType)} {nameof(IDbContractConfigDto.RepositoryType)} {{ get; }} = {nameof(ContractRepositoryType)}.{ContractRepositoryType.FileSystem.ToString()};
+    public {nameof(RepositoryLoadStrategyType)} {nameof(IDbContractConfigDto.LoadStrategy)} {{ get; }} = {nameof(RepositoryLoadStrategyType)}.{RepositoryLoadStrategyType.Lazy.ToString()};
+    public {nameof(IMigrationStrategy)} {nameof(IDbContractConfigDto.MigrationStrategy)} {{ get; }} = new {nameof(MigrationStrategyOptions)}();
+    public {nameof(ContractObjectWriterType)} {nameof(IDbContractConfigDto.ObjectWriter)} {{ get; }} = {nameof(ContractObjectWriterType)}.{ContractObjectWriterType.Binary.ToString()};
+    public {nameof(ContractObjectReaderType)} {nameof(IDbContractConfigDto.ObjectReader)} {{ get; }} = {nameof(ContractObjectReaderType)}.{ContractObjectReaderType.Binary.ToString()};
 }}",
             string.Empty,
         };
@@ -929,5 +937,6 @@ public sealed class {className} : {nameof(IDbContractOptions)}
             || string.Equals(response, "yes", StringComparison.OrdinalIgnoreCase);
     }
 }
+
 
 

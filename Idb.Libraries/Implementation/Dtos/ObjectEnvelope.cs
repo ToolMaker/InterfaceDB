@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Services.Serializers;
 
 namespace Idb.Libraries.Implementation.Dtos
 {
@@ -20,3 +21,4 @@ namespace Idb.Libraries.Implementation.Dtos
         public byte[] Payload { get; init; } = Array.Empty<byte>();
     }
 }
+

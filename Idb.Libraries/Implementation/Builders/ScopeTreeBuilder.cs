@@ -1,4 +1,7 @@
-using System.Collections.Concurrent;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.IO;
 using System.Reflection;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
@@ -6,170 +9,129 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Implementation.Dtos;
 using Idb.Libraries.Implementation.Services;
 
-namespace Idb.Libraries.Implementation.Builders
+namespace Idb.Libraries.Implementation.Builders;
+
+internal sealed class ScopeTreeBuilder
 {
-    public sealed class ScopeTreeBuilder
+    private static readonly Type FileNameFactoryInterface = typeof(IFileNameFactory);
+    private readonly Assembly[] _assemblies;
+    private readonly DirectoryInfo _rootDirectory;
+
+    public ScopeTreeBuilder(IEnumerable<Assembly> assemblies, DirectoryInfo rootDirectory)
     {
-        private readonly IReadOnlyCollection<Assembly> _assemblies;
-        private readonly DirectoryInfo _root;
-
-        private static readonly ConcurrentDictionary<AssemblySetKey, IReadOnlyList<ScopeMetadata>> MetadataCache = new();
-
-        public ScopeTreeBuilder(IEnumerable<Assembly> assemblies, DirectoryInfo root)
+        if (assemblies is null)
         {
-            _assemblies = assemblies.Distinct().ToArray();
-            _root = root;
+            throw new ArgumentNullException(nameof(assemblies));
         }
 
-        public IReadOnlyDictionary<Type, IScopeDescriptor> Build()
+        _rootDirectory = rootDirectory ?? throw new ArgumentNullException(nameof(rootDirectory));
+        _assemblies = assemblies
+            .Where(static assembly => assembly is not null)
+            .Distinct()
+            .ToArray();
+    }
+
+    public IReadOnlyDictionary<Type, IScopeDescriptor> Build()
+    {
+        if (_assemblies.Length == 0)
         {
-            if (!_root.Exists)
-            {
-                Directory.CreateDirectory(_root.FullName);
-                _root.Refresh();
-            }
-
-            var key = AssemblySetKey.Create(_assemblies);
-            var metadata = MetadataCache.GetOrAdd(key, _ => BuildMetadata(_assemblies));
-
-            var descriptors = new Dictionary<Type, IScopeDescriptor>(metadata.Count);
-
-            foreach (var meta in metadata)
-            {
-                var directoryPath = Path.Combine(_root.FullName, meta.ContractType.Name);
-                var directory = new DirectoryInfo(directoryPath);
-
-                if (!directory.Exists)
-                {
-                    Directory.CreateDirectory(directory.FullName);
-                    directory.Refresh();
-                }
-
-                descriptors[meta.ContractType] = new ScopeDescriptor(
-                    meta.ContractType,
-                    directory,
-                    meta.Implementations,
-                    meta.VersionTag,
-                    meta.FileNameFactoryType);
-            }
-
-            return descriptors;
+            return new Dictionary<Type, IScopeDescriptor>(0);
         }
 
-        private static IReadOnlyList<ScopeMetadata> BuildMetadata(IReadOnlyCollection<Assembly> assemblies)
+        var allTypes = _assemblies
+            .SelectMany(SafeGetTypes)
+            .Where(static type => type is not null)
+            .Cast<Type>()
+            .ToArray();
+
+        var contracts = allTypes
+            .Where(IsStorageContract)
+            .ToArray();
+
+        var descriptors = new Dictionary<Type, IScopeDescriptor>(contracts.Length);
+
+        foreach (var contract in contracts)
         {
-            var allTypes = assemblies.SelectMany(GetLoadableTypes).ToArray();
-
-            var scopedInterfaces = allTypes
-                .Where(t => t.IsInterface && t.IsDefined(typeof(StorageScopeAttribute), inherit: false))
-                .ToArray();
-
-            var candidateImplementations = allTypes
-                .Where(t => t.IsClass && !t.IsAbstract)
-                .ToArray();
-
-            var list = new List<ScopeMetadata>(scopedInterfaces.Length);
-
-            foreach (var contract in scopedInterfaces)
-            {
-                var attribute = contract.GetCustomAttribute<StorageScopeAttribute>(inherit: false);
-
-                var implementations = candidateImplementations
-                    .Where(contract.IsAssignableFrom)
-                    .ToArray();
-
-                var versionTag = ResolveVersionTag(contract, attribute);
-                var fileNameFactoryType = ResolveFileNameFactoryType(contract, attribute);
-
-                list.Add(new ScopeMetadata(contract, versionTag, implementations, fileNameFactoryType));
-            }
-
-            return list;
+            var descriptor = CreateDescriptor(contract, allTypes);
+            descriptors[contract] = descriptor;
         }
 
-        private static string ResolveVersionTag(Type contract, StorageScopeAttribute? attribute)
+        return descriptors;
+    }
+
+    private IScopeDescriptor CreateDescriptor(Type contractType, IReadOnlyCollection<Type> allTypes)
+    {
+        var attribute = contractType.GetCustomAttribute<StorageScopeAttribute>(inherit: false)
+                        ?? throw new InvalidOperationException($"Contract type '{contractType.FullName}' must be decorated with [StorageScope].");
+
+        var versionTag = string.IsNullOrWhiteSpace(attribute.VersionTag)
+            ? "1.0"
+            : attribute.VersionTag.Trim();
+
+        var fileNameFactoryType = attribute.FileNameFactory ?? typeof(DefaultFileNameFactory);
+        if (!FileNameFactoryInterface.IsAssignableFrom(fileNameFactoryType))
         {
-            var tag = attribute?.VersionTag;
-
-            if (string.IsNullOrWhiteSpace(tag))
-            {
-                tag = "1.0";
-            }
-
-            if (tag.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            {
-                throw new FormatException($"Version tag '{tag}' declared on '{contract.FullName}' contains invalid path characters.");
-            }
-
-            if (tag.Contains(Path.DirectorySeparatorChar) || tag.Contains(Path.AltDirectorySeparatorChar))
-            {
-                throw new FormatException($"Version tag '{tag}' declared on '{contract.FullName}' cannot contain directory separators.");
-            }
-
-            return tag;
+            throw new InvalidOperationException(
+                $"File name factory type '{fileNameFactoryType.FullName}' must implement {nameof(IFileNameFactory)}.");
         }
 
-        private static Type ResolveFileNameFactoryType(Type contract, StorageScopeAttribute? attribute)
+        var implementations = allTypes
+            .Where(type =>
+                type is { IsClass: true, IsAbstract: false } &&
+                contractType.IsAssignableFrom(type))
+            .Distinct()
+            .ToArray();
+
+        var contractDirectory = new DirectoryInfo(Path.Combine(_rootDirectory.FullName, contractType.Name));
+
+        return new ScopeDescriptor(
+            contractType,
+            contractDirectory,
+            implementations,
+            versionTag,
+            fileNameFactoryType);
+    }
+
+    private static bool IsStorageContract(Type type)
+    {
+        if (type is null)
         {
-            var type = attribute?.FileNameFactory;
-            if (type is null)
-            {
-                return typeof(DefaultFileNameFactory);
-            }
-
-            if (!typeof(IFileNameFactory).IsAssignableFrom(type))
-            {
-                throw new InvalidOperationException($"File-name factory declared on '{contract.FullName}' must implement {nameof(IFileNameFactory)}.");
-            }
-
-            if (type.IsAbstract || type.IsInterface)
-            {
-                throw new InvalidOperationException($"File-name factory type '{type.FullName}' declared on '{contract.FullName}' must be a concrete class.");
-            }
-
-            return type;
+            return false;
         }
 
-        private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        if (!type.IsInterface)
         {
-            try
-            {
-                return assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException ex)
-            {
-                return ex.Types.Where(t => t != null)!;
-            }
+            return false;
         }
 
-        private readonly record struct ScopeMetadata(Type ContractType, string VersionTag, Type[] Implementations, Type FileNameFactoryType);
+        return type.GetCustomAttribute<StorageScopeAttribute>(inherit: false) is not null;
+    }
 
-        private readonly record struct AssemblySetKey(string[] AssemblyNames)
+    private static IEnumerable<Type?> SafeGetTypes(Assembly assembly)
+    {
+        if (assembly is null)
         {
-            public static AssemblySetKey Create(IEnumerable<Assembly> assemblies)
-            {
-                var names = assemblies
-                    .Where(a => !a.IsDynamic)
-                    .Select(a => a.FullName ?? a.GetName().Name ?? string.Empty)
-                    .Distinct()
-                    .OrderBy(n => n, StringComparer.Ordinal)
-                    .ToArray();
+            yield break;
+        }
 
-                return new AssemblySetKey(names);
-            }
+        Type[]? types;
 
-            public bool Equals(AssemblySetKey other)
-                => AssemblyNames.AsSpan().SequenceEqual(other.AssemblyNames);
+        try
+        {
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            types = ex.Types;
+        }
+        catch
+        {
+            yield break;
+        }
 
-            public override int GetHashCode()
-            {
-                var hash = new HashCode();
-                foreach (var name in AssemblyNames)
-                {
-                    hash.Add(name, StringComparer.Ordinal);
-                }
-                return hash.ToHashCode();
-            }
+        foreach (var type in types)
+        {
+            yield return type;
         }
     }
 }

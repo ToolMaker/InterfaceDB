@@ -1,4 +1,4 @@
-﻿using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstractions.Services.Migrations
 {
@@ -33,3 +33,4 @@ namespace Idb.Libraries.Abstractions.Services.Migrations
         ValueTask DeleteSourceAsync(string id, CancellationToken cancellationToken = default);
     }
 }
+

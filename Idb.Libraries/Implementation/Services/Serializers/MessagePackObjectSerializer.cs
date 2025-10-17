@@ -1,7 +1,6 @@
-﻿using System;
+using System;
 using MessagePack;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Services.Serializers;
 
@@ -23,4 +22,5 @@ public sealed class MessagePackObjectSerializer : IObjectSerializer
     public object Deserialize(byte[] data, Type valueType)
         => MessagePackSerializer.Deserialize(valueType, data, Options)!;
 }
+
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -36,4 +36,5 @@ namespace Idb.Libraries.Implementation.Services.Serializers
         }
     }
 }
+
 

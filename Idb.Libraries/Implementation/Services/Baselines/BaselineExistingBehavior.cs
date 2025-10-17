@@ -6,3 +6,4 @@ public enum BaselineExistingBehavior
     Skip = 1,
     Force = 2,
 }
+

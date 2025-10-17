@@ -6,3 +6,4 @@ public enum BaselineIncrementBehavior
     Prompt = 1,
     Skip = 2,
 }
+

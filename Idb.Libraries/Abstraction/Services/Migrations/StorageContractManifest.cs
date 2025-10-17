@@ -1,4 +1,4 @@
-﻿namespace Idb.Libraries.Abstractions.Services.Migrations
+namespace Idb.Libraries.Abstractions.Services.Migrations
 {
     public interface IStorageContractManifest
     {
@@ -18,3 +18,4 @@
         bool IsNullable { get; }
     }
 }
+

@@ -2,15 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Idb.Libraries.Abstraction.Dtos;
 using Idb.Libraries.Abstraction.Enums;
-using Idb.Libraries.Abstractions.Options;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IdbDemoStorage.ConsoleHost;
 
 internal static class ServiceCollectionExtensions
 {
-    public static IReadOnlyList<IDbContractOptions> DiscoverContractOptions(params Assembly[] assemblies)
+    public static IReadOnlyList<IDbContractConfigDto> DiscoverContractOptions(params Assembly[] assemblies)
     {
         var searchAssemblies = (assemblies is null || assemblies.Length == 0)
             ? AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).ToArray()
@@ -18,20 +18,20 @@ internal static class ServiceCollectionExtensions
 
         return searchAssemblies
             .SelectMany(SafeGetTypes)
-            .Where(t => typeof(IDbContractOptions).IsAssignableFrom(t)
+            .Where(t => typeof(IDbContractConfigDto).IsAssignableFrom(t)
                         && !t.IsAbstract
                         && !t.IsInterface)
             .Select(InstantiateOption)
             .Where(o => o is not null)
-            .Cast<IDbContractOptions>()
+            .Cast<IDbContractConfigDto>()
             .GroupBy(o => o.Key, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .ToArray();
     }
 
-    public static IServiceCollection AddContractOptions(this IServiceCollection services, IEnumerable<IDbContractOptions> options)
+    public static IServiceCollection AddContractOptions(this IServiceCollection services, IEnumerable<IDbContractConfigDto> options)
     {
-        var optionArray = options?.ToArray() ?? Array.Empty<IDbContractOptions>();
+        var optionArray = options?.ToArray() ?? Array.Empty<IDbContractConfigDto>();
         foreach (var option in optionArray)
         {
             ValidateContractOption(option);
@@ -41,12 +41,12 @@ internal static class ServiceCollectionExtensions
 
         foreach (var option in optionArray)
         {
-            services.AddSingleton(typeof(IDbContractOptions), option);
+            services.AddSingleton(typeof(IDbContractConfigDto), option);
             services.AddSingleton(option.GetType(), option);
         }
 
-        services.AddSingleton<IReadOnlyList<IDbContractOptions>>(optionArray);
-        services.AddSingleton<IDictionary<string, IDbContractOptions>>(lookup);
+        services.AddSingleton<IReadOnlyList<IDbContractConfigDto>>(optionArray);
+        services.AddSingleton<IDictionary<string, IDbContractConfigDto>>(lookup);
 
         return services;
     }
@@ -66,10 +66,10 @@ internal static class ServiceCollectionExtensions
         }
     }
 
-    private static IDbContractOptions? InstantiateOption(Type type)
-        => Activator.CreateInstance(type) as IDbContractOptions;
+    private static IDbContractConfigDto? InstantiateOption(Type type)
+        => Activator.CreateInstance(type) as IDbContractConfigDto;
 
-    private static void ValidateContractOption(IDbContractOptions option)
+    private static void ValidateContractOption(IDbContractConfigDto option)
     {
         if (option is null)
         {

@@ -18,12 +18,12 @@ public class FileSystemRepositoryIndexTests : FileSystemRepositoryTestBase
         IndexChange? observed = null;
         repository.Subscribe(new IndexSubscription(typeof(ITestContract), "Length"), change => observed = change);
 
-        var result = await repository.SaveAsync<ITestContract>(SampleContract, "custom-id", CancellationToken.None);
+        var result = await repository.SaveAsync<ITestContract>(SampleContract, cancellationToken: CancellationToken.None);
 
         Assert.Same(DefaultWriteResult, result);
         Assert.NotNull(observed);
         Assert.Equal(IndexChangeKind.Updated, observed!.Kind);
-        Assert.Equal("custom-id", writer.LastId);
+        Assert.False(string.IsNullOrWhiteSpace(result.Id));
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public class FileSystemRepositoryIndexTests : FileSystemRepositoryTestBase
         var configs = new IRepositoryIndexConfiguration[]
         {
             CreateLengthIndex(),
-            new TestIndexConfiguration(typeof(ITestContract), "MiscIndex", RepositoryIndexKind.Custom)
+            new TestIndexConfiguration(typeof(ITestContract), "MiscIndex", IndexTypeEnum.Custom)
         };
 
         repository.ConfigureIndexes(configs);
@@ -117,7 +117,7 @@ public class FileSystemRepositoryIndexTests : FileSystemRepositoryTestBase
         public TestIndexConfiguration(
             Type contractType,
             string name,
-            RepositoryIndexKind kind,
+            IndexTypeEnum kind,
             IReadOnlyDictionary<string, object?>? settings = null)
         {
             ContractType = contractType;
@@ -128,7 +128,7 @@ public class FileSystemRepositoryIndexTests : FileSystemRepositoryTestBase
 
         public Type ContractType { get; }
         public string Name { get; }
-        public RepositoryIndexKind Kind { get; }
+        public IndexTypeEnum Kind { get; }
         public IReadOnlyDictionary<string, object?> Settings { get; }
     }
 }

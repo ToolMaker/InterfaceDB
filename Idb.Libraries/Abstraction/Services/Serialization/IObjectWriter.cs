@@ -1,4 +1,4 @@
-﻿using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization
 {
@@ -6,7 +6,9 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     {
         ValueTask<IObjectWriteResult> WriteAsync<T>(
             T obj,
+            IObjectEnvelope? envelope = null,
             string? id = null,
-            CancellationToken cancellationToken = default);
+            CancellationToken cancellationToken = default) where T : class;
     }
 }
+

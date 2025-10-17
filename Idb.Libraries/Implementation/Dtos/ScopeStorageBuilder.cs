@@ -12,3 +12,4 @@ namespace Idb.Libraries.Implementation.Dtos
         public DirectoryInfo? RootDirectory { get; set; }
     }
 }
+
