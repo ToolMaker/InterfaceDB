@@ -6,7 +6,7 @@ namespace Idb.Libraries.Abstractions.Services.Repository;
 
 /// <summary>
 /// Provides persistence operations for contract instances backed by a concrete storage medium.
-/// Serves as the entry point for callers, delegating query/command flows to the index coordinator while
+/// Serves as the entry point for callers, delegating query/command flows to the index manager while
 /// managing repository-level concerns such as scope discovery and storage policy selection.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by the repository.</typeparam>
@@ -26,7 +26,7 @@ public interface IRepository<TContract>
 
     /// <summary>
     /// Persists the supplied entity and returns the tracked instance (post-write mutations included).
-    /// The repository routes the save through the configured <see cref="IIndexCoordinator{TContract}"/> so indexes
+    /// The repository routes the save through the configured <see cref="IIndexManager{TContract}"/> so indexes
     /// can update before the writer commits the envelope to disk.
     /// </summary>
     /// <param name="entityToSave">Contract instance to store.</param>
@@ -38,7 +38,7 @@ public interface IRepository<TContract>
 
     /// <summary>
     /// Queries the repository for an entity that satisfies the predicate and returns the materialized instance.
-    /// The repository forwards the predicate to the index coordinator, which selects the optimal index,
+    /// The repository forwards the predicate to the index manager, which selects the optimal index,
     /// retrieves matching envelopes, and materializes contract instances to hand back.
     /// </summary>
     /// <param name="predicate">Expression used to locate the entity.</param>
@@ -50,7 +50,7 @@ public interface IRepository<TContract>
 
     /// <summary>
     /// Checks whether an entity with equivalent identity already exists.
-    /// Delegates to the index coordinator so inexpensive index lookups can short-circuit the operation.
+    /// Delegates to the index manager so inexpensive index lookups can short-circuit the operation.
     /// </summary>
     /// <param name="entityToCheck">Contract instance to compare.</param>
     /// <param name="cancellationToken">Token that propagates cancellation.</param>
