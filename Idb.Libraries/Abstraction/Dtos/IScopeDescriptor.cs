@@ -1,7 +1,8 @@
 
 namespace Idb.Libraries.Abstractions.Dtos
 {
-    public interface IScopeDescriptor
+    public interface IScopeDescriptor<TContract>
+        where TContract : class
     {
         Type ContractType { get; }
         DirectoryInfo Directory { get; }

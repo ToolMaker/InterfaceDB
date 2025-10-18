@@ -2,19 +2,11 @@ using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization
 {
-    public interface IObjectReader
+    public interface IObjectReader<TContract>
     {
-        ValueTask<IObjectReadResult<T>> ReadAsync<T>(
-            string id,
-            string? versionTag = null,
+        ValueTask<IObjectReadResult<TContract>> ReadAsync<TContract>(
             CancellationToken cancellationToken = default)
-            where T : class;
-
-        ValueTask<bool> ExistsAsync<T>(
-            string id,
-            string? versionTag = null,
-            CancellationToken cancellationToken = default)
-            where T : class;
+            where TContract : class;
     }
 }
 

@@ -4,11 +4,11 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
 {
     public interface IObjectWriter
     {
-        ValueTask<IObjectWriteResult> WriteAsync<T>(
-            T obj,
-            IObjectEnvelope? envelope = null,
-            string? id = null,
-            CancellationToken cancellationToken = default) where T : class;
+        ValueTask<IObjectWriteResult<TContract>> WriteAsync<TContract>(
+            TContract obj,
+            IObjectEnvelope<TContract> envelope,
+            CancellationToken cancellationToken = default) 
+            where TContract : class;
     }
 }
 
