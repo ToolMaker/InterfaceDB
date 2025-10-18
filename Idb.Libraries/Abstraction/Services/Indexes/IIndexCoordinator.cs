@@ -1,4 +1,5 @@
 using Idb.Libraries.Abstractions.Dtos;
+using System.Linq.Expressions;
 
 namespace Idb.Libraries.Abstractions.Services.Indexes;
 
@@ -12,7 +13,8 @@ public interface IIndexCoordinator<TContract>
 {
     ValueTask<TContract> SaveAsync(TContract entity, CancellationToken cancellationToken = default);
 
-    ValueTask<TContract> LoadAsync(string? versionTag = null, CancellationToken cancellationToken = default);
+    ValueTask<TContract> QueryAsync(
+        Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
 
     ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default);
         
