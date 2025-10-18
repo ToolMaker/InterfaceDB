@@ -11,7 +11,7 @@ namespace Idb.Libraries.Abstractions.Services.Repository;
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by the repository.</typeparam>
 public interface IRepository<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class
 {
     /// <summary>
     /// Identifies the repository implementation type (file system, memory, etc.).

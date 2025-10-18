@@ -6,7 +6,7 @@ namespace Idb.Libraries.Abstractions.Dtos
     /// </summary>
     /// <typeparam name="TContract">Contract interface associated with the scope.</typeparam>
     public interface IScopeDescriptor<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class
     {
         /// <summary>
         /// Contract interface type that defines the scope.

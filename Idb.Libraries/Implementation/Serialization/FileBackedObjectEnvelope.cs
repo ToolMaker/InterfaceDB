@@ -1,3 +1,4 @@
+using System;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -5,35 +6,42 @@ namespace Idb.Libraries.Implementation.Serialization;
 
 /// <summary>
 /// Concrete envelope that backs payload metadata with file-system information.
-/// The cache key uses the full file path plus the creation timestamp so the
-/// value remains stable across process boundaries yet unique per file instance.
+/// The cache key is supplied by the caller (typically via the scope's file-name factory)
+/// so storage identity stays consistent across cache and disk. The factory receives both the
+/// materialized contract instance and its storage location.
 /// </summary>
-internal sealed class FileBackedObjectEnvelope<TContract> : IObjectEnvelope<TContract>
-    where TContract : class, IRepoDto<TContract>
+internal sealed class FileBackedObjectEnvelope<TContract> : IObjectEnvelope<TContract, FileInfo>
+    where TContract : class, IRepoDto<TContract, FileInfo>
 {
     public FileBackedObjectEnvelope(
-        FileInfo file,
+        FileInfo location,
         string versionTag,
-        Type objectType,
-        byte[] payload)
+        TContract objectInstance,
+        byte[] payload,
+        Func<TContract, FileInfo, string> cacheKeyFactory)
     {
-        File = file ?? throw new ArgumentNullException(nameof(file));
+        Location = location ?? throw new ArgumentNullException(nameof(location));
+        ObjectInstance = objectInstance ?? throw new ArgumentNullException(nameof(objectInstance));
+        if (cacheKeyFactory is null)
+        {
+            throw new ArgumentNullException(nameof(cacheKeyFactory));
+        }
+        
         VersionTag = string.IsNullOrWhiteSpace(versionTag)
             ? throw new ArgumentException("Version tag cannot be null or whitespace.", nameof(versionTag))
             : versionTag;
-        ObjectType = objectType ?? throw new ArgumentNullException(nameof(objectType));
         Payload = payload ?? throw new ArgumentNullException(nameof(payload));
 
-        CacheKey = $"{File.FullName}|{File.CreationTimeUtc.Ticks}";
+        CacheKey = cacheKeyFactory(ObjectInstance, Location);
     }
 
     public string CacheKey { get; }
 
     public string VersionTag { get; }
 
-    public Type ObjectType { get; }
+    public TContract ObjectInstance { get; }
 
-    public FileInfo File { get; }
+    public FileInfo Location { get; }
 
     public byte[] Payload { get; set; }
 }
