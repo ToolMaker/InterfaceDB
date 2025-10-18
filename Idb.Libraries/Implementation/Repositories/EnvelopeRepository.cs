@@ -32,11 +32,7 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
         _serializer = serializer;
     }
 
-    public string FileExtension => throw new System.NotImplementedException();
-
-    public byte[] Serialize(TContract obj) => throw new System.NotImplementedException();
-
-    public TContract Deserialize(byte[] data) => throw new System.NotImplementedException();
+    public IObjectSerializer<TContract> Serializer => _serializer;
 
     public ValueTask<IObjectEnvelope<TContract>> ReadAsync(CancellationToken cancellationToken = default) =>
         throw new System.NotImplementedException();
