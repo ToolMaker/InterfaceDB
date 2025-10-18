@@ -28,4 +28,11 @@
     <None Remove="Implementation\**" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="Implementation\Factories\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\Repositories\EnvelopeRepository.cs" />
+    <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
+    <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
+  </ItemGroup>
+
 </Project>

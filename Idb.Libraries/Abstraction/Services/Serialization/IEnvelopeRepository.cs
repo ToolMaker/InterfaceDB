@@ -9,9 +9,8 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
 public interface IEnvelopeRepository<TContract> :
     IObjectReader<TContract>,
-    IObjectWriter<TContract>,
-    IObjectSerializer<TContract>
-    where TContract : class, IRepoDto<TContract>
+    IObjectWriter<TContract>
+        where TContract : class, IRepoDto<TContract>
 {
-
+    IObjectSerializer<TContract> Serializer { get; }
 }
