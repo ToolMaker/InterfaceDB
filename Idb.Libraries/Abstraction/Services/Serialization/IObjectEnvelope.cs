@@ -1,11 +1,12 @@
 namespace Idb.Libraries.Abstractions.Services.Serialization
 {
-    public interface IObjectEnvelope
+    public interface IObjectEnvelope<TContract>
+        where TContract : class
     {
+        string VersionTag { get; }
+        Type ObjectType { get; }
+        FileInfo File { get; }
         byte[] Payload { get; set; }
-        string VersionTag { get; set; }
-        string? TypeName { get; set; }
-        ObjectFingerprint Fingerprint { get; set; }
     }
 }
 

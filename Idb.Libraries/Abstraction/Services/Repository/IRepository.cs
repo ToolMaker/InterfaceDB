@@ -4,24 +4,22 @@ using System.Linq.Expressions;
 
 namespace Idb.Libraries.Abstractions.Services.Repository;
 
-public interface IRepository
+public interface IRepository<TContract>
+    where TContract : class
 {
     ContractRepositoryType RepositoryType { get; }
     ValueTask InitializeAsync(CancellationToken cancellationToken = default);
 
-    ValueTask<IObjectWriteResult> SaveAsync<TContract>(
+    ValueTask<IObjectWriteResult<TContract>> SaveAsync(
         TContract entityToSave,
-        CancellationToken cancellationToken = default)
-        where TContract : class;
+        CancellationToken cancellationToken = default);
 
-    ValueTask<IObjectReadResult<TContract>> LoadAsync<TContract>(
+    ValueTask<IObjectReadResult<TContract>> QueryAsync(
         Expression<Func<TContract, bool>> predicate,
-        CancellationToken cancellationToken = default)
-        where TContract : class;
+        CancellationToken cancellationToken = default);
 
-    ValueTask<bool> ExistsAsync<TContract>(
+    ValueTask<bool> ExistsAsync(
         TContract entityToCheck,
-        CancellationToken cancellationToken = default)
-        where TContract : class;
+        CancellationToken cancellationToken = default);
 }
 

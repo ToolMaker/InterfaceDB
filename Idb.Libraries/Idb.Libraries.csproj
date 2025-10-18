@@ -20,9 +20,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Abstraction\Services\Caching\" />
-    <Folder Include="Implementation\Services\Caching\" />
-    <Folder Include="Implementation\Services\Serialization\" />
+    <Compile Remove="Abstraction\Services\Caching\**" />
+    <Compile Remove="Implementation\**" />
+    <EmbeddedResource Remove="Abstraction\Services\Caching\**" />
+    <EmbeddedResource Remove="Implementation\**" />
+    <None Remove="Abstraction\Services\Caching\**" />
+    <None Remove="Implementation\**" />
   </ItemGroup>
 
 </Project>
