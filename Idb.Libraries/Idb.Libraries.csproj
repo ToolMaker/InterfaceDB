@@ -30,7 +30,8 @@
 
   <ItemGroup>
     <Compile Include="Implementation\Factories\DefaultFileNameFactory.cs" />
-    <Compile Include="Implementation\Indexes\IndexManager.cs" />
+    <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
+    <Compile Include="Implementation\\Indexes\\PassthroughIndexManager.cs" />
     <Compile Include="Implementation\Repositories\EnvelopeRepository.cs" />
     <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />

@@ -19,6 +19,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         /// <param name="cancellationToken">Token that propagates cancellation.</param>
         /// <returns>Envelope containing the serialized payload and location metadata for the retrieved contract instance.</returns>
         ValueTask<IObjectEnvelope<TContract, TLocationType>> ReadAsync(
+            TContract objToRead,
             CancellationToken cancellationToken = default);
     }
 }

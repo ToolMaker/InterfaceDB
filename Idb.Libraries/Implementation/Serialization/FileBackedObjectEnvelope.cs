@@ -39,7 +39,7 @@ internal sealed class FileBackedObjectEnvelope<TContract> : IObjectEnvelope<TCon
 
     public string VersionTag { get; }
 
-    public TContract ObjectInstance { get; }
+    public TContract? ObjectInstance { get; set; }
 
     public FileInfo Location { get; }
 
