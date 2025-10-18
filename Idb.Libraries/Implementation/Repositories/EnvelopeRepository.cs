@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -47,17 +48,26 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
 
     public IObjectSerializer<TContract> Serializer => _serializer;
 
-    public async ValueTask<IObjectEnvelope<TContract, FileInfo>> ReadAsync(
-        CancellationToken cancellationToken = default)
+    public bool ContainsEnvelope(string cacheKey)
     {
-        var envelope = await ReadNextEnvelopeAsync(cancellationToken).ConfigureAwait(false);
-        if (envelope is null)
+        if (string.IsNullOrWhiteSpace(cacheKey))
         {
-            return envelope!;
+            throw new ArgumentException("Cache key cannot be null or whitespace.", nameof(cacheKey));
         }
 
-        _envelopes[envelope.CacheKey] = envelope;
-        return envelope;
+        return _envelopes.ContainsKey(cacheKey);
+    }
+
+    public bool TryGetEnvelope(string cacheKey, out IObjectEnvelope<TContract, FileInfo>? envelope)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey))
+        {
+            throw new ArgumentException("Cache key cannot be null or whitespace.", nameof(cacheKey));
+        }
+
+        var found = _envelopes.TryGetValue(cacheKey, out var existing);
+        envelope = existing;
+        return found;
     }
 
     public async ValueTask<IObjectEnvelope<TContract, FileInfo>> WriteAsync(
@@ -91,6 +101,20 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
         obj.Envelope = envelope;
 
         return envelope;
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> QueryAllAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var envelope in _envelopes.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return envelope;
+
+            // Ensure we remain asynchronously friendly even though the operation is CPU-only.
+            await Task.Yield();
+        }
     }
 
     private async ValueTask<IObjectEnvelope<TContract, FileInfo>> ReadNextEnvelopeAsync(

@@ -26,7 +26,7 @@ public interface IObjectEnvelope<TContract, TLocationType>
         /// <summary>
         /// Contract instance associated with this envelope.
         /// </summary>
-        TContract ObjectInstance { get; }
+        TContract? ObjectInstance { get; set; }
 
         /// <summary>
     /// Location descriptor where the serialized payload resides (e.g., file, blob, queue message).

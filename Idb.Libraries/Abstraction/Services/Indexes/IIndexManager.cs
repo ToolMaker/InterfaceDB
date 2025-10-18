@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,12 +25,18 @@ public interface IIndexManager<TContract>
     /// Retrieves an entity that satisfies the supplied predicate.
     /// Implementations unwrap the envelope, restore the contract's envelope reference, and should clear <c>Envelope.ObjectInstance</c> before returning to prevent retain cycles.
     /// </summary>
-    ValueTask<TContract> QueryAsync(Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<TContract> QueryAsync(Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Checks whether an equivalent contract instance already exists.
     /// </summary>
     ValueTask<bool> ExistsAsync(TContract entity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Attempts to retrieve a matching contract instance without materializing a new envelope.
+    /// Implementations should rely on the envelope repository cache and perform unwrap operations before returning.
+    /// </summary>
+    bool TryGetExisting(TContract entity, out TContract? existing);
 
     /// <summary>
     /// Performs one-time initialization for indexes and underlying storage.

@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Threading;
 using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization;
@@ -9,7 +11,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
 /// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
 public interface IEnvelopeRepository<TContract, TLocationType> :
-    IObjectReader<TContract, TLocationType>,
+   // IObjectReader<TContract, TLocationType>,
     IObjectWriter<TContract, TLocationType>
         where TContract : class, IRepoDto<TContract, TLocationType>
 {
@@ -17,4 +19,19 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     /// Serializer used to convert contract instances to and from the persisted binary payloads.
     /// </summary>
     IObjectSerializer<TContract> Serializer { get; }
+
+    /// <summary>
+    /// Checks whether an envelope with the supplied cache key already exists in the repository.
+    /// </summary>
+    bool ContainsEnvelope(string cacheKey);
+
+    /// <summary>
+    /// Attempts to retrieve an envelope by cache key from the repository.
+    /// </summary>
+    bool TryGetEnvelope(string cacheKey, out IObjectEnvelope<TContract, TLocationType>? envelope);
+
+    /// <summary>
+    /// Streams all envelopes stored in the repository.
+    /// </summary>
+    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAllAsync(CancellationToken cancellationToken = default);
 }
