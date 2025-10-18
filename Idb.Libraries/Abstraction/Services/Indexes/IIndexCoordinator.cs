@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Indexes;
 
@@ -9,7 +8,7 @@ namespace Idb.Libraries.Abstractions.Services.Indexes;
 /// and orchestrates envelope hydration via <see cref="Serialization.IEnvelopeRepository{TContract}"/> before returning materialized contract instances.
 /// </summary>
 public interface IIndexCoordinator<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class
 {
     /// <summary>
     /// Persists an entity, staging it through an envelope so indexes can update before the writer commits to storage.

@@ -1,45 +1,157 @@
+using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
 /// <summary>
-/// Default envelope repository that composes reader, writer, and serializer services while
-/// maintaining an internal cache for quick lookups. Methods are stubbed for now so we can
-/// align on the design before wiring behaviour.
+/// File-system backed envelope repository that manages serialization, persistence, and caching for contract instances.
 /// </summary>
-/// <typeparam name="TContract">Contract type serviced by this repository.</typeparam>
-internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContract>
-    where TContract : class, IRepoDto<TContract>
+/// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
+internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContract, FileInfo>
+    where TContract : class, IRepoDto<TContract, FileInfo>
 {
-    private readonly IObjectReader<TContract> _reader;
-    private readonly IObjectWriter<TContract> _writer;
+    private readonly IFileNameFactory<TContract, FileInfo> _fileNameFactory;
     private readonly IObjectSerializer<TContract> _serializer;
+    private readonly IDbContractConfigDto<TContract, FileInfo> _contractConfig;
+    private readonly string _dataRoot;
 
-    // Keyed by envelope.CacheKey so callers can rebuild the identifier regardless of instance identity.
-    private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract>> _envelopes = new();
+    private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract, FileInfo>> _envelopes = new();
+    private IEnumerator<FileInfo>? _fileEnumerator;
 
     public EnvelopeRepository(
-        IObjectReader<TContract> reader,
-        IObjectWriter<TContract> writer,
-        IObjectSerializer<TContract> serializer)
+        IFileNameFactory<TContract, FileInfo> fileNameFactory,
+        IObjectSerializer<TContract> serializer,
+        IDbContractConfigDto<TContract, FileInfo> contractConfig)
     {
-        _reader = reader;
-        _writer = writer;
-        _serializer = serializer;
+        _fileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+
+        if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
+        {
+            throw new InvalidOperationException("Contract configuration must supply a DataRoot directory.");
+        }
+
+        _dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
+        Directory.CreateDirectory(_dataRoot);
     }
 
     public IObjectSerializer<TContract> Serializer => _serializer;
 
-    public ValueTask<IObjectEnvelope<TContract>> ReadAsync(CancellationToken cancellationToken = default) =>
-        throw new System.NotImplementedException();
+    public async ValueTask<IObjectEnvelope<TContract, FileInfo>> ReadAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = await ReadNextEnvelopeAsync(cancellationToken).ConfigureAwait(false);
+        if (envelope is null)
+        {
+            return envelope!;
+        }
 
-    public ValueTask<IObjectEnvelope<TContract>> WriteAsync(
+        _envelopes[envelope.CacheKey] = envelope;
+        return envelope;
+    }
+
+    public async ValueTask<IObjectEnvelope<TContract, FileInfo>> WriteAsync(
         TContract obj,
-        IObjectEnvelope<TContract> envelope,
-        CancellationToken cancellationToken = default) =>
-        throw new System.NotImplementedException();
+        CancellationToken cancellationToken = default)
+    {
+        if (obj is null)
+        {
+            throw new ArgumentNullException(nameof(obj));
+        }
+
+        var existingEnvelope = obj.Envelope as FileBackedObjectEnvelope<TContract>;
+        var existingLocation = existingEnvelope?.Location;
+        var existingKey = existingEnvelope?.CacheKey;
+
+        var fileNameSegment = _fileNameFactory.Create(obj, existingLocation, existingKey);
+        if (string.IsNullOrWhiteSpace(fileNameSegment))
+        {
+            throw new InvalidOperationException("The file-name factory returned an empty identifier.");
+        }
+
+        var extension = NormalizeExtension(_serializer.FileExtension);
+        var targetPath = Path.Combine(_dataRoot, fileNameSegment + extension);
+        var targetFile = new FileInfo(targetPath);
+
+        var payload = _serializer.Serialize(obj);
+        await File.WriteAllBytesAsync(targetFile.FullName, payload, cancellationToken).ConfigureAwait(false);
+
+        var envelope = CreateEnvelope(targetFile, obj, payload);
+        _envelopes[envelope.CacheKey] = envelope;
+        obj.Envelope = envelope;
+
+        return envelope;
+    }
+
+    private async ValueTask<IObjectEnvelope<TContract, FileInfo>> ReadNextEnvelopeAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureFileEnumerator();
+
+        if (_fileEnumerator is null || !_fileEnumerator.MoveNext())
+        {
+            return null!;
+        }
+
+        var file = _fileEnumerator.Current;
+        var payload = await File.ReadAllBytesAsync(file.FullName, cancellationToken).ConfigureAwait(false);
+        var contract = _serializer.Deserialize(payload);
+
+        var envelope = CreateEnvelope(file, contract, payload);
+        return envelope;
+    }
+
+    private void EnsureFileEnumerator()
+    {
+        if (_fileEnumerator is not null)
+        {
+            return;
+        }
+
+        var directory = new DirectoryInfo(_dataRoot);
+        if (!directory.Exists)
+        {
+            directory.Create();
+        }
+
+        var extension = NormalizeExtension(_serializer.FileExtension);
+        IEnumerable<FileInfo> files = directory.EnumerateFiles($"*{extension}", SearchOption.TopDirectoryOnly)
+            .OrderBy(static file => file.Name);
+
+        _fileEnumerator = files.GetEnumerator();
+    }
+
+    private FileBackedObjectEnvelope<TContract> CreateEnvelope(
+        FileInfo file,
+        TContract contract,
+        byte[] payload)
+    {
+        var version = _contractConfig.ActiveVersion ?? "1.0.0";
+        return new FileBackedObjectEnvelope<TContract>(
+            file,
+            version,
+            contract,
+            payload,
+            static (_, info) => info.FullName);
+    }
+
+    private static string NormalizeExtension(string extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return ".bin";
+        }
+
+        return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
+    }
 }

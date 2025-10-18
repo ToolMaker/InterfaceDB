@@ -1,18 +1,21 @@
 namespace Idb.Libraries.Abstractions.Services
 {
+    using System.IO;
     /// <summary>
-    /// Produces UNIQUE storage file names (sans extension) for contract instances.
+    /// Produces unique storage identifiers for contract instances.
     /// </summary>
-    public interface IFileNameFactory
+    /// <typeparam name="TContract">Contract type associated with the value.</typeparam>
+    /// <typeparam name="TLocationType">Descriptor used to locate the persisted payload (e.g., file info).</typeparam>
+    public interface IFileNameFactory<TContract, FileInfo>
     {
         /// <summary>
-        /// Creates a file-name segment for the supplied instance.
+        /// Creates a storage identifier for the supplied instance.
         /// </summary>
-        /// <param name="value">Concrete object being persisted.</param>
-        /// <param name="normalizedId">Caller-supplied identifier normalized by the writer.</param>
-        /// <param name="contractType">Contract interface associated with the scope.</param>
-        /// <returns>File-name segment without extension.</returns>
-        string Create(object value, string normalizedId, Type contractType);
+        /// <param name="value">Contract instance being persisted.</param>
+        /// <param name="location">Existing location metadata if the instance has already been stored.</param>
+        /// <param name="normalizedId">Caller-supplied normalized identifier that can be reused by the factory.</param>
+        /// <returns>Location-safe identifier (without extension).</returns>
+        string Create(TContract value, FileInfo? location, string? normalizedId);
     }
 }
 

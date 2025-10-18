@@ -7,7 +7,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     /// Transforms contract instances to and from their serialized binary representation.
     /// </summary>
     public interface IObjectSerializer<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class
     {
         /// <summary>
         /// Default file extension produced by this serializer (e.g., ".mpk").

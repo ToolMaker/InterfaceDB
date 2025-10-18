@@ -7,10 +7,14 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// Concrete implementations can add concerns like hashing or caching internally without exposing them upstream.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
-public interface IEnvelopeRepository<TContract> :
-    IObjectReader<TContract>,
-    IObjectWriter<TContract>
-        where TContract : class, IRepoDto<TContract>
+/// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
+public interface IEnvelopeRepository<TContract, TLocationType> :
+    IObjectReader<TContract, TLocationType>,
+    IObjectWriter<TContract, TLocationType>
+        where TContract : class, IRepoDto<TContract, TLocationType>
 {
+    /// <summary>
+    /// Serializer used to convert contract instances to and from the persisted binary payloads.
+    /// </summary>
     IObjectSerializer<TContract> Serializer { get; }
 }

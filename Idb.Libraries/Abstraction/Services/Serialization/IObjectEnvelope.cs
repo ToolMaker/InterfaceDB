@@ -2,18 +2,19 @@ using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization
 {
-    /// <summary>
-    /// Wraps a serialized contract payload together with storage metadata.
-    /// Acts as the hand-off artifact between readers, the envelope repository cache, writers, and index coordination
-    /// so raw bytes can be deferred until the consumer needs the contract instance.
-    /// </summary>
-    /// <typeparam name="TContract">Contract interface associated with the payload.</typeparam>
-    public interface IObjectEnvelope<TContract>
-        where TContract : class, IRepoDto<TContract>
+/// <summary>
+/// Wraps a serialized contract payload together with persistence metadata.
+/// Acts as the hand-off artifact between readers, the envelope repository cache, writers, and index coordination
+/// so raw bytes can be deferred until the consumer needs the contract instance.
+/// </summary>
+/// <typeparam name="TContract">Contract interface associated with the payload.</typeparam>
+/// <typeparam name="TLocationType">Type describing where the payload lives (file info, cloud key, etc.).</typeparam>
+public interface IObjectEnvelope<TContract, TLocationType>
+        where TContract : class, IRepoDto<TContract, TLocationType>
     {
         /// <summary>
-        /// Stable cache key derived from storage metadata (e.g., normalized file path + creation timestamp).
-        /// Used by the envelope repository to index instances across process boundaries.
+        /// Stable cache key derived from storage metadata (e.g., normalized location identifier).
+        /// Used by the envelope repository to index instances across process boundaries regardless of physical medium.
         /// </summary>
         string CacheKey { get; }
 
@@ -23,14 +24,14 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         string VersionTag { get; }
 
         /// <summary>
-        /// Actual concrete type of the serialized object.
+        /// Contract instance associated with this envelope.
         /// </summary>
-        Type ObjectType { get; }
+        TContract ObjectInstance { get; }
 
         /// <summary>
-        /// File housing the serialized payload.
+    /// Location descriptor where the serialized payload resides (e.g., file, blob, queue message).
         /// </summary>
-        FileInfo File { get; }
+        TLocationType Location { get; }
 
         /// <summary>
         /// Raw bytes that represent the serialized payload (before or after encryption).
