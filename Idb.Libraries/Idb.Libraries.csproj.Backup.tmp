@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MessagePack" Version="3.1.4" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.7" />
+    <PackageReference Include="System.IO.Hashing" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\Contracts\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Abstraction\Services\Caching\**" />
+    <Compile Remove="Implementation\**" />
+    <EmbeddedResource Remove="Abstraction\Services\Caching\**" />
+    <EmbeddedResource Remove="Implementation\**" />
+    <None Remove="Abstraction\Services\Caching\**" />
+    <None Remove="Implementation\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Implementation\Factories\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
+    <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
+    <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
+    <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
+    <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
+    <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
+  </ItemGroup>
+
+</Project>
+

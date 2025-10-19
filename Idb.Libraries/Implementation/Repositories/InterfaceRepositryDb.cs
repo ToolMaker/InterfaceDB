@@ -2,9 +2,10 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Attributes;
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
-using Idb.Libraries.Abstractions.Enums;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -12,17 +13,16 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// Repository facade that delegates persistence operations to the injected <see cref="IIndexManager{TContract}"/>.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class InterfaceDb<TContract> : IRepository<TContract>
-    where TContract : class
+public sealed class InterfaceRepositryDb<TContract, TLocationType> : IRepository<TContract>
+    where TContract : class, IRepoDto<TContract, TLocationType>
 {
     private readonly IIndexManager<TContract> _indexManager;
+    
 
-    public InterfaceDb(
-        IIndexManager<TContract> indexManager,
-        ContractRepositoryType repositoryType)
+    public InterfaceRepositryDb(
+        IIndexManager<TContract> indexManager)
     {
         _indexManager = indexManager ?? throw new ArgumentNullException(nameof(indexManager));
-        RepositoryType = repositoryType;
 
         var contractType = typeof(TContract);
         if (!contractType.IsInterface)
@@ -36,7 +36,7 @@ public sealed class InterfaceDb<TContract> : IRepository<TContract>
         }
     }
 
-    public ContractRepositoryType RepositoryType { get; }
+    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         => _indexManager.InitializeAsync(cancellationToken);
@@ -82,3 +82,4 @@ public sealed class InterfaceDb<TContract> : IRepository<TContract>
         return _indexManager.ExistsAsync(entityToCheck, cancellationToken);
     }
 }
+

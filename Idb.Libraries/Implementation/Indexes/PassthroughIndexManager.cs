@@ -66,10 +66,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
-    {
-        // No-op for the pass-through manager.
-        return ValueTask.CompletedTask;
-    }
+        => _envelopeRepository.InitializeAsync(cancellationToken);
 
     public IAsyncEnumerable<TContract> QueryAsync(
         Func<TContract, bool> predicate,

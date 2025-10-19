@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -45,13 +45,13 @@ services.AddSingleton<IDbContractConfigDto<IPerson, FileInfo>>(personConfig);
 services.AddSingleton<IFileNameFactory<IPerson, FileInfo>, DefaultFileNameFactory<IPerson>>();
 var messagePackOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
 services.AddSingleton<IObjectSerializer<IPerson>>(new BinaryObjectSerializer<IPerson>(messagePackOptions));
-services.AddTransient<IObjectEnvelope<IPerson, FileInfo>, PendingEnvelope<IPerson>>();
+services.AddTransient<IObjectEnvelope<IPerson, FileInfo>, FileBackedObjectEnvelope<IPerson>>();
 services.AddSingleton<IEnvelopeRepository<IPerson, FileInfo>, EnvelopeRepository<IPerson>>();
 services.AddSingleton<IIndexManager<IPerson>, PassthroughIndexManager<IPerson>>();
 services.AddSingleton<IRepository<IPerson>>(sp =>
 {
     var manager = sp.GetRequiredService<IIndexManager<IPerson>>();
-    return new InterfaceDb<IPerson>(manager, personConfig.RepositoryType);
+    return new InterfaceRepositryDb<IPerson, FileInfo>(manager);
 });
 
 using var serviceProvider = services.BuildServiceProvider();
@@ -104,3 +104,4 @@ await foreach (var person in indexManager.QueryAsync(p => p.Role == "Employee"))
 }
 
 Console.WriteLine("\nDone.");
+

@@ -31,12 +31,13 @@
   <ItemGroup>
     <Compile Include="Implementation\Factories\DefaultFileNameFactory.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
-    <Compile Include="Implementation\\Indexes\\PassthroughIndexManager.cs" />
+    <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
     <Compile Include="Implementation\Repositories\EnvelopeRepository.cs" />
-    <Compile Include="Implementation\Repositories\InterfaceDb.cs" />
+    <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
     <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
-    <Compile Include="Implementation\Serialization\PendingEnvelope.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
   </ItemGroup>
 
 </Project>
+
+

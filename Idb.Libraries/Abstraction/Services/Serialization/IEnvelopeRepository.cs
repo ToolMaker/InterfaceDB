@@ -32,6 +32,11 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     bool TryGetEnvelope(string cacheKey, out IObjectEnvelope<TContract, TLocationType>? envelope);
 
     /// <summary>
+    /// Performs one-time initialization for the repository (e.g., ensuring data directories exist).
+    /// </summary>
+    ValueTask InitializeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Streams envelopes that satisfy the supplied filter.
     /// </summary>
     IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAsync(
