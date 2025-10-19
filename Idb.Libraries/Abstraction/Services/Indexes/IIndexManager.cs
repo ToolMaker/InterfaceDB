@@ -25,7 +25,7 @@ public interface IIndexManager<TContract>
     /// Retrieves an entity that satisfies the supplied predicate.
     /// Implementations unwrap the envelope, restore the contract's envelope reference, and should clear <c>Envelope.ObjectInstance</c> before returning to prevent retain cycles.
     /// </summary>
-    IAsyncEnumerable<TContract> QueryAsync(Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<TContract> QueryAsync(Func<TContract, bool> predicate, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Checks whether an equivalent contract instance already exists.

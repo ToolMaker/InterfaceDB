@@ -41,11 +41,11 @@ public interface IRepository<TContract>
     /// The repository forwards the predicate to the index manager, which selects the optimal index,
     /// retrieves matching envelopes, and materializes contract instances to hand back.
     /// </summary>
-    /// <param name="predicate">Expression used to locate the entity.</param>
+    /// <param name="filterFunction">Expression used to locate the entity.</param>
     /// <param name="cancellationToken">Token that propagates cancellation.</param>
     /// <returns>The entity that matches the predicate, or a default value when not found (implementation-specific).</returns>
     ValueTask<TContract> QueryAsync(
-        Expression<Func<TContract, bool>> predicate,
+        Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default);
 
     /// <summary>

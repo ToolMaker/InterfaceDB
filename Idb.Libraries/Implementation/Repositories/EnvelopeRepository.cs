@@ -17,25 +17,27 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// File-system backed envelope repository that manages serialization, persistence, and caching for contract instances.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContract, FileInfo>
+public sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContract, FileInfo>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     private readonly IFileNameFactory<TContract, FileInfo> _fileNameFactory;
     private readonly IObjectSerializer<TContract> _serializer;
     private readonly IDbContractConfigDto<TContract, FileInfo> _contractConfig;
+    private readonly IServiceProvider _serviceProvider;
     private readonly string _dataRoot;
 
     private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract, FileInfo>> _envelopes = new();
-    private IEnumerator<FileInfo>? _fileEnumerator;
 
     public EnvelopeRepository(
         IFileNameFactory<TContract, FileInfo> fileNameFactory,
         IObjectSerializer<TContract> serializer,
-        IDbContractConfigDto<TContract, FileInfo> contractConfig)
+        IDbContractConfigDto<TContract, FileInfo> contractConfig,
+        IServiceProvider serviceProvider)
     {
         _fileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
         {
@@ -79,11 +81,23 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
             throw new ArgumentNullException(nameof(obj));
         }
 
+        var placeholder = obj.Envelope;
+        if (placeholder is null)
+        {
+            placeholder = (IObjectEnvelope<TContract, FileInfo>?)_serviceProvider.GetService(typeof(IObjectEnvelope<TContract, FileInfo>));
+            if (placeholder is not null)
+            {
+                obj.Envelope = placeholder;
+            }
+        }
+
         var existingEnvelope = obj.Envelope as FileBackedObjectEnvelope<TContract>;
         var existingLocation = existingEnvelope?.Location;
-        var existingKey = existingEnvelope?.CacheKey;
+        var normalizedId = existingEnvelope?.CacheKey
+            ?? placeholder?.CacheKey
+            ?? Guid.NewGuid().ToString("N");
 
-        var fileNameSegment = _fileNameFactory.Create(obj, existingLocation, existingKey);
+        var fileNameSegment = _fileNameFactory.Create(obj, existingLocation, normalizedId);
         if (string.IsNullOrWhiteSpace(fileNameSegment))
         {
             throw new InvalidOperationException("The file-name factory returned an empty identifier.");
@@ -93,6 +107,7 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
         var targetPath = Path.Combine(_dataRoot, fileNameSegment + extension);
         var targetFile = new FileInfo(targetPath);
 
+        obj.Envelope = null;
         var payload = _serializer.Serialize(obj);
         await File.WriteAllBytesAsync(targetFile.FullName, payload, cancellationToken).ConfigureAwait(false);
 
@@ -103,56 +118,38 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
         return envelope;
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> QueryAllAsync(
+    public async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> QueryAsync(
+        Func<TContract, bool> filterFunction,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        foreach (var envelope in _envelopes.Values)
+        if (filterFunction is null)
+        {
+            throw new ArgumentNullException(nameof(filterFunction));
+        }
+
+        // Snapshot the current cache to avoid issues with concurrent mutations while streaming.
+        var snapshot = _envelopes.Values.ToArray();
+
+        foreach (var envelope in snapshot)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var instance = envelope.ObjectInstance;
+            if (instance is null)
+            {
+                continue;
+            }
+
+            if (!filterFunction(instance))
+            {
+                continue;
+            }
 
             yield return envelope;
 
             // Ensure we remain asynchronously friendly even though the operation is CPU-only.
             await Task.Yield();
         }
-    }
-
-    private async ValueTask<IObjectEnvelope<TContract, FileInfo>> ReadNextEnvelopeAsync(
-        CancellationToken cancellationToken)
-    {
-        EnsureFileEnumerator();
-
-        if (_fileEnumerator is null || !_fileEnumerator.MoveNext())
-        {
-            return null!;
-        }
-
-        var file = _fileEnumerator.Current;
-        var payload = await File.ReadAllBytesAsync(file.FullName, cancellationToken).ConfigureAwait(false);
-        var contract = _serializer.Deserialize(payload);
-
-        var envelope = CreateEnvelope(file, contract, payload);
-        return envelope;
-    }
-
-    private void EnsureFileEnumerator()
-    {
-        if (_fileEnumerator is not null)
-        {
-            return;
-        }
-
-        var directory = new DirectoryInfo(_dataRoot);
-        if (!directory.Exists)
-        {
-            directory.Create();
-        }
-
-        var extension = NormalizeExtension(_serializer.FileExtension);
-        IEnumerable<FileInfo> files = directory.EnumerateFiles($"*{extension}", SearchOption.TopDirectoryOnly)
-            .OrderBy(static file => file.Name);
-
-        _fileEnumerator = files.GetEnumerator();
     }
 
     private FileBackedObjectEnvelope<TContract> CreateEnvelope(
@@ -179,3 +176,5 @@ internal sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContr
         return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
     }
 }
+
+
