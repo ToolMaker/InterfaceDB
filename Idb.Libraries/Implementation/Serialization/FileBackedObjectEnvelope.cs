@@ -10,7 +10,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// so storage identity stays consistent across cache and disk. The factory receives both the
 /// materialized contract instance and its storage location.
 /// </summary>
-internal sealed class FileBackedObjectEnvelope<TContract> : IObjectEnvelope<TContract, FileInfo>
+public sealed class FileBackedObjectEnvelope<TContract> : IObjectEnvelope<TContract, FileInfo>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     public FileBackedObjectEnvelope(

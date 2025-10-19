@@ -72,6 +72,12 @@ public sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContrac
         return found;
     }
 
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        // Directory creation already happens in the constructor, so nothing further is required at present.
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask<IObjectEnvelope<TContract, FileInfo>> WriteAsync(
         TContract obj,
         CancellationToken cancellationToken = default)
@@ -176,5 +182,6 @@ public sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContrac
         return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
     }
 }
+
 
 

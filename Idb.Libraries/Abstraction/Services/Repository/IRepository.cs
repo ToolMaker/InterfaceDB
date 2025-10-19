@@ -58,5 +58,6 @@ public interface IRepository<TContract>
     ValueTask<bool> ExistsAsync(
         TContract entityToCheck,
         CancellationToken cancellationToken = default);
+
 }
 
