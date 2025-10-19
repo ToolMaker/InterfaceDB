@@ -3,13 +3,16 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Serialization;
+using Idb.Libraries.Abstractions.Services.PubSub;
+using Idb.Libraries.Abstractions.Services.Migrations;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -25,8 +28,11 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
     private readonly IDbContractConfigDto<TContract, FileInfo> _contractConfig;
     private readonly IServiceProvider _serviceProvider;
     private readonly string _dataRoot;
+    private readonly IMigrationStrategy<TContract, FileInfo>? _migrationStrategy;
 
     private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract, FileInfo>> _envelopes = new();
+    private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
+    private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _removedSubscriptions = new();
 
     public FileEnvelopeRepository(
         IFileNameFactory<TContract, FileInfo> fileNameFactory,
@@ -38,6 +44,8 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+
+        _migrationStrategy = (IMigrationStrategy<TContract, FileInfo>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract, FileInfo>));
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
         {
@@ -70,12 +78,6 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         var found = _envelopes.TryGetValue(cacheKey, out var existing);
         envelope = existing;
         return found;
-    }
-
-    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
-    {
-        // Directory creation already happens in the constructor, so nothing further is required at present.
-        return ValueTask.CompletedTask;
     }
 
     public async ValueTask<IObjectEnvelope<TContract, FileInfo>> WriteAsync(
@@ -121,6 +123,8 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         _envelopes[envelope.CacheKey] = envelope;
         obj.Envelope = envelope;
 
+        await ContractAdded(obj, cancellationToken).ConfigureAwait(false);
+
         return envelope;
     }
 
@@ -161,16 +165,193 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
     private FileBackedObjectEnvelope<TContract> CreateEnvelope(
         FileInfo file,
         TContract contract,
-        byte[] payload)
+        byte[] payload,
+        string? versionOverride = null)
     {
-        var version = _contractConfig.ActiveVersion ?? "1.0.0";
+        var version = !string.IsNullOrWhiteSpace(versionOverride)
+            ? versionOverride!
+            : _contractConfig.ActiveVersion ?? "1.0.0";
         return new FileBackedObjectEnvelope<TContract>(
             file,
             version,
             contract,
             payload,
-            static (_, info) => info.FullName);
+            static (_, info) => info.FullName); //TODO: this comes from the IFileNameFactory that should be defined in the StorageScopeAttribute on the TContract interface
     }
+
+    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        if (_migrationStrategy is not null && IsEagerStrategy(_migrationStrategy.StrategyType))
+        {
+            var tolerant = _migrationStrategy.StrategyType == MigrationStrategyType.EagerTolerant;
+            try
+            {
+                await foreach (var migratedEnvelope in _migrationStrategy.OnInitializeAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (migratedEnvelope is not null)
+                    {
+                        await ProcessEnvelopeAsync(migratedEnvelope, cancellationToken, notify: false).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch when (tolerant)
+            {
+                // Tolerant mode keeps legacy payloads accessible when eager migration encounters issues.
+            }
+        }
+
+        var rootLocation = new FileInfo(_dataRoot);
+        await foreach (var _ in LoadAsync(rootLocation, cancellationToken).ConfigureAwait(false))
+        {
+            // LoadAsync handles cache population and notifications; iteration ensures the sequence is fully materialized.
+        }
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> LoadAsync(
+        FileInfo rootLocationOfContract,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (rootLocationOfContract is null)
+        {
+            throw new ArgumentNullException(nameof(rootLocationOfContract));
+        }
+
+        var rootDirectory = new DirectoryInfo(rootLocationOfContract.FullName);
+        if (!rootDirectory.Exists)
+        {
+            yield break;
+        }
+
+        var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
+
+        await foreach (var envelope in EnumerateDirectoryAsync(rootDirectory, activeVersion, activeVersion, cancellationToken).ConfigureAwait(false))
+        {
+            yield return envelope;
+        }
+
+        foreach (var versionDirectory in rootDirectory.EnumerateDirectories())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var versionTag = versionDirectory.Name;
+
+            await foreach (var envelope in EnumerateDirectoryAsync(versionDirectory, versionTag, activeVersion, cancellationToken).ConfigureAwait(false))
+            {
+                yield return envelope;
+            }
+        }
+    }
+
+    private async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> EnumerateDirectoryAsync(
+        DirectoryInfo directory,
+        string versionTag,
+        string activeVersion,
+        [EnumeratorCancellation] CancellationToken token)
+    {
+        if (!directory.Exists)
+        {
+            yield break;
+        }
+
+        var expectedExtension = NormalizeExtension(_serializer.FileExtension);
+
+        foreach (var file in directory.EnumerateFiles("*", SearchOption.TopDirectoryOnly))
+        {
+            token.ThrowIfCancellationRequested();
+
+            if (!string.Equals(file.Extension, expectedExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var payload = await File.ReadAllBytesAsync(file.FullName, token).ConfigureAwait(false);
+            var contract = _serializer.Deserialize(payload);
+            var envelope = CreateEnvelope(file, contract, payload, versionTag);
+
+            var resolvedEnvelope = ResolveEnvelopeVersion(envelope, versionTag, activeVersion);
+            if (resolvedEnvelope is null)
+            {
+                continue;
+            }
+
+            await ProcessEnvelopeAsync(resolvedEnvelope, token).ConfigureAwait(false);
+            yield return resolvedEnvelope;
+        }
+    }
+
+    private IObjectEnvelope<TContract, FileInfo>? ResolveEnvelopeVersion(
+        IObjectEnvelope<TContract, FileInfo> envelope,
+        string sourceVersion,
+        string activeVersion)
+    {
+        if (envelope is null)
+        {
+            throw new ArgumentNullException(nameof(envelope));
+        }
+
+        if (string.Equals(sourceVersion, activeVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            return envelope;
+        }
+
+        if (_migrationStrategy is null)
+        {
+            return envelope;
+        }
+
+        if (_migrationStrategy.StrategyType == MigrationStrategyType.None)
+        {
+            return envelope;
+        }
+
+        return _migrationStrategy.StrategyType switch
+        {
+            MigrationStrategyType.Lazy => _migrationStrategy.Migrate(envelope, CancellationToken.None) ?? envelope,
+            MigrationStrategyType.EagerStrict => null,
+            MigrationStrategyType.EagerTolerant => TryMigrateTolerant(envelope),
+            _ => envelope
+        };
+    }
+
+    private IObjectEnvelope<TContract, FileInfo>? TryMigrateTolerant(IObjectEnvelope<TContract, FileInfo> envelope)
+    {
+        if (_migrationStrategy is null)
+        {
+            return envelope;
+        }
+
+        try
+        {
+            return _migrationStrategy.Migrate(envelope, CancellationToken.None) ?? envelope;
+        }
+        catch
+        {
+            return envelope;
+        }
+    }
+
+    private async ValueTask ProcessEnvelopeAsync(
+        IObjectEnvelope<TContract, FileInfo> envelope,
+        CancellationToken cancellationToken,
+        bool notify = true)
+    {
+        if (envelope is null)
+        {
+            throw new ArgumentNullException(nameof(envelope));
+        }
+
+        var contractInstance = envelope.ObjectInstance ?? _serializer.Deserialize(envelope.Payload);
+        contractInstance.Envelope = envelope;
+        _envelopes[envelope.CacheKey] = envelope;
+
+        if (notify)
+        {
+            await ContractAdded(contractInstance, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsEagerStrategy(MigrationStrategyType strategy)
+        => strategy is MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant;
 
     private static string NormalizeExtension(string extension)
     {
@@ -181,7 +362,117 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
 
         return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
     }
+
+    #region PubSub Area
+    public IContractSubscription SubscribeToAdded(
+    Func<TContract, ValueTask> handler,
+    Func<ValueTask<bool>>? keepAlive = null)
+    => RegisterSubscription(_addedSubscriptions, handler, keepAlive);
+
+    public IContractSubscription SubscribeToRemoved(
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null)
+        => RegisterSubscription(_removedSubscriptions, handler, keepAlive);
+
+    public ValueTask ContractAdded(TContract @event, CancellationToken cancellationToken = default)
+        => PublishAsync(_addedSubscriptions, @event, cancellationToken);
+
+    public ValueTask ContractRemoved(TContract @event, CancellationToken cancellationToken = default)
+        => PublishAsync(_removedSubscriptions, @event, cancellationToken);
+
+    private IContractSubscription RegisterSubscription(
+        ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive)
+    {
+        if (handler is null)
+        {
+            throw new ArgumentNullException(nameof(handler));
+        }
+
+        var entry = new SubscriptionEntry(this, bucket, handler, keepAlive);
+        bucket[entry.Id] = entry;
+        return entry;
+    }
+
+    private async ValueTask PublishAsync(
+        ConcurrentDictionary<Guid, SubscriptionEntry> subscriptions,
+        TContract payload,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = subscriptions.ToArray();
+        foreach (var kvp in snapshot)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var subscription = kvp.Value;
+            if (subscription.IsDisposed)
+            {
+                subscriptions.TryRemove(subscription.Id, out _);
+                continue;
+            }
+
+            try
+            {
+                if (subscription.KeepAlive is not null)
+                {
+                    var alive = await subscription.KeepAlive().ConfigureAwait(false);
+                    if (!alive)
+                    {
+                        subscription.Dispose();
+                        continue;
+                    }
+                }
+
+                await subscription.Handler(payload).ConfigureAwait(false);
+            }
+            catch
+            {
+                subscription.Dispose();
+            }
+        }
+    }
+
+    private void RemoveSubscription(
+        ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
+        Guid id) => bucket.TryRemove(id, out _);
+
+
+    private sealed class SubscriptionEntry : IContractSubscription
+    {
+        private readonly FileEnvelopeRepository<TContract> _owner;
+        private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _bucket;
+        private readonly Func<TContract, ValueTask> _handler;
+        private readonly Func<ValueTask<bool>>? _keepAlive;
+        private int _disposed;
+
+        internal SubscriptionEntry(
+            FileEnvelopeRepository<TContract> owner,
+            ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
+            Func<TContract, ValueTask> handler,
+            Func<ValueTask<bool>>? keepAlive)
+        {
+            _owner = owner;
+            _bucket = bucket;
+            _handler = handler;
+            _keepAlive = keepAlive;
+            Id = Guid.NewGuid();
+        }
+
+        internal Guid Id { get; }
+        internal Func<TContract, ValueTask> Handler => _handler;
+        internal Func<ValueTask<bool>>? KeepAlive => _keepAlive;
+
+        public bool IsDisposed => Interlocked.CompareExchange(ref _disposed, 0, 0) != 0;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _owner.RemoveSubscription(_bucket, Id);
+            }
+        }
+    } 
+    #endregion
 }
-
-
 

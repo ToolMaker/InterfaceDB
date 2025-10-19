@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Threading;
 using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization
@@ -12,14 +14,14 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         where TContract : class, IRepoDto<TContract, TLocationType>
     {
         /// <summary>
-        /// Loads a stored object and returns the hydrated envelope representation.
-        /// Index coordinators use the envelope to update indexes first, delaying the actual object materialization
-        /// until the contract instance is explicitly requested.
+        /// Streams every persisted envelope discovered under the supplied root location.
+        /// Implementations walk provider-specific layouts (folders, buckets, partitions) and hydrate envelopes on demand.
         /// </summary>
+        /// <param name="rootLocationOfContract">Root descriptor (e.g., directory, container) that contains all contract versions.</param>
         /// <param name="cancellationToken">Token that propagates cancellation.</param>
-        /// <returns>Envelope containing the serialized payload and location metadata for the retrieved contract instance.</returns>
-        ValueTask<IObjectEnvelope<TContract, TLocationType>> ReadAsync(
-            TContract objToRead,
+        /// <returns>Async sequence of envelopes paired with their storage metadata.</returns>
+        IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> LoadAsync(
+            TLocationType rootLocationOfContract,
             CancellationToken cancellationToken = default);
     }
 }

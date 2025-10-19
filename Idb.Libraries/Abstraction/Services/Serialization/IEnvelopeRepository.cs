@@ -1,7 +1,8 @@
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Services.PubSub;
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -12,8 +13,9 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
 /// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
 public interface IEnvelopeRepository<TContract, TLocationType> :
-   // IObjectReader<TContract, TLocationType>,
-    IObjectWriter<TContract, TLocationType>
+    IObjectReader<TContract, TLocationType>,
+    IObjectWriter<TContract, TLocationType>,
+    IContractPubSubService<TContract>
         where TContract : class, IRepoDto<TContract, TLocationType>
 {
     /// <summary>
