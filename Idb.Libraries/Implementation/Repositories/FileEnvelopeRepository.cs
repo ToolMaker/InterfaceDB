@@ -17,7 +17,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// File-system backed envelope repository that manages serialization, persistence, and caching for contract instances.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContract, FileInfo>
+public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TContract, FileInfo>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     private readonly IFileNameFactory<TContract, FileInfo> _fileNameFactory;
@@ -28,7 +28,7 @@ public sealed class EnvelopeRepository<TContract> : IEnvelopeRepository<TContrac
 
     private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract, FileInfo>> _envelopes = new();
 
-    public EnvelopeRepository(
+    public FileEnvelopeRepository(
         IFileNameFactory<TContract, FileInfo> fileNameFactory,
         IObjectSerializer<TContract> serializer,
         IDbContractConfigDto<TContract, FileInfo> contractConfig,
