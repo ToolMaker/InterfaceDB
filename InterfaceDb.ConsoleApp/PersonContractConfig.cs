@@ -16,6 +16,7 @@ public sealed class PersonContractConfig : IDbContractConfigDto<Models.IPerson, 
     public string? DataRoot { get; set; }
     public string? ActiveVersion { get; set; }
     public IIndex<Models.IPerson>[]? Indexes { get; set; }
+    public MigrationStrategyType MigrationStrategy { get; set; } = MigrationStrategyType.None;
     public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;
 }
