@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -65,16 +71,23 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return ValueTask.CompletedTask;
     }
 
-    public async IAsyncEnumerable<TContract> QueryAsync(
-        Func<TContract, bool> filterFunction,
+    public IAsyncEnumerable<TContract> QueryAsync(
+        Func<TContract, bool> predicate,
         CancellationToken cancellationToken = default)
     {
-        if (filterFunction is null)
+        if (predicate is null)
         {
-            throw new ArgumentNullException(nameof(filterFunction));
+            throw new ArgumentNullException(nameof(predicate));
         }
 
-        await foreach (var envelope in _envelopeRepository.QueryAsync(filterFunction, cancellationToken).ConfigureAwait(false))
+        return QueryInternalAsync(predicate, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<TContract> QueryInternalAsync(
+        Func<TContract, bool> predicate,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var envelope in _envelopeRepository.QueryAsync(predicate, cancellationToken).ConfigureAwait(false))
         {
             yield return EnvelopeLifecycle.Unwrap(envelope);
         }
@@ -102,3 +115,6 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return persisted;
     }
 }
+
+
+
