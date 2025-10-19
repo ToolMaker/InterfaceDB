@@ -1,7 +1,7 @@
 using System;
-using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Enums;
@@ -23,6 +23,17 @@ public sealed class InterfaceDb<TContract> : IRepository<TContract>
     {
         _indexManager = indexManager ?? throw new ArgumentNullException(nameof(indexManager));
         RepositoryType = repositoryType;
+
+        var contractType = typeof(TContract);
+        if (!contractType.IsInterface)
+        {
+            throw new InvalidOperationException($"InterfaceDb requires TContract to be an interface. Found '{contractType.FullName}'.");
+        }
+
+        if (!Attribute.IsDefined(contractType, typeof(StorageScopeAttribute), inherit: false))
+        {
+            throw new InvalidOperationException($"Contract '{contractType.FullName}' must be decorated with [StorageScope].");
+        }
     }
 
     public ContractRepositoryType RepositoryType { get; }
