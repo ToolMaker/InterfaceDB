@@ -1,10 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-using System.IO;
-using System.Linq.Expressions;
-using System.Threading;
-using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -16,7 +9,7 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// Responsible for wrapping contracts into envelopes when persisting (clearing the contract's envelope reference) and unwrapping them on reads (restoring the reference and clearing the envelope) to avoid circular references.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
-internal sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract>
+public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     private readonly IEnvelopeRepository<TContract, FileInfo> _envelopeRepository;
@@ -72,33 +65,17 @@ internal sealed class PassthroughIndexManager<TContract> : IIndexManager<TContra
         return ValueTask.CompletedTask;
     }
 
-    public IAsyncEnumerable<TContract> QueryAsync(
-        Expression<Func<TContract, bool>> predicate,
+    public async IAsyncEnumerable<TContract> QueryAsync(
+        Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default)
     {
-        if (predicate is null)
+        if (filterFunction is null)
         {
-            throw new ArgumentNullException(nameof(predicate));
+            throw new ArgumentNullException(nameof(filterFunction));
         }
 
-        var compiledPredicate = predicate.Compile();
-        return QueryInternalAsync(compiledPredicate, cancellationToken);
-    }
-
-    private async IAsyncEnumerable<TContract> QueryInternalAsync(
-        Func<TContract, bool> predicate,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (var envelope in _envelopeRepository.QueryAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var envelope in _envelopeRepository.QueryAsync(filterFunction, cancellationToken).ConfigureAwait(false))
         {
-            var candidate = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope did not supply an object instance.");
-
-            if (!predicate(candidate))
-            {
-                continue;
-            }
-
             yield return EnvelopeLifecycle.Unwrap(envelope);
         }
     }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using Idb.Libraries.Abstractions.Dtos;
@@ -31,7 +32,9 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     bool TryGetEnvelope(string cacheKey, out IObjectEnvelope<TContract, TLocationType>? envelope);
 
     /// <summary>
-    /// Streams all envelopes stored in the repository.
+    /// Streams envelopes that satisfy the supplied filter.
     /// </summary>
-    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAllAsync(CancellationToken cancellationToken = default);
+    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default);
 }

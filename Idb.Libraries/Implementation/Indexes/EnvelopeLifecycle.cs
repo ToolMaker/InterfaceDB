@@ -35,7 +35,10 @@ internal static class EnvelopeLifecycle
         }
         finally
         {
-            entity.Envelope = previousEnvelope;
+            if (entity.Envelope is null)
+            {
+                entity.Envelope = previousEnvelope;
+            }
         }
     }
 
@@ -51,7 +54,7 @@ internal static class EnvelopeLifecycle
             ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
 
         entity.Envelope = envelope;
-        envelope.ObjectInstance = null;
         return entity;
     }
 }
+

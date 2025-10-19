@@ -8,7 +8,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Binary serializer (MessagePack-backed) that produces compact payloads compatible across contract versions.
 /// </summary>
-internal sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContract>
+public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContract>
     where TContract : class
 {
     private const string DefaultExtension = ".mpk";
