@@ -46,7 +46,7 @@ services.AddSingleton<IFileNameFactory<IPerson, FileInfo>, DefaultFileNameFactor
 var messagePackOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
 services.AddSingleton<IObjectSerializer<IPerson>>(new BinaryObjectSerializer<IPerson>(messagePackOptions));
 services.AddTransient<IObjectEnvelope<IPerson, FileInfo>, FileBackedObjectEnvelope<IPerson>>();
-services.AddSingleton<IEnvelopeRepository<IPerson, FileInfo>, EnvelopeRepository<IPerson>>();
+services.AddSingleton<IEnvelopeRepository<IPerson, FileInfo>, FileEnvelopeRepository<IPerson>>();
 services.AddSingleton<IIndexManager<IPerson>, PassthroughIndexManager<IPerson>>();
 services.AddSingleton<IRepository<IPerson>>(sp =>
 {
