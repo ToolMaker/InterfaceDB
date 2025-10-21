@@ -14,7 +14,7 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// <summary>
 /// Eager migration strategy that upgrades legacy payloads during initialisation.
 /// </summary>
-internal sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
+public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     public FileSystemEagerMigrationStrategy(
@@ -53,4 +53,3 @@ internal sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMi
         }
     }
 }
-

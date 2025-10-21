@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 
-namespace InterfaceDb.ConsoleApp.Models;
+namespace IdbDemoStorage.Storage.Person.v1_0_0;
 
 public sealed class Student : PersonBase
 {

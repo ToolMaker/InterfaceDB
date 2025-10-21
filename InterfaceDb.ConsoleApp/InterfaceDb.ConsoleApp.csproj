@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
+    <ProjectReference Include="..\IdbDemoStorage\IdbDemoStorage.csproj" />
   </ItemGroup>
 
   <ItemGroup>

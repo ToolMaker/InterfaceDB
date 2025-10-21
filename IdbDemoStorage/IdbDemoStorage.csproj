@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Mig\**" />
+    <EmbeddedResource Remove="Mig\**" />
+    <None Remove="Mig\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Contracts\" />
+    <Folder Include="Migrations\Person\" />
+    <Folder Include="Options\" />
+    <Folder Include="Storage\" />
+  </ItemGroup>
+
+</Project>
