@@ -14,7 +14,7 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// <summary>
 /// Lazy migration strategy that upgrades payloads on-demand.
 /// </summary>
-internal sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
+public sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
     where TContract : class, IRepoDto<TContract, FileInfo>
 {
     public FileSystemLazyMigrationStrategy(

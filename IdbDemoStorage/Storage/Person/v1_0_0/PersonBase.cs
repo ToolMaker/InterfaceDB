@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.IO;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
-namespace InterfaceDb.ConsoleApp.Models;
+namespace IdbDemoStorage.Storage.Person.v1_0_0;
 
-public abstract class PersonBase : IPerson
+public abstract class PersonBase : ContractPerson.IPerson
 {
     protected PersonBase(Guid id, string name, int age, string role)
     {
@@ -19,5 +20,5 @@ public abstract class PersonBase : IPerson
     public int Age { get; }
     public string Role { get; }
 
-    public IObjectEnvelope<IPerson, FileInfo>? Envelope { get; set; }
+    public IObjectEnvelope<ContractPerson.IPerson, FileInfo>? Envelope { get; set; }
 }
