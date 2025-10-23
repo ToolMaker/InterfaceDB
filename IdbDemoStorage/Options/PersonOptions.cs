@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 
 namespace IdbDemoStorage.Options;
@@ -19,5 +20,6 @@ public sealed class PersonOptions : IDbContractConfigDto<MigrationTool.Contracts
     public IIndex<MigrationTool.Contracts.Person.v1_0_0.IPerson>[]? Indexes { get; set; } = Array.Empty<IIndex<MigrationTool.Contracts.Person.v1_0_0.IPerson>>();
     public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;
     public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;
+    public StoragePolicy? StoragePolicy { get; set; } =
+        StoragePolicy.Default with { MaxConcurrency = Environment.ProcessorCount };
 }
-

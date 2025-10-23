@@ -31,8 +31,24 @@ public interface IContractPubSubService<TContract>
         Func<ValueTask<bool>>? keepAlive = null);
 
     /// <summary>
+    /// Registers a handler that should be invoked whenever a contract has been durably stored.
+    /// </summary>
+    IContractSubscription SubscribeToStored(
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null);
+
+    /// <summary>
+    /// Registers a handler that should be invoked whenever a contract has been fully deleted from storage.
+    /// </summary>
+    IContractSubscription SubscribeToDeleted(
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null);
+
+    /// <summary>
     /// Publishes an event to all active subscribers.
     /// </summary>
     ValueTask ContractAdded(TContract @event, CancellationToken cancellationToken = default);
     ValueTask ContractRemoved(TContract @event, CancellationToken cancellationToken = default);
+    ValueTask ContractStored(TContract @event, CancellationToken cancellationToken = default);
+    ValueTask ContractDeleted(TContract @event, CancellationToken cancellationToken = default);
 }

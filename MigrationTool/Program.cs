@@ -732,6 +732,7 @@ internal static class Program
             "using Idb.Libraries.Abstractions.Dtos;",
             "using Idb.Libraries.Abstractions.Enums;",
             "using Idb.Libraries.Abstractions.Services.Indexes;",
+            "using Idb.Libraries.Abstractions.Options;",
             string.Empty,
             $"namespace {namespaceName};",
             string.Empty,
@@ -748,6 +749,7 @@ internal static class Program
             $"    public IIndex<{contractInterface}>[]? Indexes {{ get; set; }} = Array.Empty<IIndex<{contractInterface}>>();",
             "    public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;",
             "    public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;",
+            "    public StoragePolicy? StoragePolicy { get; set; } = StoragePolicy.Default;",
             "}",
             string.Empty,
         };

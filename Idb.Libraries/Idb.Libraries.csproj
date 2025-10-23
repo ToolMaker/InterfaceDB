@@ -37,6 +37,7 @@
     <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
+    <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
     <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
     <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />

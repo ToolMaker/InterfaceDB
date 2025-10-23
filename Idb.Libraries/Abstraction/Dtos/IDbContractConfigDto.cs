@@ -1,4 +1,5 @@
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 
 namespace Idb.Libraries.Abstractions.Dtos;
@@ -58,5 +59,9 @@ public interface IDbContractConfigDto<TContract, TLocationType>
     /// Repository implementation used to service this contract.
     /// </summary>
     ContractRepositoryType RepositoryType { get; }
-}
 
+    /// <summary>
+    /// Optional storage policy that tweaks repository behavior (buffer sizes, concurrency, notifications).
+    /// </summary>
+    StoragePolicy? StoragePolicy { get; }
+}
