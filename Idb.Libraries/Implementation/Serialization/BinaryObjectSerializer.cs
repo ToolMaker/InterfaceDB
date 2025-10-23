@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using MessagePack;
@@ -44,5 +47,30 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         }
 
         return MessagePackSerializer.Deserialize<TContract>(data, _options);
+    }
+
+    public ValueTask SerializeAsync(
+        TContract obj,
+        Stream destination,
+        CancellationToken cancellationToken = default)
+    {
+        if (destination is null)
+        {
+            throw new ArgumentNullException(nameof(destination));
+        }
+
+        return new ValueTask(MessagePackSerializer.SerializeAsync(destination, obj, _options, cancellationToken));
+    }
+
+    public ValueTask<TContract> DeserializeAsync(
+        Stream source,
+        CancellationToken cancellationToken = default)
+    {
+        if (source is null)
+        {
+            throw new ArgumentNullException(nameof(source));
+        }
+
+        return MessagePackSerializer.DeserializeAsync<TContract>(source, _options, cancellationToken);
     }
 }

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Serialization;
@@ -29,10 +30,15 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
     private readonly IServiceProvider _serviceProvider;
     private readonly string _dataRoot;
     private readonly IMigrationStrategy<TContract, FileInfo>? _migrationStrategy;
+    private readonly StoragePolicy _storagePolicy;
+    private readonly SemaphoreSlim? _writeSemaphore;
+    private readonly bool _raiseNotifications;
 
     private readonly ConcurrentDictionary<string, IObjectEnvelope<TContract, FileInfo>> _envelopes = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _removedSubscriptions = new();
+    private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _storedSubscriptions = new();
+    private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _deletedSubscriptions = new();
 
     public FileEnvelopeRepository(
         IFileNameFactory<TContract, FileInfo> fileNameFactory,
@@ -46,6 +52,10 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
         _migrationStrategy = (IMigrationStrategy<TContract, FileInfo>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract, FileInfo>));
+        _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
+        _writeSemaphore = normalizedConcurrency > 1 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency) : null;
+        _raiseNotifications = _storagePolicy.RaiseNotifications;
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
         {
@@ -115,17 +125,35 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         var targetPath = Path.Combine(_dataRoot, fileNameSegment + extension);
         var targetFile = new FileInfo(targetPath);
 
-        obj.Envelope = null;
-        var payload = _serializer.Serialize(obj);
-        await File.WriteAllBytesAsync(targetFile.FullName, payload, cancellationToken).ConfigureAwait(false);
+        var semaphore = _writeSemaphore;
+        if (semaphore is not null)
+        {
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-        var envelope = CreateEnvelope(targetFile, obj, payload);
-        _envelopes[envelope.CacheKey] = envelope;
-        obj.Envelope = envelope;
+        try
+        {
+            obj.Envelope = null;
+            var payload = _serializer.Serialize(obj);
 
-        await ContractAdded(obj, cancellationToken).ConfigureAwait(false);
+            var envelope = CreateEnvelope(targetFile, obj, payload);
+            _envelopes[envelope.CacheKey] = envelope;
+            obj.Envelope = envelope;
 
-        return envelope;
+            if (_raiseNotifications)
+            {
+                await ContractAdded(obj, cancellationToken).ConfigureAwait(false);
+            }
+
+            _ = PersistEnvelopeAsync(targetFile, payload, envelope, semaphore);
+
+            return envelope;
+        }
+        catch
+        {
+            semaphore?.Release();
+            throw;
+        }
     }
 
     public async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> QueryAsync(
@@ -344,7 +372,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         contractInstance.Envelope = envelope;
         _envelopes[envelope.CacheKey] = envelope;
 
-        if (notify)
+        if (notify && _raiseNotifications)
         {
             await ContractAdded(contractInstance, cancellationToken).ConfigureAwait(false);
         }
@@ -352,6 +380,42 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
 
     private static bool IsEagerStrategy(MigrationStrategyType strategy)
         => strategy is MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant;
+
+    private async ValueTask PersistPayloadAsync(FileInfo targetFile, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (targetFile.Directory is not null && !targetFile.Directory.Exists)
+        {
+            targetFile.Directory.Create();
+        }
+
+        await File.WriteAllBytesAsync(targetFile.FullName, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PersistEnvelopeAsync(
+        FileInfo targetFile,
+        byte[] payload,
+        FileBackedObjectEnvelope<TContract> envelope,
+        SemaphoreSlim? semaphore)
+    {
+        try
+        {
+            await PersistPayloadAsync(targetFile, payload, CancellationToken.None).ConfigureAwait(false);
+
+            if (_raiseNotifications)
+            {
+                var instance = envelope.ObjectInstance ?? _serializer.Deserialize(payload);
+                await ContractStored(instance, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            // TODO: asynchronous storage pipeline should capture and surface persistence failures.
+        }
+        finally
+        {
+            semaphore?.Release();
+        }
+    }
 
     private static string NormalizeExtension(string extension)
     {
@@ -374,11 +438,27 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         Func<ValueTask<bool>>? keepAlive = null)
         => RegisterSubscription(_removedSubscriptions, handler, keepAlive);
 
+    public IContractSubscription SubscribeToStored(
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null)
+        => RegisterSubscription(_storedSubscriptions, handler, keepAlive);
+
+    public IContractSubscription SubscribeToDeleted(
+        Func<TContract, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null)
+        => RegisterSubscription(_deletedSubscriptions, handler, keepAlive);
+
     public ValueTask ContractAdded(TContract @event, CancellationToken cancellationToken = default)
         => PublishAsync(_addedSubscriptions, @event, cancellationToken);
 
     public ValueTask ContractRemoved(TContract @event, CancellationToken cancellationToken = default)
         => PublishAsync(_removedSubscriptions, @event, cancellationToken);
+
+    public ValueTask ContractStored(TContract @event, CancellationToken cancellationToken = default)
+        => PublishAsync(_storedSubscriptions, @event, cancellationToken);
+
+    public ValueTask ContractDeleted(TContract @event, CancellationToken cancellationToken = default)
+        => PublishAsync(_deletedSubscriptions, @event, cancellationToken);
 
     private IContractSubscription RegisterSubscription(
         ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
