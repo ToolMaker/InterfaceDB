@@ -32,20 +32,21 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="Implementation\Factories\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\Extentions\StringExtensions.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
     <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
+    <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
+    <Compile Include="Implementation\Migrations\FileSystemLazyMigrationStrategy.cs" />
+    <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
     <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
-    <Compile Include="Implementation\Serialization\FileBackedObjectEnvelope.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemLazyMigrationStrategy.cs" />
-    <Compile Include="Demo\Person\v1_0_0\IPerson.cs" />
-    <Compile Include="Demo\Person\v1_0_1\IPerson.cs" />
-    <Compile Include="Demo\Person\PersonMigration_v1_0_0_To_v1_0_1.cs" />
+    <Compile Include="Implementation\Serialization\FileObjectEnvelope.cs" />
+    <Compile Include="Implementation\Serialization\FileObjectReader.cs" />
+    <Compile Include="Implementation\Serialization\FileObjectWriter.cs" />
+    <Compile Include="Implementation\Serialization\ObjectReaderAndWriter.cs" />
   </ItemGroup>
 
 </Project>

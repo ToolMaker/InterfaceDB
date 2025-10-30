@@ -11,30 +11,38 @@ using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Serialization;
+using Idb.Libraries.Implementation.Extentions;
 using MessagePack;
+using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Migrations;
 
 /// <summary>
 /// Shared migration helpers for file-system-backed strategies.
 /// </summary>
-public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStrategy<TContract, FileInfo>
-    where TContract : class, IRepoDto<TContract, FileInfo>
+public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStrategy<TContract, string>
+    where TContract : class, IRepoDto<TContract, string>
 {
-    private readonly IDbContractConfigDto<TContract, FileInfo> _contractConfig;
+    private readonly IDbContractConfigDto<TContract, string> _contractConfig;
     private readonly IReadOnlyList<MigrationDescriptor> _migrationDescriptors;
+    private readonly IObjectReader<TContract, string>? _reader;
+    private readonly IObjectWriter<TContract, string>? _writer;
 
     protected FileSystemMigrationStrategyBase(
-        IDbContractConfigDto<TContract, FileInfo> contractConfig,
-        IObjectSerializer<TContract> serializer,
-        IFileNameFactory<TContract, FileInfo> fileNameFactory,
+        IDbContractConfigDto<TContract, string> contractConfig,
+        IObjectSerializer<TContract, string> serializer,
+        IEnvelopeKeyAndLocationFactory<TContract, string> fileNameFactory,
         IEnumerable<IMigration> migrations,
-        MigrationStrategyType strategyType)
+        MigrationStrategyType strategyType,
+        IObjectReader<TContract, string>? reader = null,
+        IObjectWriter<TContract, string>? writer = null)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         FileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
+        _reader = reader;
+        _writer = writer;
         StrategyType = strategyType;
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
@@ -44,7 +52,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
         DataRootDirectory = new DirectoryInfo(Path.GetFullPath(_contractConfig.DataRoot!));
         ActiveVersion = _contractConfig.ActiveVersion ?? "1.0.0";
-        FileExtension = NormalizeExtension(Serializer.FileExtension);
+        FileExtension = NormalizeExtension(_contractConfig.FileExtension.NormalizeExtension());
         SerializerOptions = ResolveSerializerOptions(Serializer);
         IsTolerant = StrategyType == MigrationStrategyType.EagerTolerant;
 
@@ -58,9 +66,9 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     public MigrationStrategyType StrategyType { get; }
 
-    protected IObjectSerializer<TContract> Serializer { get; }
+    protected IObjectSerializer<TContract,string> Serializer { get; }
 
-    protected IFileNameFactory<TContract, FileInfo> FileNameFactory { get; }
+    protected IEnvelopeKeyAndLocationFactory<TContract, string> FileNameFactory { get; }
 
     protected DirectoryInfo DataRootDirectory { get; }
 
@@ -74,109 +82,89 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     protected IReadOnlyList<MigrationDescriptor> MigrationDescriptors => _migrationDescriptors;
 
-    public abstract IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> OnInitializeAsync(
-        CancellationToken cancellationToken = default);
+    protected StoragePolicy EffectivePolicy => _contractConfig.StoragePolicy ?? StoragePolicy.Default;
 
-    public virtual IObjectEnvelope<TContract, FileInfo> Migrate(
-        IObjectEnvelope<TContract, FileInfo> envelopeToMigrate,
-        CancellationToken cancellationToken = default)
+    public virtual async IAsyncEnumerable<TContract> OnInitializeAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (envelopeToMigrate is null)
-        {
-            throw new ArgumentNullException(nameof(envelopeToMigrate));
-        }
-
-        if (!TryResolveLegacyLocation(envelopeToMigrate, out var legacyFile, out var legacyVersion))
-        {
-            return envelopeToMigrate;
-        }
-
-        var migrated = MigrateFileAsync(legacyFile, legacyVersion, ActiveVersion, cancellationToken)
-            .GetAwaiter()
-            .GetResult();
-
-        return migrated ?? envelopeToMigrate;
-    }
-
-    protected IEnumerable<DirectoryInfo> EnumerateLegacyDirectories()
-    {
-        if (!DataRootDirectory.Exists)
+        if (_reader is null || _contractConfig.DataRoot is null)
         {
             yield break;
         }
 
-        var ordered = DataRootDirectory
-            .EnumerateDirectories()
-            .Select(dir => new { Directory = dir, Version = ParseVersionSafe(dir.Name) })
-            .OrderBy(pair => pair.Version);
-
-        foreach (var entry in ordered)
+        var root = new DirectoryInfo(Path.GetFullPath(_contractConfig.DataRoot));
+        if (!root.Exists)
         {
-            if (string.Equals(entry.Directory.Name, ActiveVersion, StringComparison.OrdinalIgnoreCase))
+            yield break;
+        }
+
+        foreach (var file in root.EnumerateFiles($"*{FileExtension}", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = await _reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
+            var env = current.Envelope;
+            if (env is null)
             {
                 continue;
             }
+            if (string.Equals(env.VersionTag, ActiveVersion, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return current;
+                continue;
+            }
 
-            yield return entry.Directory;
+            var migrated = await MigrateFileAsync(file, deleteLegacyOnSuccess: true, cancellationToken).ConfigureAwait(false);
+            if (migrated is not null)
+            {
+                yield return migrated;
+            }
         }
     }
 
-    protected async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>?> ProcessDirectoryAsync(
-        DirectoryInfo legacyDirectory,
-        string sourceVersion,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    public virtual TContract Migrate(TContract objectInstance, CancellationToken cancellationToken = default)
     {
-        if (!legacyDirectory.Exists)
+        if (objectInstance is null)
         {
-            yield break;
+            throw new ArgumentNullException(nameof(objectInstance));
         }
 
-        foreach (var legacyFile in legacyDirectory.EnumerateFiles($"*{FileExtension}", SearchOption.TopDirectoryOnly))
+        var env = objectInstance.Envelope;
+        if (env is null || string.Equals(env.VersionTag, ActiveVersion, StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(env.Location))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var migrated = await MigrateFileAsync(legacyFile, sourceVersion, ActiveVersion, cancellationToken).ConfigureAwait(false);
-            yield return migrated;
+            return objectInstance;
         }
+
+        var file = new FileInfo(env.Location);
+        var migrated = MigrateFileAsync(file, deleteLegacyOnSuccess: true, cancellationToken).GetAwaiter().GetResult();
+        return migrated ?? objectInstance;
     }
 
-    protected ValueTask<IObjectEnvelope<TContract, FileInfo>?> MigrateFileAsync(
+    protected async ValueTask<TContract?> MigrateFileAsync(
         FileInfo legacyFile,
-        string sourceVersion,
-        string targetVersion,
+        bool deleteLegacyOnSuccess,
         CancellationToken cancellationToken)
     {
-        return MigrateInternalAsync(legacyFile, sourceVersion, targetVersion, cancellationToken);
-    }
-
-    protected bool TryResolveLegacyLocation(
-        IObjectEnvelope<TContract, FileInfo> envelope,
-        out FileInfo legacyFile,
-        out string legacyVersion)
-    {
-        legacyFile = envelope.Location;
-        legacyVersion = envelope.VersionTag;
-
-        if (legacyFile is null || string.IsNullOrWhiteSpace(legacyVersion))
-        {
-            return false;
-        }
-
-        return !string.Equals(legacyVersion, ActiveVersion, StringComparison.OrdinalIgnoreCase);
-    }
-
-    protected DirectoryInfo ResolveVersionDirectory(string versionTag)
-        => new(Path.Combine(DataRootDirectory.FullName, versionTag));
-
-    private async ValueTask<IObjectEnvelope<TContract, FileInfo>?> MigrateInternalAsync(
-        FileInfo legacyFile,
-        string sourceVersion,
-        string targetVersion,
-        CancellationToken cancellationToken)
-    {
-        var chain = BuildMigrationChain(sourceVersion, targetVersion);
+        var sourceVersion = ExtractVersionFromFile(legacyFile);
+        var chain = BuildMigrationChain(sourceVersion, ActiveVersion);
         if (chain.Count == 0)
         {
-            return null;
+            // No migration needed; materialize current instance and (optionally) persist via writer
+            if (_reader is not null)
+            {
+                return await _reader.ReadAsync(legacyFile, cancellationToken).ConfigureAwait(false);
+            }
+            var raw = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
+            var inst = MessagePackSerializer.Deserialize<TContract>(raw, SerializerOptions);
+            if (_writer is null)
+            {
+                return inst;
+            }
+            var savedCurrent = await _writer.WriteAsync(inst, cancellationToken).ConfigureAwait(false);
+            if (deleteLegacyOnSuccess)
+            {
+                await DeleteLegacyFileAsync(legacyFile, cancellationToken).ConfigureAwait(false);
+            }
+            return savedCurrent;
         }
 
         var currentPayload = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
@@ -199,30 +187,17 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             currentVersion = descriptor.TargetVersion;
         }
 
-        var targetDirectory = ResolveVersionDirectory(targetVersion);
-        Directory.CreateDirectory(targetDirectory.FullName);
-
-        var upgradedContract = Serializer.Deserialize(currentPayload);
-        var normalizedId = FileNameFactory.Create(upgradedContract, legacyFile, Path.GetFileNameWithoutExtension(legacyFile.Name));
-        if (string.IsNullOrWhiteSpace(normalizedId))
+        var migratedInstance = MessagePackSerializer.Deserialize<TContract>(currentPayload, SerializerOptions);
+        if (_writer is null)
         {
-            normalizedId = Guid.NewGuid().ToString("N");
+            return migratedInstance;
         }
-
-        var targetPath = Path.Combine(targetDirectory.FullName, normalizedId + FileExtension);
-        await File.WriteAllBytesAsync(targetPath, currentPayload, cancellationToken).ConfigureAwait(false);
-        await DeleteLegacyFileAsync(legacyFile, cancellationToken).ConfigureAwait(false);
-
-        var envelope = new FileBackedObjectEnvelope<TContract>(
-            new FileInfo(targetPath),
-            targetVersion,
-            upgradedContract,
-            currentPayload,
-            static (_, info) => info.FullName);
-
-        upgradedContract.Envelope = envelope;
-
-        return envelope;
+        var saved = await _writer.WriteAsync(migratedInstance, cancellationToken).ConfigureAwait(false);
+        if (deleteLegacyOnSuccess)
+        {
+            await DeleteLegacyFileAsync(legacyFile, cancellationToken).ConfigureAwait(false);
+        }
+        return saved;
     }
 
     private IReadOnlyList<MigrationDescriptor> BuildMigrationChain(string sourceVersion, string targetVersion)
@@ -281,7 +256,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     private byte[] SerializeMigration(IMigration migrationInstance)
         => MessagePackSerializer.Serialize(migrationInstance.GetType(), migrationInstance, SerializerOptions);
 
-    private static async ValueTask DeleteLegacyFileAsync(FileInfo legacyFile, CancellationToken cancellationToken)
+    protected static async ValueTask DeleteLegacyFileAsync(FileInfo legacyFile, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -299,11 +274,11 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static MessagePackSerializerOptions ResolveSerializerOptions(IObjectSerializer<TContract> serializer)
+    private static MessagePackSerializerOptions ResolveSerializerOptions(IObjectSerializer<TContract, string> serializer)
     {
-        if (serializer is BinaryObjectSerializer<TContract> binarySerializer)
+        if (serializer is BinaryObjectSerializer<TContract, string> binarySerializer)
         {
-            var field = typeof(BinaryObjectSerializer<TContract>)
+            var field = typeof(BinaryObjectSerializer<TContract, string>)
                 .GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (field?.GetValue(binarySerializer) is MessagePackSerializerOptions options)
             {
@@ -326,6 +301,9 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     protected static Version ParseVersionSafe(string version)
         => Version.TryParse(version, out var parsed) ? parsed : new Version(0, 0);
+
+    protected static string ExtractVersionFromFile(FileInfo file)
+        => file.Directory?.Name ?? string.Empty;
 
     protected sealed class MigrationDescriptor
     {

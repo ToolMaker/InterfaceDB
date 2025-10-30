@@ -1,31 +1,24 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using System.Data;
 using Dapper;
-using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
-using IdbDemoStorage.Options;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
-using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Factories;
 using Idb.Libraries.Implementation.Indexes;
-using Idb.Libraries.Implementation.Migrations;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
+using IdbDemoStorage.Options;
 using MessagePack;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using PerformanceCommon;
+using System.Data;
+using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
 TransactionBenchmarks.EnsureConfigurationInitialized();
 BenchmarkRunner.Run<TransactionBenchmarks>();
@@ -90,7 +83,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = null;
 
         var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
-        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, FileInfo>>();
+        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, string>>();
         var policy = config.StoragePolicy ?? StoragePolicy.Default;
         await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
     }
@@ -233,18 +226,18 @@ public class TransactionBenchmarks : IDisposable
 
         var services = new ServiceCollection();
         services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, FileInfo>>(options);
-        services.AddSingleton<IFileNameFactory<ContractPerson.IPerson, FileInfo>, DefaultFileNameFactory<ContractPerson.IPerson>>();
+        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, string>>(options);
+        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson, string>, DefaultFileNameFactory<ContractPerson.IPerson>>();
 
         var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
+        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson,string>>(new BinaryObjectSerializer<ContractPerson.IPerson, string>(serializerOptions));
 
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, FileInfo>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
+        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, string>, FileEnvelopeRepository<ContractPerson.IPerson>>();
+        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson, string>>();
         services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
         {
             var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson, FileInfo>(manager);
+            return new InterfaceRepositryDb<ContractPerson.IPerson, string>(manager);
         });
 
         return services.BuildServiceProvider();

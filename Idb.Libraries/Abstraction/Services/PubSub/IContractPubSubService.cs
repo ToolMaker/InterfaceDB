@@ -1,10 +1,14 @@
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Services.Serialization;
+
 namespace Idb.Libraries.Abstractions.Services.PubSub;
 
 /// <summary>
 /// Publishes notifications to subscribed handlers.
 /// </summary>
 /// <typeparam name="TContract">Event payload type.</typeparam>
-public interface IContractPubSubService<TContract>
+public interface IContractPubSubService<TContract, TLocationType>
+    where TContract : class, IRepoDto<TContract, TLocationType>
 {
     /// <summary>
     /// Registers a handler that should be invoked whenever a contract is added.
@@ -15,7 +19,7 @@ public interface IContractPubSubService<TContract>
     /// </param>
     /// <returns>An <see cref="IContractSubscription"/> that can be disposed to unsubscribe.</returns>
     IContractSubscription SubscribeToAdded(
-        Func<TContract, ValueTask> handler,
+        Func<IObjectEnvelope<TContract, TLocationType>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null);
 
     /// <summary>
@@ -27,28 +31,28 @@ public interface IContractPubSubService<TContract>
     /// </param>
     /// <returns>An <see cref="IContractSubscription"/> that can be disposed to unsubscribe.</returns>
     IContractSubscription SubscribeToRemoved(
-        Func<TContract, ValueTask> handler,
+        Func<IObjectEnvelope<TContract, TLocationType>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null);
 
     /// <summary>
     /// Registers a handler that should be invoked whenever a contract has been durably stored.
     /// </summary>
     IContractSubscription SubscribeToStored(
-        Func<TContract, ValueTask> handler,
+        Func<IObjectEnvelope<TContract, TLocationType>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null);
 
     /// <summary>
     /// Registers a handler that should be invoked whenever a contract has been fully deleted from storage.
     /// </summary>
     IContractSubscription SubscribeToDeleted(
-        Func<TContract, ValueTask> handler,
+        Func<IObjectEnvelope<TContract, TLocationType>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null);
 
     /// <summary>
     /// Publishes an event to all active subscribers.
     /// </summary>
-    ValueTask ContractAdded(TContract @event, CancellationToken cancellationToken = default);
-    ValueTask ContractRemoved(TContract @event, CancellationToken cancellationToken = default);
-    ValueTask ContractStored(TContract @event, CancellationToken cancellationToken = default);
-    ValueTask ContractDeleted(TContract @event, CancellationToken cancellationToken = default);
+    ValueTask ContractAdded(IObjectEnvelope<TContract, TLocationType> @event, CancellationToken cancellationToken = default);
+    ValueTask ContractRemoved(IObjectEnvelope<TContract, TLocationType> @event, CancellationToken cancellationToken = default);
+    ValueTask ContractStored(IObjectEnvelope<TContract, TLocationType> @event, CancellationToken cancellationToken = default);
+    ValueTask ContractDeleted(IObjectEnvelope<TContract, TLocationType> @event, CancellationToken cancellationToken = default);
 }

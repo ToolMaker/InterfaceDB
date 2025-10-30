@@ -1,13 +1,9 @@
-using System.Collections.Generic;
-using System.IO;
-using System.Runtime.CompilerServices;
-using System.Threading;
 using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
-using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using System.Runtime.CompilerServices;
 
 namespace Idb.Libraries.Implementation.Migrations;
 
@@ -15,15 +11,17 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Eager migration strategy that upgrades legacy payloads during initialisation.
 /// </summary>
 public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
-    where TContract : class, IRepoDto<TContract, FileInfo>
+    where TContract : class, IRepoDto<TContract, string>
 {
     public FileSystemEagerMigrationStrategy(
-        IDbContractConfigDto<TContract, FileInfo> contractConfig,
-        IObjectSerializer<TContract> serializer,
-        IFileNameFactory<TContract, FileInfo> fileNameFactory,
+        IDbContractConfigDto<TContract, string> contractConfig,
+        IObjectSerializer<TContract, string> serializer,
         IEnumerable<IMigration> migrations,
-        MigrationStrategyType strategyType)
-        : base(contractConfig, serializer, fileNameFactory, migrations, strategyType)
+        MigrationStrategyType strategyType,
+        IEnvelopeKeyAndLocationFactory<TContract, string> factory,
+        IObjectReader<TContract, string> reader,
+        IObjectWriter<TContract, string> writer)
+        : base(contractConfig, serializer, factory, migrations, strategyType, reader, writer)
     {
         if (strategyType is not (MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant))
         {
@@ -31,24 +29,84 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
         }
     }
 
-    public override async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> OnInitializeAsync(
+    public override async IAsyncEnumerable<TContract> OnInitializeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (!DataRootDirectory.Exists || MigrationDescriptors.Count == 0)
+        if (!DataRootDirectory.Exists)
         {
             yield break;
         }
 
-        foreach (var legacyDirectory in EnumerateLegacyDirectories())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        var legacyFiles = DataRootDirectory
+            .EnumerateDirectories()
+            .Where(d => !string.Equals(d.Name, ActiveVersion, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(d => d.EnumerateFiles($"*{FileExtension}", SearchOption.TopDirectoryOnly))
+            .ToList();
 
-            await foreach (var migrated in ProcessDirectoryAsync(legacyDirectory, legacyDirectory.Name, cancellationToken).ConfigureAwait(false))
+        if (legacyFiles.Count == 0)
+        {
+            yield break;
+        }
+
+        var dop = EffectivePolicy.NormalizedConcurrency;
+
+        if (StrategyType == MigrationStrategyType.EagerStrict)
+        {
+            var written = new System.Collections.Concurrent.ConcurrentBag<(string NewPath, FileInfo LegacyFile, TContract Saved)>();
+            var commitFailed = false;
+            try
             {
-                if (migrated is not null)
+                await Parallel.ForEachAsync(legacyFiles, new ParallelOptions { MaxDegreeOfParallelism = dop, CancellationToken = cancellationToken }, async (file, ct) =>
                 {
-                    yield return migrated;
+                    var saved = await MigrateFileAsync(file, deleteLegacyOnSuccess: false, ct).ConfigureAwait(false);
+                    if (saved?.Envelope?.Location is string path && !string.IsNullOrWhiteSpace(path))
+                    {
+                        written.Add((path, file, saved));
+                    }
+                }).ConfigureAwait(false);
+            }
+            catch
+            {
+                commitFailed = true;
+            }
+
+            if (commitFailed)
+            {
+                foreach (var entry in written)
+                {
+                    try { if (File.Exists(entry.NewPath)) File.Delete(entry.NewPath); } catch { }
                 }
+                yield break;
+            }
+
+            foreach (var entry in written)
+            {
+                try { await DeleteLegacyFileAsync(entry.LegacyFile, cancellationToken).ConfigureAwait(false); } catch { }
+                yield return entry.Saved;
+            }
+        }
+        else // EagerTolerant
+        {
+            var results = new System.Collections.Concurrent.ConcurrentBag<TContract>();
+            await Parallel.ForEachAsync(legacyFiles, new ParallelOptions { MaxDegreeOfParallelism = dop, CancellationToken = cancellationToken }, async (file, ct) =>
+            {
+                try
+                {
+                    var saved = await MigrateFileAsync(file, deleteLegacyOnSuccess: true, ct).ConfigureAwait(false);
+                    if (saved is not null)
+                    {
+                        results.Add(saved);
+                    }
+                }
+                catch
+                {
+                    // tolerant: best-effort; keep legacy on failure
+                }
+            }).ConfigureAwait(false);
+
+            foreach (var item in results)
+            {
+                yield return item;
             }
         }
     }

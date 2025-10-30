@@ -16,12 +16,12 @@ public interface IObjectEnvelope<TContract, TLocationType>
         /// Stable cache key derived from storage metadata (e.g., normalized location identifier).
         /// Used by the envelope repository to index instances across process boundaries regardless of physical medium.
         /// </summary>
-        string CacheKey { get; }
+        string EnvelopeCacheKey { get; set; }
 
         /// <summary>
         /// Version tag recorded when the payload was persisted.
         /// </summary>
-        string VersionTag { get; }
+        string VersionTag { get; set; }
 
         /// <summary>
         /// Contract instance associated with this envelope.
@@ -31,13 +31,7 @@ public interface IObjectEnvelope<TContract, TLocationType>
         /// <summary>
     /// Location descriptor where the serialized payload resides (e.g., file, blob, queue message).
         /// </summary>
-        TLocationType Location { get; }
-
-        /// <summary>
-        /// Raw bytes that represent the serialized payload (before or after encryption).
-        /// Readers populate this when a lookup materializes the envelope; writers consume it when persisting.
-        /// </summary>
-        byte[] Payload { get; set; }
+        TLocationType? Location { get; set; }
     }
 }
 

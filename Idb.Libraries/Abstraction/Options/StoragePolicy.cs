@@ -16,7 +16,7 @@ public sealed record StoragePolicy
     /// Maximum number of concurrent write operations. A value of 1 preserves sequential behavior.
     /// Values less than 1 are coerced to 1.
     /// </summary>
-    public int MaxConcurrency { get; init; } = 1;
+    public int MaxConcurrency { get; init; } = 12;
 
     /// <summary>
     /// When false, change notifications such as <c>ContractAdded</c> are skipped during writes.

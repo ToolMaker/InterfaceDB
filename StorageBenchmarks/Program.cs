@@ -1,31 +1,26 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
-using System.Data;
 using Dapper;
-using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
-using IdbDemoStorage.Options;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
-using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Factories;
+using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
-using Idb.Libraries.Implementation.Migrations;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
+using IdbDemoStorage.Options;
 using MessagePack;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using PerformanceCommon;
+using System.Data;
+using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
 PersonStorageBenchmark.EnsureConfigurationInitialized();
 BenchmarkRunner.Run<PersonStorageBenchmark>();
@@ -41,6 +36,8 @@ public class PersonStorageBenchmark : IDisposable
     private SqlConnection? _sqlConnection;
     private SqlConnection? _dapperConnection;
     private List<ContractPerson.IPerson>? _iterationPersons;
+    private IRepository<ContractPerson.IPerson> repository;
+    private StoragePolicy policy;
 
     internal static IConfiguration? Configuration { get; set; }
 
@@ -71,28 +68,19 @@ public class PersonStorageBenchmark : IDisposable
 
         _fileProvider?.Dispose();
         _fileProvider = BuildFileSystemProvider(_fileDataRoot);
-        var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
+        repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
         repository.InitializeAsync().GetAwaiter().GetResult();
         var warmupPerson = PersonDataFactory.ClonePersons(new[] { _seedPersons[0] })[0];
         repository.SaveAsync(warmupPerson).GetAwaiter().GetResult();
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, string>>();
+        StoragePolicy policy = config.StoragePolicy ?? StoragePolicy.Default;
     }
 
     [Benchmark(Description = "File system repository")]
     public async Task FileSystem_Store100()
     {
-        if (_fileProvider is null)
-        {
-            throw new InvalidOperationException("File-system provider not initialized.");
-        }
-
-        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
-        _iterationPersons = null;
-
-        var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
-        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, FileInfo>>();
-        var policy = config.StoragePolicy ?? StoragePolicy.Default;
-        await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
+        await repository.SaveManyAsync(_iterationPersons, StoragePolicy.Default).ConfigureAwait(false);
     }
 
     [GlobalSetup(Target = nameof(SqlServer_Store100))]
@@ -122,26 +110,41 @@ public class PersonStorageBenchmark : IDisposable
             throw new InvalidOperationException("SQL Server connection not initialized.");
         }
 
-        using var insert = _sqlConnection.CreateCommand();
-        insert.CommandText = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@id, @name, @age, @role, @surname)";
-        insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier);
-        insert.Parameters.Add("@name", SqlDbType.NVarChar, 200);
-        insert.Parameters.Add("@age", SqlDbType.Int);
-        insert.Parameters.Add("@role", SqlDbType.NVarChar, 100);
-        insert.Parameters.Add("@surname", SqlDbType.NVarChar, 100);
-
         var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
         _iterationPersons = null;
 
-        foreach (var person in persons)
-        {
-            insert.Parameters["@id"].Value = person.Id;
-            insert.Parameters["@name"].Value = person.Name;
-            insert.Parameters["@age"].Value = person.Age;
-            insert.Parameters["@role"].Value = person.Role;
-            insert.Parameters["@surname"].Value = string.Empty;
-            insert.ExecuteNonQuery();
-        }
+        var options = CreateParallelOptions(persons.Count);
+
+        Parallel.ForEach(
+            persons,
+            options,
+            () =>
+            {
+                var connection = CreateOpenConnection();
+                var command = connection.CreateCommand();
+                command.CommandText = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@id, @name, @age, @role, @surname)";
+                command.Parameters.Add("@id", SqlDbType.UniqueIdentifier);
+                command.Parameters.Add("@name", SqlDbType.NVarChar, 200);
+                command.Parameters.Add("@age", SqlDbType.Int);
+                command.Parameters.Add("@role", SqlDbType.NVarChar, 100);
+                command.Parameters.Add("@surname", SqlDbType.NVarChar, 100);
+                return (Connection: connection, Command: command);
+            },
+            (person, _, state) =>
+            {
+                state.Command.Parameters["@id"].Value = person.Id;
+                state.Command.Parameters["@name"].Value = person.Name;
+                state.Command.Parameters["@age"].Value = person.Age;
+                state.Command.Parameters["@role"].Value = person.Role;
+                state.Command.Parameters["@surname"].Value = string.Empty;
+                state.Command.ExecuteNonQuery();
+                return state;
+            },
+            state =>
+            {
+                state.Command.Dispose();
+                state.Connection.Dispose();
+            });
     }
 
     [GlobalSetup(Target = nameof(Dapper_Store100))]
@@ -164,7 +167,7 @@ public class PersonStorageBenchmark : IDisposable
     }
 
     [Benchmark(Description = "Dapper")]
-    public async Task Dapper_Store100()
+    public Task Dapper_Store100()
     {
         if (_dapperConnection is null)
         {
@@ -175,19 +178,29 @@ public class PersonStorageBenchmark : IDisposable
         _iterationPersons = null;
 
         const string insertSql = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@Id, @Name, @Age, @Role, @Surname)";
-        foreach (var person in persons)
-        {
-            await _dapperConnection.ExecuteAsync(
-                insertSql,
-                new
-                {
-                    person.Id,
-                    person.Name,
-                    person.Age,
-                    person.Role,
-                    Surname = string.Empty
-                }).ConfigureAwait(false);
-        }
+        var options = CreateParallelOptions(persons.Count);
+
+        Parallel.ForEach(
+            persons,
+            options,
+            () => CreateOpenConnection(),
+            (person, _, connection) =>
+            {
+                connection.Execute(
+                    insertSql,
+                    new
+                    {
+                        person.Id,
+                        person.Name,
+                        person.Age,
+                        person.Role,
+                        Surname = string.Empty
+                    });
+                return connection;
+            },
+            connection => connection.Dispose());
+
+        return Task.CompletedTask;
     }
 
     [GlobalCleanup]
@@ -231,18 +244,24 @@ public class PersonStorageBenchmark : IDisposable
 
         var services = new ServiceCollection();
         services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, FileInfo>>(options);
-        services.AddSingleton<IFileNameFactory<ContractPerson.IPerson, FileInfo>, DefaultFileNameFactory<ContractPerson.IPerson>>();
+        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, string>>(options);
+        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson, string>, DefaultFileNameFactory<ContractPerson.IPerson>>();
 
         var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
+        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson, string>>(new BinaryObjectSerializer<ContractPerson.IPerson,string>(serializerOptions));
 
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, FileInfo>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
+        services.AddTransient<IObjectEnvelope<ContractPerson.IPerson, string>, FileObjectEnvelope<ContractPerson.IPerson>>();
+        services.AddSingleton<IEnvelopeLifecycle<ContractPerson.IPerson, string>, EnvelopeLifecycle<ContractPerson.IPerson, string>>();
+        services.AddTransient<IObjectReader<ContractPerson.IPerson, string>, FileObjectReader<ContractPerson.IPerson>>();
+        services.AddTransient<IObjectWriter<ContractPerson.IPerson, string>, FileObjectWriter<ContractPerson.IPerson>>();
+        services.AddTransient<IReaderAndWriter<ContractPerson.IPerson, string>, ObjectReaderAndWriter<ContractPerson.IPerson, string>>();
+
+        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, string>, FileEnvelopeRepository<ContractPerson.IPerson>>();
+        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson, string>>();
         services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
         {
             var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson, FileInfo>(manager);
+            return new InterfaceRepositryDb<ContractPerson.IPerson, string>(manager);
         });
 
         return services.BuildServiceProvider();
@@ -287,6 +306,22 @@ public class PersonStorageBenchmark : IDisposable
         var connection = new SqlConnection(connectionString);
         connection.Open();
         return connection;
+    }
+
+    private static ParallelOptions CreateParallelOptions(int workloadSize)
+    {
+        var logicalProcessors = Environment.ProcessorCount;
+        var desiredParallelism = logicalProcessors * 4;
+        var maxDegree = Math.Min(desiredParallelism, workloadSize);
+        if (maxDegree <= 0)
+        {
+            maxDegree = Math.Max(1, desiredParallelism);
+        }
+
+        return new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegree
+        };
     }
 
     private static void EnsureSqlSchema(SqlConnection connection)

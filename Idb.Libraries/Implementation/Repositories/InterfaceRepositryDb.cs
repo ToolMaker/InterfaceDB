@@ -45,11 +45,6 @@ public sealed class InterfaceRepositryDb<TContract, TLocationType> : IRepository
         TContract entityToSave,
         CancellationToken cancellationToken = default)
     {
-        if (entityToSave is null)
-        {
-            throw new ArgumentNullException(nameof(entityToSave));
-        }
-
         return _indexManager.SaveAsync(entityToSave, cancellationToken);
     }
 
