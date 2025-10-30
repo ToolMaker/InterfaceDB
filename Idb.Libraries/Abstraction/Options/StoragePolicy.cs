@@ -43,6 +43,12 @@ public sealed record StoragePolicy
         }
     }
 
+    /// <summary>
+    /// When true, repository initialization hydrates all cached envelopes into memory in parallel after seeding metadata.
+    /// Set to false to skip warmup hydration for write-heavy scenarios.
+    /// </summary>
+    public bool HydrateOnInitialize { get; init; } = true;
+
     internal int NormalizedConcurrency
     {
         get

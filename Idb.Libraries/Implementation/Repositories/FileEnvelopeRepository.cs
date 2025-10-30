@@ -54,6 +54,10 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
 
         _dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
         Directory.CreateDirectory(_dataRoot);
+        // Pre-create the active version directory to avoid per-write directory checks in the hot path
+        var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
+        var activeVersionRoot = Path.Combine(_dataRoot, activeVersion);
+        Directory.CreateDirectory(activeVersionRoot);
     }
     public IReaderAndWriter<TContract, string> ReaderAndWriter => _readerAndWriter;
 
@@ -86,8 +90,12 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         objectInstance = await ReaderAndWriter.Writer.WriteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         var envelope = objectInstance.Envelope ?? throw new InvalidOperationException("Object instance must have a valid envelope after writing.");
 
-        await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
-        await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+        var notify = _contractConfig.StoragePolicy?.RaiseNotifications ?? StoragePolicy.Default.RaiseNotifications;
+        if (notify)
+        {
+            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+        }
 
         return objectInstance;
     }
@@ -165,7 +173,11 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         }
 
         // Hydrate all cached envelopes in parallel according to storage policy (loads contracts into memory)
-        await HydrateCacheAsync(cancellationToken).ConfigureAwait(false);
+        var effectivePolicy = _contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        if (effectivePolicy.HydrateOnInitialize)
+        {
+            await HydrateCacheAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async ValueTask HydrateCacheAsync(CancellationToken cancellationToken)

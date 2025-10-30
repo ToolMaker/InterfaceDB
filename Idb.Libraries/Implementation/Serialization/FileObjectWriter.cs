@@ -50,15 +50,29 @@ namespace Idb.Libraries.Implementation.Serialization
 
             try
             {
-                var payload = _serializer.Serialize(envelope);
-
-                FileInfo targetFileInfo = new FileInfo(envelope.Location);
-                if (targetFileInfo.Directory is not null && !targetFileInfo.Directory.Exists)
+                // Ensure directory exists (avoid FileInfo allocation)
+                var path = envelope.Location;
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(dir))
                 {
-                    targetFileInfo.Directory.Create();
+                    Directory.CreateDirectory(dir);
                 }
 
-                await File.WriteAllBytesAsync(targetFileInfo.FullName, payload, cancellationToken).ConfigureAwait(false);
+                // Stream payload directly to disk to avoid large intermediate arrays
+                var fso = new FileStreamOptions
+                {
+                    Mode = FileMode.Create,
+                    Access = FileAccess.Write,
+                    Share = FileShare.None,
+                    Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+                    BufferSize = _storagePolicy.NormalizedBufferSize
+                };
+
+                using (var stream = new FileStream(path, fso))
+                {
+                    await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
+                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 // Update envelope cache after successful persistence
                 if (!string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))

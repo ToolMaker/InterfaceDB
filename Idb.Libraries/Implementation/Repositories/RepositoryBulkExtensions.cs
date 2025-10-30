@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Repository;
+using System.Threading.Channels;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -52,15 +53,60 @@ public static class RepositoryBulkExtensions
         //    return;
         //}
 
-        var parallelOptions = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = Environment.ProcessorCount,
-            CancellationToken = cancellationToken
-        };
+        var effectivePolicy = policy ?? StoragePolicy.Default;
+        var dop = effectivePolicy.MaxConcurrency;
 
-        await Parallel.ForEachAsync(materialized, parallelOptions, async (item, token) =>
+        if (dop <= 1 || materialized.Count == 1)
         {
-            await repository.SaveAsync(item, token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+            foreach (var item in materialized)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await repository.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        // Channel-based bounded pipeline to reduce scheduler overhead compared to Parallel.ForEachAsync
+        var capacity = Math.Max(dop * 2, 32);
+        var channel = Channel.CreateBounded<TContract>(new BoundedChannelOptions(capacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleWriter = false,
+            SingleReader = false
+        });
+
+        // Start consumers
+        var workers = new Task[dop];
+        for (int i = 0; i < dop; i++)
+        {
+            workers[i] = Task.Run(async () =>
+            {
+                var reader = channel.Reader;
+                while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    while (reader.TryRead(out var item))
+                    {
+                        await repository.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }, cancellationToken);
+        }
+
+        // Produce
+        var writer = channel.Writer;
+        try
+        {
+            foreach (var item in materialized)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            writer.TryComplete();
+        }
+
+        await Task.WhenAll(workers).ConfigureAwait(false);
     }
 }
