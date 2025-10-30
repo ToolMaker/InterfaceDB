@@ -1,8 +1,6 @@
+using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.PubSub;
-using System;
-using System.Collections.Generic;
-using System.Threading;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -13,16 +11,10 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
 /// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
 public interface IEnvelopeRepository<TContract, TLocationType> :
-    IObjectReader<TContract, TLocationType>,
-    IObjectWriter<TContract, TLocationType>,
-    IContractPubSubService<TContract>
+    IContractPubSubService<TContract, TLocationType>
         where TContract : class, IRepoDto<TContract, TLocationType>
 {
-    /// <summary>
-    /// Serializer used to convert contract instances to and from the persisted binary payloads.
-    /// </summary>
-    IObjectSerializer<TContract> Serializer { get; }
-
+    IReaderAndWriter<TContract, TLocationType> ReaderAndWriter { get; }
     /// <summary>
     /// Checks whether an envelope with the supplied cache key already exists in the repository.
     /// </summary>
@@ -31,7 +23,7 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     /// <summary>
     /// Attempts to retrieve an envelope by cache key from the repository.
     /// </summary>
-    bool TryGetEnvelope(string cacheKey, out IObjectEnvelope<TContract, TLocationType>? envelope);
+    bool TryGetEnvelope(string cacheKey, out TContract objectInstance);
 
     /// <summary>
     /// Performs one-time initialization for the repository (e.g., ensuring data directories exist).
@@ -44,4 +36,12 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default);
+
+    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> LoadAsync(
+            TLocationType rootLocationOfContract,
+            CancellationToken cancellationToken = default);
+
+    ValueTask<TContract> WriteAsync(
+            TContract contractInstance,
+            CancellationToken cancellationToken = default);
 }

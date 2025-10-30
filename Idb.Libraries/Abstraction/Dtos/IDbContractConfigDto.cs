@@ -13,12 +13,16 @@ public interface IDbContractConfigDto<TContract, TLocationType>
     /// <summary>
     /// Unique key used to register contract-specific services (e.g., keyed DI lookups).
     /// </summary>
-    string Key { get; }
+    string EnvelopeDICacheKey { get; }
 
     /// <summary>
     /// Logical contract name used to resolve scoped interfaces and storage roots.
     /// </summary>
     string ContractName { get; }
+    /// <summary>
+    /// Default file extension produced by this serializer (e.g., ".mpk").
+    /// </summary>
+    string FileExtension { get; }
 
     /// <summary>
     /// Absolute or project-relative path to the folder containing contract implementations (maps to the tool's storage/implementations option).

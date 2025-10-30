@@ -39,22 +39,22 @@ public static class RepositoryBulkExtensions
             return;
         }
 
-        var effectivePolicy = policy ?? StoragePolicy.Default;
-        var concurrency = effectivePolicy.NormalizedConcurrency;
+        //var effectivePolicy = policy ?? StoragePolicy.Default;
+        //var concurrency = effectivePolicy.NormalizedConcurrency;
 
-        if (concurrency <= 1 || materialized.Count == 1)
-        {
-            foreach (var item in materialized)
-            {
-                await repository.SaveAsync(item, cancellationToken).ConfigureAwait(false);
-            }
+        //if (concurrency <= 1 || materialized.Count == 1)
+        //{
+        //    foreach (var item in materialized)
+        //    {
+        //        await repository.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+        //    }
 
-            return;
-        }
+        //    return;
+        //}
 
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = concurrency,
+            MaxDegreeOfParallelism = Environment.ProcessorCount,
             CancellationToken = cancellationToken
         };
 

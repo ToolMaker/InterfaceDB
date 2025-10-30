@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -15,12 +16,13 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// Responsible for wrapping contracts into envelopes when persisting (clearing the contract's envelope reference) and unwrapping them on reads (restoring the reference and clearing the envelope) to avoid circular references.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
-public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract>
-    where TContract : class, IRepoDto<TContract, FileInfo>
+public sealed class PassthroughIndexManager<TContract, TLocation> : IIndexManager<TContract>
+    where TContract : class, IRepoDto<TContract, TLocation>
 {
-    private readonly IEnvelopeRepository<TContract, FileInfo> _envelopeRepository;
+    private readonly IEnvelopeRepository<TContract, TLocation> _envelopeRepository;
+    
 
-    public PassthroughIndexManager(IEnvelopeRepository<TContract, FileInfo> envelopeRepository)
+    public PassthroughIndexManager(IEnvelopeRepository<TContract, TLocation> envelopeRepository)
     {
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
     }
@@ -38,7 +40,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
             return new ValueTask<bool>(false);
         }
 
-        return new ValueTask<bool>(_envelopeRepository.ContainsEnvelope(envelope.CacheKey));
+        return new ValueTask<bool>(_envelopeRepository.ContainsEnvelope(envelope.EnvelopeCacheKey));
     }
 
     public bool TryGetExisting(TContract entity, out TContract? existing)
@@ -55,13 +57,13 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
             return false;
         }
 
-        if (!_envelopeRepository.TryGetEnvelope(envelope.CacheKey, out var cachedEnvelope) ||
+        if (!_envelopeRepository.TryGetEnvelope(envelope.EnvelopeCacheKey, out var cachedEnvelope) ||
             cachedEnvelope is null)
         {
             return false;
         }
 
-        existing = EnvelopeLifecycle.Unwrap(cachedEnvelope);
+        //existing = _envelopeLifecycle.Unwrap(cachedEnvelope);
         return true;
     }
 
@@ -80,23 +82,22 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return QueryInternalAsync(predicate, cancellationToken);
     }
 
+
     private async IAsyncEnumerable<TContract> QueryInternalAsync(
         Func<TContract, bool> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await foreach (var envelope in _envelopeRepository.QueryAsync(predicate, cancellationToken).ConfigureAwait(false))
         {
-            yield return EnvelopeLifecycle.Unwrap(envelope);
+            var entity = envelope.ObjectInstance
+                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            entity.Envelope = envelope;
+            yield return entity;
         }
     }
 
     public ValueTask<TContract> SaveAsync(TContract entity, CancellationToken cancellationToken = default)
     {
-        if (entity is null)
-        {
-            throw new ArgumentNullException(nameof(entity));
-        }
-
         return SaveInternalAsync(entity, cancellationToken);
     }
 
@@ -104,14 +105,13 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         TContract entity,
         CancellationToken cancellationToken)
     {
-        var envelope = await EnvelopeLifecycle
-            .WrapAsync(entity, wrapped => _envelopeRepository.WriteAsync(wrapped, cancellationToken))
-            .ConfigureAwait(false);
-
-        var persisted = EnvelopeLifecycle.Unwrap(envelope);
-        return persisted;
+        return await _envelopeRepository.WriteAsync(entity, cancellationToken).ConfigureAwait(false);
     }
 }
+
+
+
+
 
 
 

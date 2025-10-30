@@ -20,8 +20,12 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         /// <param name="rootLocationOfContract">Root descriptor (e.g., directory, container) that contains all contract versions.</param>
         /// <param name="cancellationToken">Token that propagates cancellation.</param>
         /// <returns>Async sequence of envelopes paired with their storage metadata.</returns>
-        IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> LoadAsync(
+        IAsyncEnumerable<TContract> ReadAsync(
             TLocationType rootLocationOfContract,
+            CancellationToken cancellationToken = default);
+
+        Task<TContract> ReadAsync(
+            FileInfo file,
             CancellationToken cancellationToken = default);
     }
 }

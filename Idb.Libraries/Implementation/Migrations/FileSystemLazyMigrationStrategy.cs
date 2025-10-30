@@ -15,18 +15,20 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Lazy migration strategy that upgrades payloads on-demand.
 /// </summary>
 public sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
-    where TContract : class, IRepoDto<TContract, FileInfo>
+    where TContract : class, IRepoDto<TContract, string>
 {
     public FileSystemLazyMigrationStrategy(
-        IDbContractConfigDto<TContract, FileInfo> contractConfig,
-        IObjectSerializer<TContract> serializer,
-        IFileNameFactory<TContract, FileInfo> fileNameFactory,
-        IEnumerable<IMigration> migrations)
-        : base(contractConfig, serializer, fileNameFactory, migrations, MigrationStrategyType.Lazy)
+        IDbContractConfigDto<TContract, string> contractConfig,
+        IObjectSerializer<TContract, string> serializer,
+        IEnvelopeKeyAndLocationFactory<TContract, string> fileNameFactory,
+        IEnumerable<IMigration> migrations,
+        IObjectReader<TContract, string> reader,
+        IObjectWriter<TContract, string> writer)
+        : base(contractConfig, serializer, fileNameFactory, migrations, MigrationStrategyType.Lazy, reader, writer)
     {
     }
 
-    public override async IAsyncEnumerable<IObjectEnvelope<TContract, FileInfo>> OnInitializeAsync(
+    public override async IAsyncEnumerable<TContract> OnInitializeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await Task.CompletedTask;

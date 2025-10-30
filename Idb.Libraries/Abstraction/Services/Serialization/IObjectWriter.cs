@@ -15,11 +15,11 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         /// <summary>
         /// Persists the supplied contract instance and produces a fresh envelope describing the stored payload.
         /// </summary>
-        /// <param name="obj">Concrete contract instance to persist.</param>
+        /// <param name="envalope">Concrete contract instance to persist.</param>
         /// <param name="cancellationToken">Token that propagates cancellation.</param>
         /// <returns>Envelope representing the stored payload, including any repository-specific metadata.</returns>
-        ValueTask<IObjectEnvelope<TContract, TLocationType>> WriteAsync(
-            TContract obj,
+        ValueTask<TContract> WriteAsync(
+            TContract envalope,
             CancellationToken cancellationToken = default);
     }
 }

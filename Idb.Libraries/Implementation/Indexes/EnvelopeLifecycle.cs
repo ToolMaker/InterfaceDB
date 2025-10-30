@@ -1,49 +1,54 @@
-using System;
-using System.IO;
-using System.Threading.Tasks;
+using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Idb.Libraries.Implementation.Indexes;
 
 /// <summary>
 /// Provides helper methods to wrap and unwrap contracts into envelopes while avoiding circular references.
 /// </summary>
-internal static class EnvelopeLifecycle
+public class EnvelopeLifecycle<TContract, TLocationType> : IEnvelopeLifecycle<TContract, TLocationType>
+    where TContract : class, IRepoDto<TContract, TLocationType>
 {
-    public static async ValueTask<IObjectEnvelope<TContract, FileInfo>> WrapAsync<TContract>(
-        TContract entity,
-        Func<TContract, ValueTask<IObjectEnvelope<TContract, FileInfo>>> action)
-        where TContract : class, IRepoDto<TContract, FileInfo>
+    private readonly IServiceProvider _serviceProvider;
+    private readonly IEnvelopeKeyAndLocationFactory<TContract, TLocationType> _fileNameFactory;
+
+    public EnvelopeLifecycle(IServiceProvider serviceProvider, 
+        IEnvelopeKeyAndLocationFactory<TContract, TLocationType> fileNameFactory)
+    {
+        _serviceProvider = serviceProvider;
+        _fileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
+    }
+
+    public async ValueTask<IObjectEnvelope<TContract, TLocationType>> WrapAsync(TContract entity)
     {
         if (entity is null)
         {
             throw new ArgumentNullException(nameof(entity));
         }
 
-        if (action is null)
+        IObjectEnvelope<TContract, TLocationType> wrappedEnvelope;
+
+        if (entity.Envelope == null)
         {
-            throw new ArgumentNullException(nameof(action));
+            wrappedEnvelope = _serviceProvider.GetService<IObjectEnvelope<TContract, TLocationType>>()
+                ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."); ;
+        }
+        else
+        {
+            wrappedEnvelope = entity.Envelope;
         }
 
-        var previousEnvelope = entity.Envelope;
         entity.Envelope = null;
-
-        try
-        {
-            return await action(entity).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (entity.Envelope is null)
-            {
-                entity.Envelope = previousEnvelope;
-            }
-        }
+        wrappedEnvelope.ObjectInstance = entity;
+        _fileNameFactory.InitEnvelope(wrappedEnvelope);
+        
+        return wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
     }
 
-    public static TContract Unwrap<TContract>(IObjectEnvelope<TContract, FileInfo> envelope)
-        where TContract : class, IRepoDto<TContract, FileInfo>
+    public TContract Unwrap(IObjectEnvelope<TContract, TLocationType> envelope)
     {
         if (envelope is null)
         {
@@ -56,5 +61,20 @@ internal static class EnvelopeLifecycle
         entity.Envelope = envelope;
         return entity;
     }
+
+    //private IObjectEnvelope<TContract, string> CreateEnvelope(
+    //string file,
+    //byte[] payload,
+    //string? versionOverride = null)
+    //{
+    //    var version = !string.IsNullOrWhiteSpace(versionOverride)
+    //        ? versionOverride!
+    //        : _contractConfig.ActiveVersion ?? "1.0.0";
+    //    var envalope = _serviceProvider.GetService<IObjectEnvelope<TContract, string>>();
+    //    envalope.Location = file;
+    //    envalope.VersionTag = version;
+
+    //    return envalope;
+    //}
 }
 

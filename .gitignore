@@ -1,3 +1,7 @@
 .vs/*
 */bin/*
 */obj/*
+BenchmarkDotNet.Artifacts/results/*.*
+BenchmarkDotNet.Artifacts/*.log
+IdbDemoStorage/*
+NDependOut/*
