@@ -30,7 +30,7 @@ BenchmarkRunner.Run<PersonStorageBenchmark>();
 [MemoryDiagnoser]
 public class PersonStorageBenchmark : IDisposable
 {
-    private const int BenchmarkPersonCount = 5_000;
+    private const int BenchmarkPersonCount = 1_000;
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
 
     private ServiceProvider? _fileProvider;
@@ -76,13 +76,13 @@ public class PersonStorageBenchmark : IDisposable
         repository.SaveAsync(warmupPerson).GetAwaiter().GetResult();
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
         var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, string>>();
-        StoragePolicy policy = config.StoragePolicy ?? StoragePolicy.Default;
+        policy = config.StoragePolicy ?? StoragePolicy.Default;
     }
 
     [Benchmark(Description = "File system repository")]
     public async Task FileSystem_Store100()
     {
-        await repository.SaveManyAsync(_iterationPersons, StoragePolicy.Default).ConfigureAwait(false);
+        await repository.SaveManyAsync(_iterationPersons, policy).ConfigureAwait(false);
     }
 
     [GlobalSetup(Target = nameof(SqlServer_Store100))]
@@ -90,6 +90,14 @@ public class PersonStorageBenchmark : IDisposable
     {
         _sqlConnection = CreateOpenConnection();
         EnsureSqlSchema(_sqlConnection);
+        // Ensure a shared policy is available for all backends
+        policy ??= StoragePolicy.Default with
+        {
+            MaxConcurrency = Environment.ProcessorCount,
+            FileWriteBufferSize = 128 * 1024,
+            HydrateOnInitialize = false,
+            RaiseNotifications = false
+        };
     }
 
     [IterationSetup(Target = nameof(SqlServer_Store100))]
@@ -115,7 +123,7 @@ public class PersonStorageBenchmark : IDisposable
         var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
         _iterationPersons = null;
 
-        var options = CreateParallelOptions(persons.Count);
+        var options = CreateParallelOptionsFromPolicy(policy, persons.Count);
 
         Parallel.ForEach(
             persons,
@@ -154,6 +162,14 @@ public class PersonStorageBenchmark : IDisposable
     {
         _dapperConnection = CreateOpenConnection();
         EnsureSqlSchema(_dapperConnection);
+        // Ensure a shared policy is available for all backends
+        policy ??= StoragePolicy.Default with
+        {
+            MaxConcurrency = Environment.ProcessorCount,
+            FileWriteBufferSize = 128 * 1024,
+            HydrateOnInitialize = false,
+            RaiseNotifications = false
+        };
     }
 
     [IterationSetup(Target = nameof(Dapper_Store100))]
@@ -180,7 +196,7 @@ public class PersonStorageBenchmark : IDisposable
         _iterationPersons = null;
 
         const string insertSql = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@Id, @Name, @Age, @Role, @Surname)";
-        var options = CreateParallelOptions(persons.Count);
+        var options = CreateParallelOptionsFromPolicy(policy, persons.Count);
 
         Parallel.ForEach(
             persons,
@@ -242,6 +258,13 @@ public class PersonStorageBenchmark : IDisposable
             Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
             IndexProvisioningMode = IndexProvisioningModeType.None,
             RepositoryType = ContractRepositoryType.FileSystem,
+            StoragePolicy = StoragePolicy.Default with
+            {
+                HydrateOnInitialize = false,
+                MaxConcurrency = Environment.ProcessorCount * 4,
+                FileWriteBufferSize = 8 * 1024,
+                RaiseNotifications = false
+            }
         };
 
         var services = new ServiceCollection();
@@ -313,20 +336,15 @@ public class PersonStorageBenchmark : IDisposable
         return connection;
     }
 
-    private static ParallelOptions CreateParallelOptions(int workloadSize)
+    private static ParallelOptions CreateParallelOptionsFromPolicy(StoragePolicy p, int workloadSize)
     {
-        var logicalProcessors = Environment.ProcessorCount;
-        var desiredParallelism = logicalProcessors * 4;
-        var maxDegree = Math.Min(desiredParallelism, workloadSize);
-        if (maxDegree <= 0)
+        var dop = p?.MaxConcurrency ?? StoragePolicy.Default.MaxConcurrency;
+        if (workloadSize > 0)
         {
-            maxDegree = Math.Max(1, desiredParallelism);
+            dop = Math.Min(dop, workloadSize);
         }
-
-        return new ParallelOptions
-        {
-            MaxDegreeOfParallelism = maxDegree
-        };
+        if (dop <= 0) dop = 1;
+        return new ParallelOptions { MaxDegreeOfParallelism = dop };
     }
 
     private static void EnsureSqlSchema(SqlConnection connection)
