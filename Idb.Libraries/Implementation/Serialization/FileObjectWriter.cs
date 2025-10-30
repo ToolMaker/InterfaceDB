@@ -1,4 +1,5 @@
 ﻿using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -13,12 +14,15 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly IEnvelopeLifecycle<TContract, string> _envelopeLifecycle;
         private readonly SemaphoreSlim? _writeSemaphore;
         private readonly StoragePolicy _storagePolicy;
+        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> _envelopes;
 
         public FileObjectWriter(IObjectSerializer<TContract, string> serializer,
             IEnvelopeLifecycle<TContract, string> envelopeLifecycle,
-            IDbContractConfigDto<TContract, string> contractConfig)
+            IDbContractConfigDto<TContract, string> contractConfig,
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> envelopes)
         {
             _serializer = serializer;
+            _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
             _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
             _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
@@ -55,6 +59,12 @@ namespace Idb.Libraries.Implementation.Serialization
                 }
 
                 await File.WriteAllBytesAsync(targetFileInfo.FullName, payload, cancellationToken).ConfigureAwait(false);
+
+                // Update envelope cache after successful persistence
+                if (!string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+                {
+                    _envelopes[envelope.EnvelopeCacheKey] = envelope;
+                }
 
                 return _envelopeLifecycle.Unwrap(envelope);
             }

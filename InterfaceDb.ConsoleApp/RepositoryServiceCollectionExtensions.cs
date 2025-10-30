@@ -1,4 +1,7 @@
 using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstraction.Services.Migrations;
+using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
@@ -6,12 +9,11 @@ using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Implementation.Cache;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Migrations;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
-using Idb.Libraries.Abstraction.Services.Migrations;
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
 // using IMigrationContract = Idb.Libraries.Abstraction.Services.Migrations.IMigration;
@@ -34,7 +36,7 @@ public static class RepositoryServiceCollectionExtensions
         services.AddSingleton<IIndexManager<TContract>, PassthroughIndexManager<TContract, string>>();
         services.AddTransient<IObjectEnvelope<TContract, string>, FileObjectEnvelope<TContract>>();
         services.AddSingleton<IEnvelopeLifecycle<TContract, string>, EnvelopeLifecycle<TContract, string>>();
-
+        services.AddSingleton<IEnvelopeDictionaryCaheManager<string,IObjectEnvelope<TContract, string>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract, string>>>();
         services.AddTransient<IObjectReader<TContract, string>, FileObjectReader<TContract>>();
         services.AddTransient<IObjectWriter<TContract, string>, FileObjectWriter<TContract>>();
         services.AddTransient<IReaderAndWriter<TContract, string>, ObjectReaderAndWriter<TContract, string>>();
