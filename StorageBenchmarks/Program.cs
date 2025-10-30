@@ -8,6 +8,8 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Implementation.Cache;
 using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
@@ -249,6 +251,9 @@ public class PersonStorageBenchmark : IDisposable
 
         var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
         services.AddSingleton<IObjectSerializer<ContractPerson.IPerson, string>>(new BinaryObjectSerializer<ContractPerson.IPerson,string>(serializerOptions));
+
+        // Shared envelope cache used by reader, writer, and repository
+        services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ContractPerson.IPerson, string>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<ContractPerson.IPerson, string>>>();
 
         services.AddTransient<IObjectEnvelope<ContractPerson.IPerson, string>, FileObjectEnvelope<ContractPerson.IPerson>>();
         services.AddSingleton<IEnvelopeLifecycle<ContractPerson.IPerson, string>, EnvelopeLifecycle<ContractPerson.IPerson, string>>();
