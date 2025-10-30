@@ -1,6 +1,7 @@
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Implementation.Extentions;
 using IdbDemoStorage.Options;
 using Microsoft.Extensions.DependencyInjection;
 using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
