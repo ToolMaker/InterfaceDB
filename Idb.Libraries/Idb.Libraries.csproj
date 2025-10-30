@@ -32,6 +32,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
     <Compile Include="Implementation\Extentions\StringExtensions.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
