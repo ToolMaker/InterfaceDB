@@ -20,6 +20,8 @@ using MessagePack;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.EntityFrameworkCore;
+using System.Threading;
 using PerformanceCommon;
 using System.Data;
 using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
@@ -30,13 +32,15 @@ BenchmarkRunner.Run<PersonStorageBenchmark>();
 [MemoryDiagnoser]
 public class PersonStorageBenchmark : IDisposable
 {
-    private const int BenchmarkPersonCount = 1_000;
+    private const int BenchmarkPersonCount = 100000;
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
 
     private ServiceProvider? _fileProvider;
     private string? _fileDataRoot;
     private SqlConnection? _sqlConnection;
     private SqlConnection? _dapperConnection;
+    private DbContextOptions<StorageBenchmarks.Ef.BenchDbContext>? _efOptions;
+    private static int _efLoggedException;
     private List<ContractPerson.IPerson>? _iterationPersons;
     private IRepository<ContractPerson.IPerson> repository;
     private StoragePolicy policy;
@@ -93,8 +97,8 @@ public class PersonStorageBenchmark : IDisposable
         // Ensure a shared policy is available for all backends
         policy ??= StoragePolicy.Default with
         {
-            MaxConcurrency = Environment.ProcessorCount,
-            FileWriteBufferSize = 128 * 1024,
+            MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
+            FileWriteBufferSize = 8 * 1024,
             HydrateOnInitialize = false,
             RaiseNotifications = false
         };
@@ -165,8 +169,8 @@ public class PersonStorageBenchmark : IDisposable
         // Ensure a shared policy is available for all backends
         policy ??= StoragePolicy.Default with
         {
-            MaxConcurrency = Environment.ProcessorCount,
-            FileWriteBufferSize = 128 * 1024,
+            MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
+            FileWriteBufferSize = 8 * 1024,
             HydrateOnInitialize = false,
             RaiseNotifications = false
         };
@@ -221,6 +225,110 @@ public class PersonStorageBenchmark : IDisposable
         return Task.CompletedTask;
     }
 
+    [GlobalSetup(Target = nameof(EFCore_Store100))]
+    public void SetupEfCore()
+    {
+        try
+        {
+            SqlConnection.ClearAllPools();
+            _efOptions = StorageBenchmarks.Ef.Ef.CreateOptions(ResolveSqlConnectionString());
+            using (var conn = CreateOpenConnection())
+            {
+                EnsureSqlSchema(conn);
+            }
+            // Ensure shared policy
+            policy ??= StoragePolicy.Default with
+            {
+                MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
+                FileWriteBufferSize = 8 * 1024,
+                HydrateOnInitialize = false,
+                RaiseNotifications = false
+            };
+        }
+        catch (Exception ex)
+        {
+            TryLogEfError("SetupEfCore", ex);
+            throw;
+        }
+    }
+
+    [IterationSetup(Target = nameof(EFCore_Store100))]
+    public void PrepareEfCoreIteration()
+    {
+        try
+        {
+            _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+            using (var conn = CreateOpenConnection())
+            {
+                EnsureSqlSchema(conn);
+            }
+        }
+        catch (Exception ex)
+        {
+            TryLogEfError("PrepareEfCoreIteration", ex);
+            throw;
+        }
+    }
+
+    [Benchmark(Description = "EF Core")]
+    public void EFCore_Store100()
+    {
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        var dop = Math.Min((policy?.MaxConcurrency ?? Environment.ProcessorCount), 16);
+        var po = new ParallelOptions { MaxDegreeOfParallelism = dop };
+        Parallel.ForEach(
+            persons,
+            po,
+            () => new StorageBenchmarks.Ef.BenchDbContext(_efOptions!),
+            (person, _, ctx) =>
+            {
+                var entity = new StorageBenchmarks.Ef.PersonEntity
+                {
+                    Id = person.Id,
+                    Name = person.Name,
+                    Age = person.Age,
+                    Role = person.Role,
+                    Surname = string.Empty
+                };
+                try
+                {
+                    ctx.ChangeTracker.AutoDetectChangesEnabled = false;
+                    ctx.Persons.Add(entity);
+                    ctx.SaveChanges();
+                }
+                catch (Exception ex)
+                {
+                    if (Interlocked.CompareExchange(ref _efLoggedException, 1, 0) == 0)
+                    {
+                        Console.WriteLine("EF Core benchmark error: " + ex.ToString());
+                        TryLogEfError("EFCore_Store100", ex);
+                    }
+                    throw;
+                }
+                finally
+                {
+                    ctx.ChangeTracker.AutoDetectChangesEnabled = true;
+                }
+                return ctx;
+            },
+            ctx => ctx.Dispose());
+    }
+
+    private static void TryLogEfError(string stage, Exception ex)
+    {
+        try
+        {
+            var path = Path.Combine(Path.GetTempPath(), "ef-bench-error.txt");
+            File.AppendAllText(path, $"[{DateTime.UtcNow:O}] {stage}: {ex}\n\n");
+        }
+        catch
+        {
+            // ignore logging failures
+        }
+    }
+
     [GlobalCleanup]
     public void Cleanup()
     {
@@ -261,7 +369,8 @@ public class PersonStorageBenchmark : IDisposable
             StoragePolicy = StoragePolicy.Default with
             {
                 HydrateOnInitialize = false,
-                MaxConcurrency = Environment.ProcessorCount * 4,
+                // Cap concurrency to avoid overwhelming disk and to match DB pool constraints
+                MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
                 FileWriteBufferSize = 8 * 1024,
                 RaiseNotifications = false
             }
@@ -323,6 +432,16 @@ public class PersonStorageBenchmark : IDisposable
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException("Configure Benchmarks:SqlServer:ConnectionString in StorageBenchmarks/appsettings.json or environment variables.");
+        }
+
+        // Ensure reasonable pool/ssl settings for heavy parallel runs
+        if (!connectionString.Contains("Max Pool Size", StringComparison.OrdinalIgnoreCase))
+        {
+            connectionString += ";Max Pool Size=200";
+        }
+        if (!connectionString.Contains("TrustServerCertificate", StringComparison.OrdinalIgnoreCase))
+        {
+            connectionString += ";TrustServerCertificate=True";
         }
 
         return connectionString;
