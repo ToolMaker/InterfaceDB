@@ -97,10 +97,12 @@ public class PersonStorageBenchmark : IDisposable
         // Ensure a shared policy is available for all backends
         policy ??= StoragePolicy.Default with
         {
-            MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
-            FileWriteBufferSize = 8 * 1024,
+            // File path saturates disk at much lower DOP than DB pool
+            MaxConcurrency = Math.Min(16, Environment.ProcessorCount),
+            FileWriteBufferSize = 16 * 1024,
             HydrateOnInitialize = false,
-            RaiseNotifications = false
+            RaiseNotifications = false,
+            UseSingleWriteBuffer = true
         };
     }
 
@@ -169,10 +171,11 @@ public class PersonStorageBenchmark : IDisposable
         // Ensure a shared policy is available for all backends
         policy ??= StoragePolicy.Default with
         {
-            MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
-            FileWriteBufferSize = 8 * 1024,
+            MaxConcurrency = Math.Min(16, Environment.ProcessorCount),
+            FileWriteBufferSize = 16 * 1024,
             HydrateOnInitialize = false,
-            RaiseNotifications = false
+            RaiseNotifications = false,
+            UseSingleWriteBuffer = true
         };
     }
 
@@ -369,10 +372,13 @@ public class PersonStorageBenchmark : IDisposable
             StoragePolicy = StoragePolicy.Default with
             {
                 HydrateOnInitialize = false,
-                // Cap concurrency to avoid overwhelming disk and to match DB pool constraints
-                MaxConcurrency = Math.Min(Environment.ProcessorCount * 2, 64),
-                FileWriteBufferSize = 8 * 1024,
-                RaiseNotifications = false
+                // Cap concurrency to avoid overwhelming disk
+                MaxConcurrency = Math.Min(16, Environment.ProcessorCount),
+                FileWriteBufferSize = 16 * 1024,
+                RaiseNotifications = false,
+                CacheEnvelopeOnWrite = false,
+                KeepObjectInstanceInCacheOnWrite = false,
+                UseSingleWriteBuffer = true
             }
         };
 

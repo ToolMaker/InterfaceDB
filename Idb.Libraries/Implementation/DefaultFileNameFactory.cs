@@ -14,7 +14,13 @@ public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<
 
     public void InitEnvelope(IObjectEnvelope<TContract, string> envelope)
     {
-        envelope.EnvelopeCacheKey = $"{envelope.GetHashCode():X8}";
+        envelope.EnvelopeCacheKey = envelope.EnvelopeCacheKey switch
+        {
+            { Length: > 0 } => envelope.EnvelopeCacheKey,
+            // Generate a stable identifier the first time we persist this envelope.
+            // It is serialized alongside the payload and reused on subsequent saves.
+            _ => Guid.NewGuid().ToString("N")
+        };
         if (envelope.Location == null)
         {
             if (string.IsNullOrWhiteSpace(_config.DataRoot))
@@ -28,7 +34,10 @@ public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<
                 : envelope.VersionTag;
 
             var versionRoot = Path.Combine(_config.DataRoot!, version);
-            var targetPath = Path.Combine(versionRoot, envelope.EnvelopeCacheKey + extension);
+            // Hash-partition: first 2 chars of key to keep directories small
+            var key = envelope.EnvelopeCacheKey;
+            var shard = key.Length >= 2 ? key.Substring(0, 2) : "00";
+            var targetPath = Path.Combine(versionRoot, shard, key + extension);
             envelope.Location = targetPath;
         }
     }
