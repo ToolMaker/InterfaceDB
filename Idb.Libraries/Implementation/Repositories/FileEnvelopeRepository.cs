@@ -58,6 +58,20 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
         var activeVersionRoot = Path.Combine(_dataRoot, activeVersion);
         Directory.CreateDirectory(activeVersionRoot);
+        // Pre-create shard subfolders (00..ff) to reduce directory creation checks during writes
+        try
+        {
+            for (int i = 0; i < 256; i++)
+            {
+                var shard = i.ToString("x2");
+                var shardDir = Path.Combine(activeVersionRoot, shard);
+                Directory.CreateDirectory(shardDir);
+            }
+        }
+        catch
+        {
+            // best-effort; writer still ensures directory exists
+        }
     }
     public IReaderAndWriter<TContract, string> ReaderAndWriter => _readerAndWriter;
 
@@ -283,11 +297,11 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
             await Task.Yield();
         }
 
-        // Versioned subfolders
-        foreach (var subdir in root.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+        // Versioned subfolders (recurse to handle hash-partitioned shards)
+        foreach (var versionDir in root.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
         {
-            var version = subdir.Name;
-            foreach (var file in subdir.EnumerateFiles("*", SearchOption.TopDirectoryOnly))
+            var version = versionDir.Name;
+            foreach (var file in versionDir.EnumerateFiles("*", SearchOption.AllDirectories))
             {
                 token.ThrowIfCancellationRequested();
                 if (!string.Equals(file.Extension, expectedExtension, StringComparison.OrdinalIgnoreCase))

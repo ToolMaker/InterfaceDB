@@ -24,6 +24,24 @@ public sealed record StoragePolicy
     public bool RaiseNotifications { get; init; } = true;
 
     /// <summary>
+    /// When true, the writer adds/updates the envelope in the in-memory cache after a successful write.
+    /// Disable in bulk-write scenarios to reduce memory retention and GC pressure.
+    /// </summary>
+    public bool CacheEnvelopeOnWrite { get; init; } = true;
+
+    /// <summary>
+    /// When adding to cache on write, controls whether the envelope's ObjectInstance should be retained.
+    /// Set to false to store a lightweight skeleton (ObjectInstance = null).
+    /// </summary>
+    public bool KeepObjectInstanceInCacheOnWrite { get; init; } = true;
+
+    /// <summary>
+    /// When true, writer pre-serializes the payload to a single byte[] and writes it in one operation
+    /// (avoids per-file FileStream internal buffers). Recommended for small/medium payloads and bulk writes.
+    /// </summary>
+    public bool UseSingleWriteBuffer { get; init; } = false;
+
+    /// <summary>
     /// Buffer size (in bytes) used when streaming payloads to disk.
     /// Values less than or equal to zero fall back to <see cref="DefaultBufferSize"/>.
     /// </summary>
