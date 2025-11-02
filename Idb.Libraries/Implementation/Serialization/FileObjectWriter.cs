@@ -29,7 +29,9 @@ namespace Idb.Libraries.Implementation.Serialization
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
             _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
-            _writeSemaphore = normalizedConcurrency > 1 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency) : null;
+            _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
+                ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
+                : null;
         }
 
         public async ValueTask<TContract> WriteAsync(

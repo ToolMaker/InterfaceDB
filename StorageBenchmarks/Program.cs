@@ -102,7 +102,8 @@ public class PersonStorageBenchmark : IDisposable
             FileWriteBufferSize = 16 * 1024,
             HydrateOnInitialize = false,
             RaiseNotifications = false,
-            UseSingleWriteBuffer = true
+            UseSingleWriteBuffer = true,
+            UseWriterSemaphore = false
         };
     }
 
@@ -175,7 +176,8 @@ public class PersonStorageBenchmark : IDisposable
             FileWriteBufferSize = 16 * 1024,
             HydrateOnInitialize = false,
             RaiseNotifications = false,
-            UseSingleWriteBuffer = true
+            UseSingleWriteBuffer = true,
+            UseWriterSemaphore = false
         };
     }
 
@@ -378,7 +380,8 @@ public class PersonStorageBenchmark : IDisposable
                 RaiseNotifications = false,
                 CacheEnvelopeOnWrite = false,
                 KeepObjectInstanceInCacheOnWrite = false,
-                UseSingleWriteBuffer = true
+                UseSingleWriteBuffer = true,
+                UseWriterSemaphore = false
             }
         };
 

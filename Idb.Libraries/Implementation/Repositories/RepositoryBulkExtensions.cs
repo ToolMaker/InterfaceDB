@@ -67,7 +67,7 @@ public static class RepositoryBulkExtensions
         }
 
         // Channel-based bounded pipeline to reduce scheduler overhead compared to Parallel.ForEachAsync
-        var capacity = Math.Max(dop * 4, 64);
+        var capacity = Math.Max(dop * 16, 256);
         var channel = Channel.CreateBounded<TContract>(new BoundedChannelOptions(capacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
