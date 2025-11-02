@@ -42,6 +42,12 @@ public sealed record StoragePolicy
     public bool UseSingleWriteBuffer { get; init; } = false;
 
     /// <summary>
+    /// When true and MaxConcurrency > 1, the file writer uses an internal semaphore to limit its own concurrency.
+    /// Disable when bulk orchestration already bounds concurrency (e.g., SaveMany channel pipeline).
+    /// </summary>
+    public bool UseWriterSemaphore { get; init; } = true;
+
+    /// <summary>
     /// Buffer size (in bytes) used when streaming payloads to disk.
     /// Values less than or equal to zero fall back to <see cref="DefaultBufferSize"/>.
     /// </summary>
