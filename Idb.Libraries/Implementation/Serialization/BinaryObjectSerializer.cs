@@ -10,8 +10,8 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Binary serializer (MessagePack-backed) that produces compact payloads compatible across contract versions.
 /// </summary>
-public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerializer<TContract, TLocation>
-    where TContract : class, IRepoDto<TContract, TLocation>
+public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
     private const string DefaultExtension = ".mpk";
     private readonly MessagePackSerializerOptions _options;
@@ -43,7 +43,7 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
     //    return MessagePackSerializerOptions.Standard;
     //}
 
-    public byte[] Serialize(IObjectEnvelope<TContract, TLocation> obj)
+    public byte[] Serialize(IObjectEnvelope<TContract> obj)
     {
         if (obj is null)
         {
@@ -66,7 +66,7 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
         return ms.ToArray();
     }
 
-    public IObjectEnvelope<TContract, TLocation> Deserialize(byte[] data)
+    public IObjectEnvelope<TContract> Deserialize(byte[] data)
     {
         if (data is null)
         {
@@ -99,11 +99,11 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
             return envelope;
         }
 
-        return MessagePackSerializer.Deserialize<IObjectEnvelope<TContract, TLocation>>(data, _options);
+        return MessagePackSerializer.Deserialize<IObjectEnvelope<TContract>>(data, _options);
     }
 
     public ValueTask SerializeAsync(
-        IObjectEnvelope<TContract, TLocation> envalope,
+        IObjectEnvelope<TContract> envalope,
         Stream destination,
         CancellationToken cancellationToken = default)
     {
@@ -120,7 +120,7 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
         return new ValueTask(SerializeCoreAsync(envalope, destination, cancellationToken));
     }
 
-    public ValueTask<IObjectEnvelope<TContract, TLocation>> DeserializeAsync(
+    public ValueTask<IObjectEnvelope<TContract>> DeserializeAsync(
         Stream source,
         CancellationToken cancellationToken = default)
     {
@@ -149,10 +149,21 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
         public IMessagePackFormatter<T>? GetFormatter<T>()
         {
             var t = typeof(T);
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IObjectEnvelope<,>))
+            // We want to ignore envelope properties when serializing a contract instance.
+            // The property type is `IObjectEnvelope<TContract>`; MessagePack asks the resolver for a formatter
+            // by the declared field type (even when the runtime value is null). Two cases to handle:
+            //  - Exact closed generic match: IObjectEnvelope<TContract>
+            //  - Any IObjectEnvelope<> (defensive, should still be safe to treat as nil)
+            if (t == typeof(IObjectEnvelope<TContract>))
             {
                 return new EnvelopeNullFormatter<T>();
             }
+
+            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IObjectEnvelope<>))
+            {
+                return new EnvelopeNullFormatter<T>();
+            }
+
             return null;
         }
     }
@@ -192,7 +203,7 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
     }
 
     private async Task SerializeCoreAsync(
-        IObjectEnvelope<TContract, TLocation> envelope,
+        IObjectEnvelope<TContract> envelope,
         Stream destination,
         CancellationToken cancellationToken)
     {
@@ -209,7 +220,7 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
         await MessagePackSerializer.SerializeAsync(type, destination, instance, _fastOptions, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<IObjectEnvelope<TContract, TLocation>> DeserializeCoreAsync(
+    private async ValueTask<IObjectEnvelope<TContract>> DeserializeCoreAsync(
         Stream source,
         CancellationToken cancellationToken)
     {
@@ -253,18 +264,18 @@ public sealed class BinaryObjectSerializer<TContract, TLocation> : IObjectSerial
                 await ms.WriteAsync(prefix, cancellationToken).ConfigureAwait(false);
                 await source.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
                 ms.Position = 0;
-                return await MessagePackSerializer.DeserializeAsync<IObjectEnvelope<TContract, TLocation>>(ms, _options, cancellationToken).ConfigureAwait(false);
+                return await MessagePackSerializer.DeserializeAsync<IObjectEnvelope<TContract>>(ms, _options, cancellationToken).ConfigureAwait(false);
             }
 
-            return await MessagePackSerializer.DeserializeAsync<IObjectEnvelope<TContract, TLocation>>(source, _options, cancellationToken).ConfigureAwait(false);
+            return await MessagePackSerializer.DeserializeAsync<IObjectEnvelope<TContract>>(source, _options, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private sealed class PlainEnvelope : IObjectEnvelope<TContract, TLocation>
+    private sealed class PlainEnvelope : IObjectEnvelope<TContract>
     {
         public string EnvelopeCacheKey { get; set; } = string.Empty;
         public string VersionTag { get; set; } = string.Empty;
         public TContract? ObjectInstance { get; set; }
-        public TLocation? Location { get; set; }
+        public string? Location { get; set; }
     }
 }

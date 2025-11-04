@@ -9,8 +9,8 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     /// <summary>
     /// Transforms contract instances to and from their serialized binary representation.
     /// </summary>
-    public interface IObjectSerializer<TContract, TLocation>
-        where TContract : class, IRepoDto<TContract, TLocation>
+    public interface IObjectSerializer<TContract>
+        where TContract : class, IRepoDto<TContract>
     {
 
         /// <summary>
@@ -18,21 +18,21 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         /// </summary>
         /// <param name="envalope">Instance to serialize.</param>
         /// <returns>Serialized bytes.</returns>
-        byte[] Serialize(IObjectEnvelope<TContract, TLocation> envalope);
+        byte[] Serialize(IObjectEnvelope<TContract> envalope);
 
         /// <summary>
         /// Deserializes bytes into a contract instance.
         /// </summary>
         /// <param name="data">Serialized data buffer.</param>
         /// <returns>Materialized instance.</returns>
-        IObjectEnvelope<TContract, TLocation> Deserialize(byte[] data);
+        IObjectEnvelope<TContract> Deserialize(byte[] data);
 
         /// <summary>
         /// Serializes a contract instance directly to a destination stream.
         /// Default implementation falls back to <see cref="Serialize(TContract)"/>.
         /// </summary>
         ValueTask SerializeAsync(
-            IObjectEnvelope<TContract, TLocation> envalope,
+            IObjectEnvelope<TContract> envalope,
             Stream destination,
             CancellationToken cancellationToken = default)
         {
@@ -45,7 +45,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
             return destination.WriteAsync(payload.AsMemory(), cancellationToken);
         }
 
-        ValueTask<IObjectEnvelope<TContract, TLocation>> DeserializeAsync(
+        ValueTask<IObjectEnvelope<TContract>> DeserializeAsync(
             Stream source,
             CancellationToken cancellationToken = default)
         {
@@ -56,7 +56,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
 
             return DeserializeBufferedAsync(source, cancellationToken);
 
-            async ValueTask<IObjectEnvelope<TContract, TLocation>> DeserializeBufferedAsync(Stream reader, CancellationToken token)
+            async ValueTask<IObjectEnvelope<TContract>> DeserializeBufferedAsync(Stream reader, CancellationToken token)
             {
                 using var memory = new MemoryStream();
                 await reader.CopyToAsync(memory, token).ConfigureAwait(false);

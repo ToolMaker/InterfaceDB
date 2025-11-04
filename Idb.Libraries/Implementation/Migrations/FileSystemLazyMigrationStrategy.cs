@@ -15,15 +15,15 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Lazy migration strategy that upgrades payloads on-demand.
 /// </summary>
 public sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
-    where TContract : class, IRepoDto<TContract, string>
+    where TContract : class, IRepoDto<TContract>
 {
     public FileSystemLazyMigrationStrategy(
-        IDbContractConfigDto<TContract, string> contractConfig,
-        IObjectSerializer<TContract, string> serializer,
-        IEnvelopeKeyAndLocationFactory<TContract, string> fileNameFactory,
+        IDbContractConfigDto<TContract> contractConfig,
+        IObjectSerializer<TContract> serializer,
+        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory,
         IEnumerable<IMigration> migrations,
-        IObjectReader<TContract, string> reader,
-        IObjectWriter<TContract, string> writer)
+        IObjectReader<TContract> reader,
+        IObjectWriter<TContract> writer)
         : base(contractConfig, serializer, fileNameFactory, migrations, MigrationStrategyType.Lazy, reader, writer)
     {
     }

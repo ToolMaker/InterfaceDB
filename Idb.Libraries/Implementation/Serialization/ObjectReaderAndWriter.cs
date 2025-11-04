@@ -4,20 +4,20 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
-    public class ObjectReaderAndWriter<TContract, TLocationType> : IReaderAndWriter<TContract, TLocationType>
-        where TContract : class, IRepoDto<TContract, TLocationType>
+    public class ObjectReaderAndWriter<TContract> : IReaderAndWriter<TContract>
+        where TContract : class, IRepoDto<TContract>
     {
         public ObjectReaderAndWriter(
-            IObjectReader<TContract, TLocationType> reader,
-            IObjectWriter<TContract, TLocationType> writer)
+            IObjectReader<TContract> reader,
+            IObjectWriter<TContract> writer)
         {
             Reader = reader ?? throw new ArgumentNullException(nameof(reader));
             Writer = writer ?? throw new ArgumentNullException(nameof(writer));
         }
 
-        public IObjectReader<TContract, TLocationType> Reader { get; }
+        public IObjectReader<TContract> Reader { get; }
 
-        public IObjectWriter<TContract, TLocationType> Writer { get; }
+        public IObjectWriter<TContract> Writer { get; }
 
     }
 }

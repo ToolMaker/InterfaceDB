@@ -3,13 +3,13 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstraction.Services
 {
-    public interface IEnvelopeLifecycle<TContract, TLocationType> where TContract : class, IRepoDto<TContract, TLocationType>
+    public interface IEnvelopeLifecycle<TContract> where TContract : class, IRepoDto<TContract>
     {
-        ValueTask<IObjectEnvelope<TContract, TLocationType>> WrapAsync(
+        ValueTask<IObjectEnvelope<TContract>> WrapAsync(
         TContract entity
-        //Func<TContract, ValueTask<IObjectEnvelope<TContract, TLocationType>>> action
+        //Func<TContract, ValueTask<IObjectEnvelope<TContractType>>> action
             );
 
-        TContract Unwrap(IObjectEnvelope<TContract, TLocationType> envelope);
+        TContract Unwrap(IObjectEnvelope<TContract> envelope);
     }
 }

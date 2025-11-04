@@ -83,7 +83,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = null;
 
         var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
-        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, string>>();
+        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson>>();
         var policy = config.StoragePolicy ?? StoragePolicy.Default;
         await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
     }
@@ -226,18 +226,18 @@ public class TransactionBenchmarks : IDisposable
 
         var services = new ServiceCollection();
         services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, string>>(options);
-        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson, string>, DefaultFileNameFactory<ContractPerson.IPerson>>();
+        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson>>(options);
+        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson>, DefaultFileNameFactory<ContractPerson.IPerson>>();
 
         var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson,string>>(new BinaryObjectSerializer<ContractPerson.IPerson, string>(serializerOptions));
+        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
 
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, string>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson, string>>();
+        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson>, FileEnvelopeRepository<ContractPerson.IPerson>>();
+        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
         services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
         {
             var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson, string>(manager);
+            return new InterfaceRepositryDb<ContractPerson.IPerson>(manager);
         });
 
         return services.BuildServiceProvider();

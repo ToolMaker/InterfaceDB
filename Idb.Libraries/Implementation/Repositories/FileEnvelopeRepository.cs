@@ -1,10 +1,8 @@
-using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
-using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -12,7 +10,6 @@ using Idb.Libraries.Implementation.Extentions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
-using System.Threading;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -20,30 +17,30 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// File-system backed envelope repository that manages serialization, persistence, and caching for contract instances.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TContract, string>
-    where TContract : class, IRepoDto<TContract, string>
+public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
-    private readonly IDbContractConfigDto<TContract, string> _contractConfig;
+    private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IServiceProvider _serviceProvider;
     private readonly string _dataRoot;
-    private readonly IMigrationStrategy<TContract, string>? _migrationStrategy;
-    private readonly IReaderAndWriter<TContract, string> _readerAndWriter;
+    private readonly IMigrationStrategy<TContract>? _migrationStrategy;
+    private readonly IReaderAndWriter<TContract> _readerAndWriter;
     
-    private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract,string>> _envelopes;
+    private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _removedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _storedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _deletedSubscriptions = new();
     
     public FileEnvelopeRepository(
-        IDbContractConfigDto<TContract, string> contractConfig,
+        IDbContractConfigDto<TContract> contractConfig,
         IServiceProvider serviceProvider,
-        IReaderAndWriter<TContract, string> readerAndWriter,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract,string>> envelopes)
+        IReaderAndWriter<TContract> readerAndWriter,
+        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-        _migrationStrategy = (IMigrationStrategy<TContract, string>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract, string>));
+        _migrationStrategy = (IMigrationStrategy<TContract>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract>));
         _readerAndWriter = readerAndWriter ?? throw new ArgumentNullException(nameof(readerAndWriter));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
 
@@ -73,7 +70,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
             // best-effort; writer still ensures directory exists
         }
     }
-    public IReaderAndWriter<TContract, string> ReaderAndWriter => _readerAndWriter;
+    public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
 
     public bool ContainsEnvelope(string cacheKey)
     {
@@ -114,7 +111,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         return objectInstance;
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract, string>> QueryAsync(
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> QueryAsync(
         Func<TContract, bool> filterFunction,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -239,7 +236,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         }).ConfigureAwait(false);
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract, string>> LoadAsync(
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
         string rootLocationOfContract,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -260,7 +257,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         }
     }
 
-    private async IAsyncEnumerable<IObjectEnvelope<TContract, string>> EnumerateSkeletonsAsync(
+    private async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateSkeletonsAsync(
         string directory,
         [EnumeratorCancellation] CancellationToken token)
     {
@@ -273,9 +270,9 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         var expectedExtension = _contractConfig.FileExtension.NormalizeExtension();
 
         // Helper local function to create skeleton
-        IObjectEnvelope<TContract, string> CreateSkeleton(FileInfo file, string? version)
+        IObjectEnvelope<TContract> CreateSkeleton(FileInfo file, string? version)
         {
-            var env = _serviceProvider.GetService<IObjectEnvelope<TContract, string>>()
+            var env = _serviceProvider.GetService<IObjectEnvelope<TContract>>()
                 ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
             env.EnvelopeCacheKey = Path.GetFileNameWithoutExtension(file.Name);
             env.Location = file.FullName;
@@ -364,40 +361,40 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
 
     #region PubSub Area
     public IContractSubscription SubscribeToAdded(
-        Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null)
         => RegisterSubscription(_addedSubscriptions, handler, keepAlive);
 
     public IContractSubscription SubscribeToRemoved(
-        Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null)
         => RegisterSubscription(_removedSubscriptions, handler, keepAlive);
 
     public IContractSubscription SubscribeToStored(
-        Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null)
         => RegisterSubscription(_storedSubscriptions, handler, keepAlive);
 
     public IContractSubscription SubscribeToDeleted(
-        Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive = null)
         => RegisterSubscription(_deletedSubscriptions, handler, keepAlive);
 
-    public ValueTask ContractAdded(IObjectEnvelope<TContract, string> @event, CancellationToken cancellationToken = default)
+    public ValueTask ContractAdded(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default)
         => PublishAsync(_addedSubscriptions, @event, cancellationToken);
 
-    public ValueTask ContractRemoved(IObjectEnvelope<TContract, string> @event, CancellationToken cancellationToken = default)
+    public ValueTask ContractRemoved(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default)
         => PublishAsync(_removedSubscriptions, @event, cancellationToken);
 
-    public ValueTask ContractStored(IObjectEnvelope<TContract, string> @event, CancellationToken cancellationToken = default)
+    public ValueTask ContractStored(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default)
         => PublishAsync(_storedSubscriptions, @event, cancellationToken);
 
-    public ValueTask ContractDeleted(IObjectEnvelope<TContract, string> @event, CancellationToken cancellationToken = default)
+    public ValueTask ContractDeleted(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default)
         => PublishAsync(_deletedSubscriptions, @event, cancellationToken);
 
     private IContractSubscription RegisterSubscription(
         ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
-        Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
         Func<ValueTask<bool>>? keepAlive)
     {
         if (handler is null)
@@ -412,7 +409,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
 
     private async ValueTask PublishAsync(
         ConcurrentDictionary<Guid, SubscriptionEntry> subscriptions,
-        IObjectEnvelope<TContract, string> payload,
+        IObjectEnvelope<TContract> payload,
         CancellationToken cancellationToken)
     {
         var snapshot = subscriptions.ToArray();
@@ -457,14 +454,14 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
     {
         private readonly FileEnvelopeRepository<TContract> _owner;
         private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _bucket;
-        private readonly Func<IObjectEnvelope<TContract, string>, ValueTask> _handler;
+        private readonly Func<IObjectEnvelope<TContract>, ValueTask> _handler;
         private readonly Func<ValueTask<bool>>? _keepAlive;
         private int _disposed;
 
         internal SubscriptionEntry(
             FileEnvelopeRepository<TContract> owner,
             ConcurrentDictionary<Guid, SubscriptionEntry> bucket,
-            Func<IObjectEnvelope<TContract, string>, ValueTask> handler,
+            Func<IObjectEnvelope<TContract>, ValueTask> handler,
             Func<ValueTask<bool>>? keepAlive)
         {
             _owner = owner;
@@ -475,7 +472,7 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         }
 
         internal Guid Id { get; }
-        internal Func<IObjectEnvelope<TContract, string>, ValueTask> Handler => _handler;
+        internal Func<IObjectEnvelope<TContract>, ValueTask> Handler => _handler;
         internal Func<ValueTask<bool>>? KeepAlive => _keepAlive;
 
         public bool IsDisposed => Interlocked.CompareExchange(ref _disposed, 0, 0) != 0;

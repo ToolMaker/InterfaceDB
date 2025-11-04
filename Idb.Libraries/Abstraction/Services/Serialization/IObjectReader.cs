@@ -6,12 +6,12 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
 {
     /// <summary>
     /// Reads persisted envelopes from storage and materializes contract instances on demand.
-    /// Typically invoked by <see cref="IEnvelopeRepository{TContract, TLocationType}"/> to hydrate envelopes before they are cached.
+    /// Typically invoked by <see cref="IEnvelopeRepository{TContractType}"/> to hydrate envelopes before they are cached.
     /// </summary>
     /// <typeparam name="TContract">Contract interface associated with the reader instance.</typeparam>
     /// <typeparam name="TLocationType">Type describing where the payload lives (file system, blob, etc.).</typeparam>
-    public interface IObjectReader<TContract, TLocationType>
-        where TContract : class, IRepoDto<TContract, TLocationType>
+    public interface IObjectReader<TContract>
+        where TContract : class, IRepoDto<TContract>
     {
         /// <summary>
         /// Streams every persisted envelope discovered under the supplied root location.
@@ -21,7 +21,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         /// <param name="cancellationToken">Token that propagates cancellation.</param>
         /// <returns>Async sequence of envelopes paired with their storage metadata.</returns>
         IAsyncEnumerable<TContract> ReadAsync(
-            TLocationType rootLocationOfContract,
+            string rootLocationOfContract,
             CancellationToken cancellationToken = default);
 
         Task<TContract> ReadAsync(

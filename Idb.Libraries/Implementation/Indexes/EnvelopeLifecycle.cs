@@ -9,31 +9,31 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// <summary>
 /// Provides helper methods to wrap and unwrap contracts into envelopes while avoiding circular references.
 /// </summary>
-public class EnvelopeLifecycle<TContract, TLocationType> : IEnvelopeLifecycle<TContract, TLocationType>
-    where TContract : class, IRepoDto<TContract, TLocationType>
+public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IEnvelopeKeyAndLocationFactory<TContract, TLocationType> _fileNameFactory;
+    private readonly IEnvelopeKeyAndLocationFactory<TContract> _fileNameFactory;
 
     public EnvelopeLifecycle(IServiceProvider serviceProvider, 
-        IEnvelopeKeyAndLocationFactory<TContract, TLocationType> fileNameFactory)
+        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory)
     {
         _serviceProvider = serviceProvider;
         _fileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
     }
 
-    public async ValueTask<IObjectEnvelope<TContract, TLocationType>> WrapAsync(TContract entity)
+    public async ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
     {
         if (entity is null)
         {
             throw new ArgumentNullException(nameof(entity));
         }
 
-        IObjectEnvelope<TContract, TLocationType> wrappedEnvelope;
+        IObjectEnvelope<TContract> wrappedEnvelope;
 
         if (entity.Envelope == null)
         {
-            wrappedEnvelope = _serviceProvider.GetService<IObjectEnvelope<TContract, TLocationType>>()
+            wrappedEnvelope = _serviceProvider.GetService<IObjectEnvelope<TContract>>()
                 ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."); ;
         }
         else
@@ -48,7 +48,7 @@ public class EnvelopeLifecycle<TContract, TLocationType> : IEnvelopeLifecycle<TC
         return wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
     }
 
-    public TContract Unwrap(IObjectEnvelope<TContract, TLocationType> envelope)
+    public TContract Unwrap(IObjectEnvelope<TContract> envelope)
     {
         if (envelope is null)
         {

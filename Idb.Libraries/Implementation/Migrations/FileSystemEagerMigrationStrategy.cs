@@ -11,16 +11,16 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Eager migration strategy that upgrades legacy payloads during initialisation.
 /// </summary>
 public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
-    where TContract : class, IRepoDto<TContract, string>
+    where TContract : class, IRepoDto<TContract>
 {
     public FileSystemEagerMigrationStrategy(
-        IDbContractConfigDto<TContract, string> contractConfig,
-        IObjectSerializer<TContract, string> serializer,
+        IDbContractConfigDto<TContract> contractConfig,
+        IObjectSerializer<TContract> serializer,
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
-        IEnvelopeKeyAndLocationFactory<TContract, string> factory,
-        IObjectReader<TContract, string> reader,
-        IObjectWriter<TContract, string> writer)
+        IEnvelopeKeyAndLocationFactory<TContract> factory,
+        IObjectReader<TContract> reader,
+        IObjectWriter<TContract> writer)
         : base(contractConfig, serializer, factory, migrations, strategyType, reader, writer)
     {
         if (strategyType is not (MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant))

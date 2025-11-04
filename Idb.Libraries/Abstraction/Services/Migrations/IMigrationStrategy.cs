@@ -7,8 +7,8 @@ namespace Idb.Libraries.Abstractions.Services.Migrations;
 /// <summary>
 /// Describes how migrations should be executed for a contract.
 /// </summary>
-public interface IMigrationStrategy<TContract, TLocationType>
-    where TContract : class, IRepoDto<TContract, TLocationType>
+public interface IMigrationStrategy<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
     /// <summary>
     /// Gets the desired migration strategy.
