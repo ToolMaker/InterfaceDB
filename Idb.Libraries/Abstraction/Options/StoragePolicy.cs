@@ -73,6 +73,18 @@ public sealed record StoragePolicy
     /// </summary>
     public bool HydrateOnInitialize { get; init; } = true;
 
+    /// <summary>
+    /// When true, repository uses a sharded directory layout under the version folder (00–ff subfolders).
+    /// When false, a flat layout is used and files are written directly under the version folder.
+    /// </summary>
+    public bool UseShardedDirectories { get; init; } = true;
+
+    /// <summary>
+    /// When true, repository pre-creates 00–ff shard subfolders during initialization.
+    /// Ignored when <see cref="UseShardedDirectories"/> is false.
+    /// </summary>
+    public bool PrecreateShardFolders { get; init; } = true;
+
     internal int NormalizedConcurrency
     {
         get

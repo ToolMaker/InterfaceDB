@@ -55,19 +55,23 @@ public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TCon
         var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
         var activeVersionRoot = Path.Combine(_dataRoot, activeVersion);
         Directory.CreateDirectory(activeVersionRoot);
-        // Pre-create shard subfolders (00..ff) to reduce directory creation checks during writes
-        try
+        // Conditionally pre-create shard subfolders (00..ff) based on storage policy
+        var policy = _contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        if (policy.UseShardedDirectories && policy.PrecreateShardFolders)
         {
-            for (int i = 0; i < 256; i++)
+            try
             {
-                var shard = i.ToString("x2");
-                var shardDir = Path.Combine(activeVersionRoot, shard);
-                Directory.CreateDirectory(shardDir);
+                for (int i = 0; i < 256; i++)
+                {
+                    var shard = i.ToString("x2");
+                    var shardDir = Path.Combine(activeVersionRoot, shard);
+                    Directory.CreateDirectory(shardDir);
+                }
             }
-        }
-        catch
-        {
-            // best-effort; writer still ensures directory exists
+            catch
+            {
+                // best-effort; writer still ensures directory exists
+            }
         }
     }
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;

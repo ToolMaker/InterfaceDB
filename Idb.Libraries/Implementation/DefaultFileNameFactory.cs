@@ -34,10 +34,13 @@ public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<
                 : envelope.VersionTag;
 
             var versionRoot = Path.Combine(_config.DataRoot!, version);
-            // Hash-partition: first 2 chars of key to keep directories small
+            // Determine whether to use sharded directory layout
+            var useShards = _config.StoragePolicy?.UseShardedDirectories == true;
             var key = envelope.EnvelopeCacheKey;
             var shard = key.Length >= 2 ? key.Substring(0, 2) : "00";
-            var targetPath = Path.Combine(versionRoot, shard, key + extension);
+            var targetPath = useShards
+                ? Path.Combine(versionRoot, shard, key + extension)
+                : Path.Combine(versionRoot, key + extension);
             envelope.Location = targetPath;
         }
     }
