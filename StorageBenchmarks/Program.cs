@@ -79,7 +79,7 @@ public class PersonStorageBenchmark : IDisposable
         var warmupPerson = PersonDataFactory.ClonePersons(new[] { _seedPersons[0] })[0];
         repository.SaveAsync(warmupPerson).GetAwaiter().GetResult();
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
-        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson, string>>();
+        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson>>();
         policy = config.StoragePolicy ?? StoragePolicy.Default;
     }
 
@@ -387,27 +387,27 @@ public class PersonStorageBenchmark : IDisposable
 
         var services = new ServiceCollection();
         services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson, string>>(options);
-        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson, string>, DefaultFileNameFactory<ContractPerson.IPerson>>();
+        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson>>(options);
+        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson>, DefaultFileNameFactory<ContractPerson.IPerson>>();
 
         var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson, string>>(new BinaryObjectSerializer<ContractPerson.IPerson,string>(serializerOptions));
+        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
 
         // Shared envelope cache used by reader, writer, and repository
-        services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ContractPerson.IPerson, string>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<ContractPerson.IPerson, string>>>();
+        services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ContractPerson.IPerson>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<ContractPerson.IPerson>>>();
 
-        services.AddTransient<IObjectEnvelope<ContractPerson.IPerson, string>, FileObjectEnvelope<ContractPerson.IPerson>>();
-        services.AddSingleton<IEnvelopeLifecycle<ContractPerson.IPerson, string>, EnvelopeLifecycle<ContractPerson.IPerson, string>>();
-        services.AddTransient<IObjectReader<ContractPerson.IPerson, string>, FileObjectReader<ContractPerson.IPerson>>();
-        services.AddTransient<IObjectWriter<ContractPerson.IPerson, string>, FileObjectWriter<ContractPerson.IPerson>>();
-        services.AddTransient<IReaderAndWriter<ContractPerson.IPerson, string>, ObjectReaderAndWriter<ContractPerson.IPerson, string>>();
+        services.AddTransient<IObjectEnvelope<ContractPerson.IPerson>, FileObjectEnvelope<ContractPerson.IPerson>>();
+        services.AddSingleton<IEnvelopeLifecycle<ContractPerson.IPerson>, EnvelopeLifecycle<ContractPerson.IPerson>>();
+        services.AddTransient<IObjectReader<ContractPerson.IPerson>, FileObjectReader<ContractPerson.IPerson>>();
+        services.AddTransient<IObjectWriter<ContractPerson.IPerson>, FileObjectWriter<ContractPerson.IPerson>>();
+        services.AddTransient<IReaderAndWriter<ContractPerson.IPerson>, ObjectReaderAndWriter<ContractPerson.IPerson>>();
 
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson, string>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson, string>>();
+        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson>, FileEnvelopeRepository<ContractPerson.IPerson>>();
+        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
         services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
         {
             var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson, string>(manager);
+            return new InterfaceRepositryDb<ContractPerson.IPerson>(manager);
         });
 
         return services.BuildServiceProvider();

@@ -7,21 +7,21 @@ using Idb.Libraries.Implementation.Indexes;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
-    public class FileObjectWriter<TContract> : IObjectWriter<TContract, string>
-        where TContract : class, IRepoDto<TContract, string>
+    public class FileObjectWriter<TContract> : IObjectWriter<TContract>
+        where TContract : class, IRepoDto<TContract>
     {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _ensuredDirs = new();
-        private IObjectSerializer<TContract, string> _serializer;
-        private readonly IEnvelopeLifecycle<TContract, string> _envelopeLifecycle;
+        private IObjectSerializer<TContract> _serializer;
+        private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
         private readonly SemaphoreSlim? _writeSemaphore;
         private readonly StoragePolicy _storagePolicy;
-        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> _envelopes;
-        private readonly IDbContractConfigDto<TContract, string> _contractConfig;
+        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+        private readonly IDbContractConfigDto<TContract> _contractConfig;
 
-        public FileObjectWriter(IObjectSerializer<TContract, string> serializer,
-            IEnvelopeLifecycle<TContract, string> envelopeLifecycle,
-            IDbContractConfigDto<TContract, string> contractConfig,
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> envelopes)
+        public FileObjectWriter(IObjectSerializer<TContract> serializer,
+            IEnvelopeLifecycle<TContract> envelopeLifecycle,
+            IDbContractConfigDto<TContract> contractConfig,
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
         {
             _serializer = serializer;
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));

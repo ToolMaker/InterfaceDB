@@ -11,14 +11,14 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// so storage identity stays consistent across cache and disk. The factory receives both the
 /// materialized contract instance and its storage location.
 /// </summary>
-public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract, string>
-    where TContract : class, IRepoDto<TContract, string>
+public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
     public FileObjectEnvelope()
     {
     }
 
-    public FileObjectEnvelope(IDbContractConfigDto<TContract, string> contractConfig)
+    public FileObjectEnvelope(IDbContractConfigDto<TContract> contractConfig)
     {
         VersionTag = contractConfig.ActiveVersion ?? throw new ArgumentNullException($"Activate version in config is not set.");
     }

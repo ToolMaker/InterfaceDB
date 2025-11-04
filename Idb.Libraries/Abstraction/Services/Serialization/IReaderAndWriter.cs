@@ -3,10 +3,10 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstraction.Services.Serialization
 {
-    public interface IReaderAndWriter<TContract, TLocationType>  
-        where TContract : class, IRepoDto<TContract, TLocationType>
+    public interface IReaderAndWriter<TContract>  
+        where TContract : class, IRepoDto<TContract>
     {
-        IObjectReader<TContract, TLocationType> Reader { get; }
-        IObjectWriter<TContract, TLocationType> Writer { get; }
+        IObjectReader<TContract> Reader { get; }
+        IObjectWriter<TContract> Writer { get; }
     }
 }

@@ -16,13 +16,13 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// Responsible for wrapping contracts into envelopes when persisting (clearing the contract's envelope reference) and unwrapping them on reads (restoring the reference and clearing the envelope) to avoid circular references.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
-public sealed class PassthroughIndexManager<TContract, TLocation> : IIndexManager<TContract>
-    where TContract : class, IRepoDto<TContract, TLocation>
+public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
-    private readonly IEnvelopeRepository<TContract, TLocation> _envelopeRepository;
+    private readonly IEnvelopeRepository<TContract> _envelopeRepository;
     
 
-    public PassthroughIndexManager(IEnvelopeRepository<TContract, TLocation> envelopeRepository)
+    public PassthroughIndexManager(IEnvelopeRepository<TContract> envelopeRepository)
     {
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
     }

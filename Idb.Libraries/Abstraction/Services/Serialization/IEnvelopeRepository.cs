@@ -10,11 +10,11 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
 /// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
-public interface IEnvelopeRepository<TContract, TLocationType> :
-    IContractPubSubService<TContract, TLocationType>
-        where TContract : class, IRepoDto<TContract, TLocationType>
+public interface IEnvelopeRepository<TContract> :
+    IContractPubSubService<TContract>
+        where TContract : class, IRepoDto<TContract>
 {
-    IReaderAndWriter<TContract, TLocationType> ReaderAndWriter { get; }
+    IReaderAndWriter<TContract> ReaderAndWriter { get; }
     /// <summary>
     /// Checks whether an envelope with the supplied cache key already exists in the repository.
     /// </summary>
@@ -33,12 +33,12 @@ public interface IEnvelopeRepository<TContract, TLocationType> :
     /// <summary>
     /// Streams envelopes that satisfy the supplied filter.
     /// </summary>
-    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> QueryAsync(
+    IAsyncEnumerable<IObjectEnvelope<TContract>> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default);
 
-    IAsyncEnumerable<IObjectEnvelope<TContract, TLocationType>> LoadAsync(
-            TLocationType rootLocationOfContract,
+    IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
+            string rootLocationOfContract,
             CancellationToken cancellationToken = default);
 
     ValueTask<TContract> WriteAsync(

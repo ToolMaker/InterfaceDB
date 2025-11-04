@@ -6,18 +6,18 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
-    public class FileObjectReader<TContract> : IObjectReader<TContract, string>
-        where TContract : class, IRepoDto<TContract, string>
+    public class FileObjectReader<TContract> : IObjectReader<TContract>
+        where TContract : class, IRepoDto<TContract>
     {
-        private IObjectSerializer<TContract, string> _serializer;
-        private readonly IEnvelopeLifecycle<TContract, string> _envelopeLifecycle;
-        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> _envelopes;
-        private readonly IDbContractConfigDto<TContract, string> _contractConfig;
+        private IObjectSerializer<TContract> _serializer;
+        private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
+        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+        private readonly IDbContractConfigDto<TContract> _contractConfig;
 
-        public FileObjectReader(IObjectSerializer<TContract, string> serializer,
-            IEnvelopeLifecycle<TContract, string> envelopeLifecycle,
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>> envelopes,
-            IDbContractConfigDto<TContract, string> contractConfig)
+        public FileObjectReader(IObjectSerializer<TContract> serializer,
+            IEnvelopeLifecycle<TContract> envelopeLifecycle,
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+            IDbContractConfigDto<TContract> contractConfig)
         {
             _serializer = serializer;
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
@@ -69,7 +69,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 BufferSize = _contractConfig.StoragePolicy?.NormalizedBufferSize ?? StoragePolicy.DefaultBufferSize
             };
 
-            IObjectEnvelope<TContract, string> envelope;
+            IObjectEnvelope<TContract> envelope;
             using (var stream = new FileStream(file.FullName, fso2))
             {
                 envelope = await _serializer.DeserializeAsync(stream, cancellationToken).ConfigureAwait(false);

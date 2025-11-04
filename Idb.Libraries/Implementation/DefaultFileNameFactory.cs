@@ -3,16 +3,16 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
 
-public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<TContract, string>
-    where TContract : class, IRepoDto<TContract, string>
+public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
-    private readonly IDbContractConfigDto<TContract, string> _config;
-    public DefaultFileNameFactory(IDbContractConfigDto<TContract, string> config)
+    private readonly IDbContractConfigDto<TContract> _config;
+    public DefaultFileNameFactory(IDbContractConfigDto<TContract> config)
     {
         _config = config;
     }
 
-    public void InitEnvelope(IObjectEnvelope<TContract, string> envelope)
+    public void InitEnvelope(IObjectEnvelope<TContract> envelope)
     {
         envelope.EnvelopeCacheKey = envelope.EnvelopeCacheKey switch
         {

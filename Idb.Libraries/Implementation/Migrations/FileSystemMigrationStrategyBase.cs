@@ -21,22 +21,22 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// <summary>
 /// Shared migration helpers for file-system-backed strategies.
 /// </summary>
-public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStrategy<TContract, string>
-    where TContract : class, IRepoDto<TContract, string>
+public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStrategy<TContract>
+    where TContract : class, IRepoDto<TContract>
 {
-    private readonly IDbContractConfigDto<TContract, string> _contractConfig;
+    private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IReadOnlyList<MigrationDescriptor> _migrationDescriptors;
-    private readonly IObjectReader<TContract, string>? _reader;
-    private readonly IObjectWriter<TContract, string>? _writer;
+    private readonly IObjectReader<TContract>? _reader;
+    private readonly IObjectWriter<TContract>? _writer;
 
     protected FileSystemMigrationStrategyBase(
-        IDbContractConfigDto<TContract, string> contractConfig,
-        IObjectSerializer<TContract, string> serializer,
-        IEnvelopeKeyAndLocationFactory<TContract, string> fileNameFactory,
+        IDbContractConfigDto<TContract> contractConfig,
+        IObjectSerializer<TContract> serializer,
+        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory,
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
-        IObjectReader<TContract, string>? reader = null,
-        IObjectWriter<TContract, string>? writer = null)
+        IObjectReader<TContract>? reader = null,
+        IObjectWriter<TContract>? writer = null)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
@@ -66,9 +66,9 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     public MigrationStrategyType StrategyType { get; }
 
-    protected IObjectSerializer<TContract,string> Serializer { get; }
+    protected IObjectSerializer<TContract> Serializer { get; }
 
-    protected IEnvelopeKeyAndLocationFactory<TContract, string> FileNameFactory { get; }
+    protected IEnvelopeKeyAndLocationFactory<TContract> FileNameFactory { get; }
 
     protected DirectoryInfo DataRootDirectory { get; }
 
@@ -274,11 +274,11 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static MessagePackSerializerOptions ResolveSerializerOptions(IObjectSerializer<TContract, string> serializer)
+    private static MessagePackSerializerOptions ResolveSerializerOptions(IObjectSerializer<TContract> serializer)
     {
-        if (serializer is BinaryObjectSerializer<TContract, string> binarySerializer)
+        if (serializer is BinaryObjectSerializer<TContract> binarySerializer)
         {
-            var field = typeof(BinaryObjectSerializer<TContract, string>)
+            var field = typeof(BinaryObjectSerializer<TContract>)
                 .GetField("_options", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (field?.GetValue(binarySerializer) is MessagePackSerializerOptions options)
             {

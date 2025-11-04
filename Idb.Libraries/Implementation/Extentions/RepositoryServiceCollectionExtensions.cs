@@ -24,33 +24,33 @@ namespace Idb.Libraries.Implementation.Extentions
     {
         public static IServiceCollection AddFileRepository<TContract>(
             this IServiceCollection services,
-            IDbContractConfigDto<TContract, string> contractConfig,
+            IDbContractConfigDto<TContract> contractConfig,
             MigrationStrategyType strategyType = MigrationStrategyType.None)
-            where TContract : class, IRepoDto<TContract, string>
+            where TContract : class, IRepoDto<TContract>
         {
             services.AddSingleton(contractConfig);
             services.AddSingleton(contractConfig);
-            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract, string>, DefaultFileNameFactory<TContract>>();
+            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract>, DefaultFileNameFactory<TContract>>();
 
             var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-            services.AddSingleton<IObjectSerializer<TContract, string>>(new BinaryObjectSerializer<TContract, string>(serializerOptions));
-            services.AddSingleton<IEnvelopeRepository<TContract, string>, FileEnvelopeRepository<TContract>>();
-            services.AddSingleton<IIndexManager<TContract>, PassthroughIndexManager<TContract, string>>();
-            services.AddTransient<IObjectEnvelope<TContract, string>, FileObjectEnvelope<TContract>>();
-            services.AddSingleton<IEnvelopeLifecycle<TContract, string>, EnvelopeLifecycle<TContract, string>>();
-            services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract, string>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract, string>>>();
-            services.AddTransient<IObjectReader<TContract, string>, FileObjectReader<TContract>>();
-            services.AddTransient<IObjectWriter<TContract, string>, FileObjectWriter<TContract>>();
-            services.AddTransient<IReaderAndWriter<TContract, string>, ObjectReaderAndWriter<TContract, string>>();
+            services.AddSingleton<IObjectSerializer<TContract>>(new BinaryObjectSerializer<TContract>(serializerOptions));
+            services.AddSingleton<IEnvelopeRepository<TContract>, FileEnvelopeRepository<TContract>>();
+            services.AddSingleton<IIndexManager<TContract>, PassthroughIndexManager<TContract>>();
+            services.AddTransient<IObjectEnvelope<TContract>, FileObjectEnvelope<TContract>>();
+            services.AddSingleton<IEnvelopeLifecycle<TContract>, EnvelopeLifecycle<TContract>>();
+            services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract>>>();
+            services.AddTransient<IObjectReader<TContract>, FileObjectReader<TContract>>();
+            services.AddTransient<IObjectWriter<TContract>, FileObjectWriter<TContract>>();
+            services.AddTransient<IReaderAndWriter<TContract>, ObjectReaderAndWriter<TContract>>();
 
             if (strategyType != MigrationStrategyType.None)
             {
-                services.AddSingleton<IMigrationStrategy<TContract, string>>(sp =>
+                services.AddSingleton<IMigrationStrategy<TContract>>(sp =>
                 {
-                    var serializer = sp.GetRequiredService<IObjectSerializer<TContract, string>>();
-                    var factory = sp.GetRequiredService<IEnvelopeKeyAndLocationFactory<TContract, string>>();
-                    var reader = sp.GetRequiredService<IObjectReader<TContract, string>>();
-                    var writer = sp.GetRequiredService<IObjectWriter<TContract, string>>();
+                    var serializer = sp.GetRequiredService<IObjectSerializer<TContract>>();
+                    var factory = sp.GetRequiredService<IEnvelopeKeyAndLocationFactory<TContract>>();
+                    var reader = sp.GetRequiredService<IObjectReader<TContract>>();
+                    var writer = sp.GetRequiredService<IObjectWriter<TContract>>();
                     var migrations = sp.GetServices<IMigration>().Where(m => typeof(TContract).IsAssignableFrom(m.GetType())).ToList();
                     return strategyType switch
                     {
@@ -64,7 +64,7 @@ namespace Idb.Libraries.Implementation.Extentions
             services.AddSingleton<IRepository<TContract>>(sp =>
             {
                 var manager = sp.GetRequiredService<IIndexManager<TContract>>();
-                return new InterfaceRepositryDb<TContract, string>(manager);
+                return new InterfaceRepositryDb<TContract>(manager);
             });
 
             return services;
