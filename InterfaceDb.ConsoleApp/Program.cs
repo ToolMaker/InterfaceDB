@@ -44,10 +44,10 @@ for (var i = 0; i < totalRecords; i++)
 
 Console.WriteLine("Persist complete. Running sample queries...\n");
 
-var firstStudent = await repository.QueryAsync(p => p is PersonStorage.PersonBase model && model.Role == "Student").ConfigureAwait(false);
-if (firstStudent is PersonStorage.PersonBase student)
+var firstStudent = await repository.QueryAsync(p => p.Role == "Student").ConfigureAwait(false);
+if (firstStudent is not null)
 {
-    Console.WriteLine($"First student: {student.Name} ({student.Age})");
+    Console.WriteLine($"First student: {firstStudent.Name} ({firstStudent.Age})");
 }
 
 var existing = await repository.ExistsAsync(persons[0]).ConfigureAwait(false);
@@ -55,15 +55,12 @@ Console.WriteLine($"First person exists in repository: {existing}");
 
 Console.WriteLine("Enumerating up to 5 employees via index manager stream:");
 var count = 0;
-await foreach (var person in indexManager.QueryAsync(p => p is PersonStorage.PersonBase model && model.Role == "Employee"))
+await foreach (var person in indexManager.QueryAsync(p => p.Role == "Employee"))
 {
-    if (person is PersonStorage.PersonBase employee)
+    Console.WriteLine($" - {person.Name} ({person.Age})");
+    if (++count == 5)
     {
-        Console.WriteLine($" - {employee.Name} ({employee.Age})");
-        if (++count == 5)
-        {
-            break;
-        }
+        break;
     }
 }
 

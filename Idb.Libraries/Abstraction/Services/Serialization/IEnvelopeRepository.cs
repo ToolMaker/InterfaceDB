@@ -12,7 +12,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
 public interface IEnvelopeRepository<TContract> :
     IContractPubSubService<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
 {
     IReaderAndWriter<TContract> ReaderAndWriter { get; }
     /// <summary>

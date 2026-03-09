@@ -8,7 +8,7 @@ using Idb.Libraries.Implementation.Indexes;
 namespace Idb.Libraries.Implementation.Serialization
 {
     public class FileObjectWriter<TContract> : IObjectWriter<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _ensuredDirs = new();
         private IObjectSerializer<TContract> _serializer;

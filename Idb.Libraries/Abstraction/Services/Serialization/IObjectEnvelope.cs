@@ -10,7 +10,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
 /// <typeparam name="TContract">Contract interface associated with the payload.</typeparam>
 /// <typeparam name="TLocationType">Type describing where the payload lives (file info, cloud key, etc.).</typeparam>
 public interface IObjectEnvelope<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         /// <summary>
         /// Stable cache key derived from storage metadata (e.g., normalized location identifier).

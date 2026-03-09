@@ -57,9 +57,9 @@ public static class MigrationScaffolder
             MergeProperties(propertyMap, previousInterfacePath);
             MergeProperties(propertyMap, currentInterfacePath);
 
-            builder.AppendLine("using System.IO;");
             builder.AppendLine("using MessagePack;");
             builder.AppendLine("using Idb.Libraries.Abstraction.Services.Migrations;");
+            builder.AppendLine("using Idb.Libraries.Abstractions.Dtos;");
             builder.AppendLine("using Idb.Libraries.Abstractions.Services.Serialization;");
             builder.AppendLine($"using {previousNamespace};");
             builder.AppendLine($"using {currentNamespace};");
@@ -70,26 +70,18 @@ public static class MigrationScaffolder
             builder.AppendLine($"public sealed class {className} : {previousNamespace}.I{options.ContractName}, {currentNamespace}.I{options.ContractName}, IMigration");
             builder.AppendLine("{");
             builder.AppendLine("    [IgnoreMember]");
-            builder.AppendLine($"    public IObjectEnvelope<{previousNamespace}.I{options.ContractName}, FileInfo>? LegacyEnvelope {{ get; set; }};");
+            builder.AppendLine($"    public IObjectEnvelope<{previousNamespace}.I{options.ContractName}>? LegacyEnvelope {{ get; set; }};");
             builder.AppendLine("    [IgnoreMember]");
-            builder.AppendLine($"    public IObjectEnvelope<{currentNamespace}.I{options.ContractName}, FileInfo>? CurrentEnvelope {{ get; set; }};");
+            builder.AppendLine($"    public IObjectEnvelope<{currentNamespace}.I{options.ContractName}>? CurrentEnvelope {{ get; set; }};");
             builder.AppendLine();
             builder.AppendLine($"    public string SourceVersion => \"{previous.Version}\";");
             builder.AppendLine($"    public string TargetVersion => \"{current.Version}\";");
             builder.AppendLine();
             builder.AppendLine($"    [IgnoreMember]");
-            builder.AppendLine($"    IObjectEnvelope<{previousNamespace}.I{options.ContractName}, FileInfo>? IRepoDto<{previousNamespace}.I{options.ContractName}, FileInfo>.Envelope");
-            builder.AppendLine("    {");
-            builder.AppendLine("        get => LegacyEnvelope;");
-            builder.AppendLine("        set => LegacyEnvelope = value;");
-            builder.AppendLine("    }");
+            builder.AppendLine($"    IObjectEnvelope<{previousNamespace}.I{options.ContractName}>? IStoredContract<{previousNamespace}.I{options.ContractName}>.Envelope => LegacyEnvelope;");
             builder.AppendLine();
             builder.AppendLine("    [IgnoreMember]");
-            builder.AppendLine($"    IObjectEnvelope<{currentNamespace}.I{options.ContractName}, FileInfo>? IRepoDto<{currentNamespace}.I{options.ContractName}, FileInfo>.Envelope");
-            builder.AppendLine("    {");
-            builder.AppendLine("        get => CurrentEnvelope;");
-            builder.AppendLine("        set => CurrentEnvelope = value;");
-            builder.AppendLine("    }");
+            builder.AppendLine($"    IObjectEnvelope<{currentNamespace}.I{options.ContractName}>? IStoredContract<{currentNamespace}.I{options.ContractName}>.Envelope => CurrentEnvelope;");
             builder.AppendLine();
 
             if (propertyMap.Count == 0)

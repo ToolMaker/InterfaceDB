@@ -1,92 +1,169 @@
-# Idb Sandbox
+# InterfaceDB
 
-This repository contains the sample storage stack that powers the `Idb` projects and the `MigrationTool` CLI. The CLI lets you generate versioned storage contracts ("baselines") and scaffold migration stubs that describe how legacy payloads move forward when contract shapes evolve.
+InterfaceDB is a sandbox for an interface-first storage stack. The repository combines a file-backed repository implementation, a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
 
-## Getting Started
+## Solution layout
 
-1. **Install requirements**
-   * .NET 9 SDK (preview) � the solution targets `net9.0`.
-2. **Build everything**
-   ```bash
-   dotnet build MigrationTool/MigrationTool.csproj
-   ```
-3. **Run the CLI**
-   * Launch without arguments to execute the canned baseline sequence for the `Person` contract:
-     ```bash
-     dotnet run --project MigrationTool/MigrationTool.csproj
-     ```
-   * Use subcommands for ad-hoc work (examples below).
-   * Want to experiment with the local repository and indexes interactively? Use the playground console:
-     ```bash
-     dotnet run --project IdbConsolePlayground/IdbConsolePlayground.csproj
-     ```
+- `Idb.Libraries/`
+  Core abstractions and the default file-system implementation. The library uses MessagePack envelopes, an in-memory envelope cache, and optional migration strategies.
+- `MigrationTool/`
+  CLI for creating versioned contract baselines and scaffolding migration classes between adjacent versions.
+- `IdbDemoStorage/`
+  Sample `Person` contract, concrete storage types, contract options, and a sample migration.
+- `InterfaceDb.ConsoleApp/`
+  Small console demo that writes and queries `Person` records through `IRepository<TContract>`.
+- `PerformanceCommon/`
+  Shared benchmark data generation helpers.
+- `StorageBenchmarks/`
+  Throughput comparison between the file-system repository, SQL Server, Dapper, and EF Core.
+- `StorageBenchmarks.Transactions/`
+  Transaction-oriented benchmark variant for the same `Person` sample payloads.
 
-## Baseline Workflow
+## Build and run
 
-The `baseline` command creates or advances a contract under `MigrationTool/Contracts/<Contract>/<version>/`.
-
-```bash
-dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Person --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
-# or derive everything from an options file
-dotnet run --project MigrationTool/MigrationTool.csproj -- baseline --config-file-dir MigrationTool/Options/PersonOptions.cs
-```
-
-Key switches you can supply:
-
-- `--contracts-dir <path>`: where versioned interfaces live (relative to the project root by default).
-- `--config-file-dir <path>`: contract options C# file (or directory) used to infer the contract name and baseline locations.
-- `--storage-dir <path>`: base folder used for generated migration stubs.
-- `--existing <prompt|skip|force>`: control how the tool behaves when a target version folder already exists.
-- `--increment <auto|prompt|skip>` (alias `--increment-mode`): choose whether to auto-increment, prompt, or skip when a previous version is present.
-- `--version`, `--increment major|minor|patch`, `--namespace`, `--impl`: fine-tune the semantic versioning and namespace layout.
-
-### Dog Example
-
-> Whenever a new baseline builds on top of an existing version, the tool automatically scaffolds the migration stubs into the directory supplied via `--migration-dir`.
-
-The repo currently ships with a simple `Dog` contract that demonstrates the flow:
-
-1. Generate an initial baseline:
-   ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations --version 1.0.0 --impl JackRussel
-   ```
-2. Evolve the contract (adds a property) and generate the next baseline:
-   ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
-```
-   The folder `MigrationTool/Contracts/Dog/v1_0_1/` (or the path you supplied via `--contracts-dir`) now holds the updated interface and implementation stub.
-3. Scaffold migrations only after you are happy with the contract shape:
-   ```bash
-   dotnet run --project MigrationTool/MigrationTool.csproj -- migrate scaffold Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
-```
-   This creates `Migrations/Dog/IDog_v1_0_0_To_v1_0_1_Migration.cs` (relative to the migration directory you specified), which reads legacy payloads and writes the upgraded version.
-
-> **TODO**: Flesh out the `Dog` migration so real data can be upgraded. The sample currently maps the `Name` across and hard-codes `Age` to zero. Add whatever transformation logic your scenario requires and remove the console trace once finalized.
-
-## Migration Workflow
-
-`baseline` deliberately does **not** scaffold migrations. You decide when the contract is ready and invoke:
+1. Install the .NET 9 SDK.
+2. Build the solution:
 
 ```bash
-dotnet run --project MigrationTool/MigrationTool.csproj -- migrate scaffold <ContractName>
+dotnet build InterfaceDB.sln
 ```
 
-The tool walks adjacent versions and creates missing migration stubs under `MigrationTool/Migrations/<Contract>/`. Each stub:
+3. Run the console demo:
 
-* Derives from `StorageMigrationBase<TContract>` so version metadata is validated at runtime.
-* Uses `IStorageMigrationContext.ReadSourceAsync<T>()` to stream legacy payloads.
-* Persists new payloads with `WriteAsync` and deletes the old files when done.
+```bash
+dotnet run --project InterfaceDb.ConsoleApp/InterfaceDb.ConsoleApp.csproj
+```
 
-Use the generated comment blocks as placeholders for your conversion logic.
+The console app writes 500 sample `Person` records to a local `Data/` folder under its output directory, then runs a few simple existence and query checks.
 
-## Contributing
+4. Run the migration tool:
 
-* Keep generated code ASCII-only to avoid surprises in reviewers' editors.
-* Run `dotnet build MigrationTool/MigrationTool.csproj` before committing.
-* When adding new samples, mirror the structure used by `Dog` or `Person` so the scaffolding features stay consistent.
+```bash
+dotnet run --project MigrationTool/MigrationTool.csproj -- <command>
+```
 
-Happy migrating!
+## Storage model
 
+The storage stack is built around versioned interfaces:
 
+1. Define a contract interface, make it inherit `IStoredContract<TContract>`, and decorate it with `[StorageScope(VersionTag = "...")]`.
+2. Implement the contract in one or more concrete classes.
+3. Register the repository with `AddFileRepository<TContract>(...)`.
+4. Persist and query contracts through `IRepository<TContract>`.
+5. When the contract shape changes, generate the next baseline and implement the scaffolded migration logic.
 
+`IStoredContract<TContract>` exposes a getter-only `Envelope`. Concrete implementations should use a non-public setter such as `public IObjectEnvelope<TContract>? Envelope { get; private set; }`. The library sets and clears that property internally during wrap and unwrap operations.
 
+The default implementation stores MessagePack payloads on disk under a versioned directory layout:
+
+```text
+Data/
+  1.0.0/
+    00/
+    01/
+    ...
+```
+
+Directory sharding, write concurrency, cache hydration, and notification behavior are controlled through `StoragePolicy`.
+
+## Sample contract in this repo
+
+The sample storage project currently centers on `Person`:
+
+- Contracts live under `IdbDemoStorage/Contracts/Person/`.
+- Runtime implementations live under `IdbDemoStorage/Storage/Person/`.
+- Contract options live in `IdbDemoStorage/Options/PersonOptions.cs`.
+- Migration stubs live under `IdbDemoStorage/Migrations/Person/`.
+
+The sample includes two contract versions:
+
+- `v1_0_0` defines `Id`, `Name`, `Age`, and `Role`.
+- `v1_0_1` adds `Surname`.
+
+There is already a scaffolded migration at `IdbDemoStorage/Migrations/Person/Person_v1_0_0_To_v1_0_1_Migration.cs`. It is still sample code and should be treated as a starting point, not finished migration logic.
+
+## Migration tool workflow
+
+The `baseline` command creates or advances a contract under a contracts root such as `IdbDemoStorage/Contracts/<Contract>/vX_Y_Z/`.
+
+The command requires exactly one of:
+
+- `--contracts-dir <path>`
+- `--config-file-dir <path>`
+
+Important behavior:
+
+- `--contracts-dir` should point at the contracts root folder, not a single version folder.
+- `--config-file-dir` can point at a specific `*Options.cs` file or a directory that contains one.
+- When the tool increments an existing contract version, it also scaffolds any missing adjacent migration files automatically.
+- `migrate scaffold` can be used later to backfill missing migration files without creating a new baseline.
+- If a contract options file does not already exist, the tool scaffolds one into a sibling `Options/` folder.
+
+### Use absolute paths for CLI examples
+
+The tool normalizes user-supplied paths from its executable directory. In practice, the least surprising way to run it is to pass absolute paths.
+
+PowerShell example:
+
+```powershell
+$repo = (Resolve-Path .).Path
+$contracts = Join-Path $repo "IdbDemoStorage\Contracts"
+$storage = Join-Path $repo "IdbDemoStorage\Storage"
+$migrations = Join-Path $repo "IdbDemoStorage\Migrations"
+$personOptions = Join-Path $repo "IdbDemoStorage\Options\PersonOptions.cs"
+```
+
+### Create an initial contract baseline
+
+```powershell
+dotnet run --project MigrationTool/MigrationTool.csproj -- `
+  baseline Dog `
+  --contracts-dir $contracts `
+  --storage-dir $storage `
+  --migration-dir $migrations `
+  --impl Dog `
+  --version 1.0.0
+```
+
+This creates a new `Dog/v1_0_0/` baseline folder under the contracts root, prepares matching storage and migration folders, and scaffolds a contract options file if one does not already exist.
+
+### Increment an existing contract
+
+```powershell
+dotnet run --project MigrationTool/MigrationTool.csproj -- `
+  baseline Person `
+  --config-file-dir $personOptions `
+  --increment patch
+```
+
+If a previous baseline exists, the tool copies the latest version into the next semantic-version folder, updates the namespace and `VersionTag`, and scaffolds any missing adjacent migration classes.
+
+### Scaffold migrations without creating a new baseline
+
+```powershell
+dotnet run --project MigrationTool/MigrationTool.csproj -- `
+  migrate scaffold Person `
+  --config-file-dir $personOptions
+```
+
+This walks the known adjacent baseline versions and creates any missing migration stubs under the configured migrations root.
+
+## Benchmarks
+
+The benchmark projects are useful for comparing the file-backed repository against database-backed inserts, but they are not zero-config:
+
+- `StorageBenchmarks/` and `StorageBenchmarks.Transactions/` expect a SQL Server connection string in their `appsettings.json` files or environment variables.
+- The file-system benchmark setup currently writes under `G:\PerformanceTest\...`. Update the code if that path does not exist on your machine.
+
+Run them with:
+
+```bash
+dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release
+dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release
+```
+
+## Current state
+
+- The solution builds cleanly with `dotnet build InterfaceDB.sln`.
+- The repository currently has no dedicated test project in the solution.
+- Some sample namespaces still use the `MigrationTool.Contracts.*` naming pattern even when the files live under `IdbDemoStorage/`. Follow the actual project paths when navigating the repo.

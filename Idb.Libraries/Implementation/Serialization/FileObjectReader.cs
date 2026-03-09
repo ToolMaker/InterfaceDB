@@ -7,7 +7,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 namespace Idb.Libraries.Implementation.Serialization
 {
     public class FileObjectReader<TContract> : IObjectReader<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         private IObjectSerializer<TContract> _serializer;
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;

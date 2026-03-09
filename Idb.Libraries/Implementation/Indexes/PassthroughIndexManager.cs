@@ -17,7 +17,7 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
 public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
     
@@ -91,7 +91,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         {
             var entity = envelope.ObjectInstance
                 ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
-            entity.Envelope = envelope;
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
         }
     }

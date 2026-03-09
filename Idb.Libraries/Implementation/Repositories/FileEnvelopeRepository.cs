@@ -18,7 +18,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
 public sealed class FileEnvelopeRepository<TContract> : IEnvelopeRepository<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IServiceProvider _serviceProvider;

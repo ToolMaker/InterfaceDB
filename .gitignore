@@ -5,3 +5,4 @@ BenchmarkDotNet.Artifacts/results/*.*
 BenchmarkDotNet.Artifacts/*.log
 IdbDemoStorage/*
 NDependOut/*
+Idb.Libraries/artifacts/build/Debug/**

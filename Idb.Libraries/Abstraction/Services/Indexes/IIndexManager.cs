@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Abstractions.Services.Indexes;
 
@@ -13,7 +14,7 @@ namespace Idb.Libraries.Abstractions.Services.Indexes;
 /// </summary>
 /// <typeparam name="TContract">Contract interface managed by the index manager.</typeparam>
 public interface IIndexManager<TContract>
-    where TContract : class
+    where TContract : class, IStoredContract<TContract>
 {
     /// <summary>
     /// Persists an entity by wrapping it into an envelope, updating relevant indexes, and delegating to the storage repository.
