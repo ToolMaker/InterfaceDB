@@ -160,14 +160,13 @@ public static class BaselineGenerator
         var interfacePath = Path.Combine(targetDirectory.FullName, $"I{options.ContractName}.cs");
         var interfaceLines = new[]
         {
-            "using System.IO;",
             "using Idb.Libraries.Abstractions.Attributes;",
             "using Idb.Libraries.Abstractions.Dtos;",
             string.Empty,
             $"namespace {contractNamespace};",
             string.Empty,
             $"[StorageScope(VersionTag = \"{version}\")]",
-            $"public interface I{options.ContractName} : IRepoDto<I{options.ContractName}, FileInfo>",
+            $"public interface I{options.ContractName} : IStoredContract<I{options.ContractName}>",
             "{",
             "    // TODO: Define contract members for this version.",
             "}"
@@ -185,14 +184,13 @@ public static class BaselineGenerator
             var classPath = Path.Combine(targetDirectory.FullName, implementation + ".cs");
             var classLines = new[]
             {
-                "using System.IO;",
                 "using Idb.Libraries.Abstractions.Services.Serialization;",
                 string.Empty,
                 $"namespace {contractNamespace};",
                 string.Empty,
                 $"public sealed class {implementation} : I{options.ContractName}",
                 "{",
-                $"    public IObjectEnvelope<I{options.ContractName}, FileInfo>? Envelope {{ get; set; }}",
+                $"    public IObjectEnvelope<I{options.ContractName}>? Envelope {{ get; private set; }}",
                 string.Empty,
                 "    // TODO: Implement contract members.",
                 "}"

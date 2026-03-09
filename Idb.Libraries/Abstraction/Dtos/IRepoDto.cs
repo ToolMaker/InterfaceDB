@@ -1,18 +1,10 @@
-using Idb.Libraries.Abstractions.Services.Serialization;
-
 namespace Idb.Libraries.Abstractions.Dtos;
 
 /// <summary>
-/// Transport model that pairs a contract instance with its persistence envelope.
-/// Designed to be returned by higher-level abstractions such as <see cref="Services.Serialization.IEnvelopeRepository{TContractType}"/>.
+/// Backwards-compatible alias for the original envelope-bearing storage contract abstraction.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the DTO payload.</typeparam>
-/// <typeparam name="TLocationType">Descriptor used to locate the persisted payload.</typeparam>
-public interface IRepoDto<TContract>
-    where TContract : class, IRepoDto<TContract>
+public interface IRepoDto<TContract> : IStoredContract<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
-    /// <summary>
-    /// Envelope containing the serialized payload, version tag, and backing-location metadata for the contract instance.
-    /// </summary>
-    IObjectEnvelope<TContract>? Envelope { get; set; }
 }

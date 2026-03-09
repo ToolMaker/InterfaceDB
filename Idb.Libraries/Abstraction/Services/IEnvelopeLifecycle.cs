@@ -3,7 +3,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstraction.Services
 {
-    public interface IEnvelopeLifecycle<TContract> where TContract : class, IRepoDto<TContract>
+    public interface IEnvelopeLifecycle<TContract> where TContract : class, IStoredContract<TContract>
     {
         ValueTask<IObjectEnvelope<TContract>> WrapAsync(
         TContract entity

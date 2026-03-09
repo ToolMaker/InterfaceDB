@@ -8,7 +8,7 @@ namespace Idb.Libraries.Abstractions.Services
     /// </summary>
     /// <typeparam name="TContract">Contract type associated with the value.</typeparam>
     public interface IEnvelopeKeyAndLocationFactory<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         /// <summary>
         /// Sets the FileName and EnvelopeCacheKey properties on the envelope based on the contract instance.

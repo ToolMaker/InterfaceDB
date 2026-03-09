@@ -12,7 +12,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// materialized contract instance and its storage location.
 /// </summary>
 public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     public FileObjectEnvelope()
     {

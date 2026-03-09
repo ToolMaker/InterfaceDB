@@ -1,71 +1,89 @@
-# Copilot / AI agent instructions for TransactionManager
+# Copilot / AI agent instructions for InterfaceDB
 
-Purpose: Provide minimal, actionable repo-specific guidance so an AI coding agent can be productive immediately.
+Purpose: provide short, accurate repo-specific guidance so an AI coding agent can work productively without rediscovering the current project layout.
 
-Quick start (verified from repo README):
-- Tooling: this repo targets .NET 9 (preview). Ensure the .NET 9 SDK is installed.
-- Build the CLI (example):
-  - dotnet build MigrationTool/MigrationTool.csproj
-- Run the CLI or sample apps:
-  - dotnet run --project MigrationTool/MigrationTool.csproj -- <command>
-  - dotnet run --project IdbConsolePlayground/IdbConsolePlayground.csproj
+## Quick start
 
-Big picture (high level components and flows):
-- MigrationTool (MigrationTool/): CLI that creates versioned contract baselines and scaffolds migration stubs.
-  - Contracts are stored under `MigrationTool/Contracts/<Contract>/vX_Y_Z/` (example: `Dog/v1_0_1`).
-  - Generated migrations are placed under `MigrationTool/Migrations/<Contract>/`.
-  - Options that influence CLI behavior live in `MigrationTool/Options/` (e.g., `PersonOptions.cs`).
-- Library core: `Idb.Libraries/` — split into `Abstraction/` (DTOs, interfaces, options, attributes) and `Implementation/` (builders, services, concrete implementations).
-  - Use `Idb.Libraries/Abstraction/Services` for contracts/abstractions and `Idb.Libraries/Implementation/Services` for implementations.
-- Storage demos and tooling:
-  - `IdbDemoStorage/` and `IdbDemoStorage.Console/` show storage usage patterns.
-  - `IdbConsolePlayground/` is an interactive playground for experimenting with repository/index behavior.
-- Transport and host:
-  - `RepoTcpHost/` and `RepoTcpConsole/` implement the TCP host/client stack used for messaging; `RepoTcpHost/Serialization/` and `Transport/` contain codec and framing logic.
-- Tests groups: multiple `*.Tests/` projects exist that exercise behavior across components (e.g., `MigrationTool.Tests`, `RepoTcpHost.Tests`).
+- Target framework: .NET 9 (`net9.0`).
+- Build the full solution:
+  - `dotnet build InterfaceDB.sln`
+- Run the console demo:
+  - `dotnet run --project InterfaceDb.ConsoleApp/InterfaceDb.ConsoleApp.csproj`
+- Run the migration CLI:
+  - `dotnet run --project MigrationTool/MigrationTool.csproj -- <command>`
 
-Project-specific conventions and patterns (concrete, discoverable):
-- Version folders use underscores instead of dots: v1_0_1. Expect folder names like `MigrationTool/Contracts/Dog/v1_0_1/`.
-- `baseline` command does NOT scaffold migrations. Use `migrate scaffold` explicitly to generate migration stubs.
-  - Example: `dotnet run --project MigrationTool/MigrationTool.csproj -- migrate scaffold Dog --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations`
-- Generated migration stubs derive from `StorageMigrationBase<TContract>` and use `IStorageMigrationContext` methods:
-  - Read legacy payloads: `IStorageMigrationContext.ReadSourceAsync<T>()`
-  - Persist updated payloads: `WriteAsync(...)`
-  - Delete old files after successful upgrade.
-- Options/config discovery: the CLI can derive contract names and paths from a C# options file in `MigrationTool/Options/` (see README examples).
-- Generated code guidance: keep generated files ASCII-only (explicit rule in README).
+## Current repo shape
 
-Key files and examples to inspect when changing behavior:
-- Entry point for CLI: `MigrationTool/Program.cs` and `MigrationTool/MigrationTool.csproj`.
-- Baseline and migration logic: `MigrationTool/Contracts/`, `MigrationTool/Migrations/` (generated), and `MigrationTool/Options/`.
-- Library surface: `Idb.Libraries/Abstraction/` and `Idb.Libraries/Implementation/`.
-- TCP host/example runner: `RepoTcpHost/Program.cs`, `RepoTcpConsole/Program.cs`, and `RepoTcpHost/Transport/`.
-- Playground: `IdbConsolePlayground/Program.cs` for interactive experiments.
+- `Idb.Libraries/`
+  Core abstractions plus the file-backed repository implementation.
+- `MigrationTool/`
+  CLI for contract baseline generation and migration scaffolding.
+- `IdbDemoStorage/`
+  Sample `Person` contracts, storage implementations, options, and migrations.
+- `InterfaceDb.ConsoleApp/`
+  Demo app for repository usage.
+- `PerformanceCommon/`
+  Shared benchmark data helpers.
+- `StorageBenchmarks/` and `StorageBenchmarks.Transactions/`
+  Performance comparisons against SQL Server, Dapper, and EF Core.
 
-Build, test, and debug workflows (explicit commands):
-- Build single project:
-  - dotnet build <path-to-csproj>
-- Build the solution:
-  - dotnet build InterfaceDB.sln
-- Run the CLI or app with arguments:
-  - dotnet run --project MigrationTool/MigrationTool.csproj -- baseline Person --contracts-dir Contracts --storage-dir Storage --migration-dir Migrations
-- Run tests (per project or entire solution):
-  - dotnet test MigrationTool.Tests/MigrationTool.Tests.csproj
-  - dotnet test InterfaceDB.sln
-- Debug: run the desired `Program.cs` with `dotnet run --project <proj>` or attach a debugger to the process started by `dotnet run`/Visual Studio.
+Do not assume older projects still exist. `IdbConsolePlayground`, `RepoTcpHost`, `RepoTcpConsole`, and test projects referenced in older docs are not part of the current solution.
 
-Integration & external dependencies to be aware of:
-- File-backed storage: many components read/write to folders passed via CLI args (`--storage-dir`, `--contracts-dir`, `--migration-dir`). Keep paths relative to repo root in examples.
-- Networking: `RepoTcpHost/` and `RepoTcpConsole/` exercise TCP transport. Serialization and framing code live nearby; changing message formats requires touching `Serialization/` and `Transport/`.
-- The repo references packages via standard NuGet (project.assets.json present). Use `dotnet restore` implicitly via `dotnet build`.
+## Storage and migration conventions
 
-What to modify vs. where to add behavior:
-- Add new contracts and baselines under `MigrationTool/Contracts/<Name>/vX_Y_Z/`.
-- Implement migration logic in `MigrationTool/Migrations/<Name>/` stubs generated by `migrate scaffold`.
-- Add library features in `Idb.Libraries/Implementation/` and expose interfaces/DTOs in `Idb.Libraries/Abstraction/`.
+- Version folders use underscores: `v1_0_0`, `v1_0_1`, `v2_0_0`.
+- Storage-facing contract interfaces should inherit `IStoredContract<TContract>`.
+- Concrete implementations should expose `Envelope` with a non-public setter, for example `public IObjectEnvelope<TContract>? Envelope { get; private set; }`.
+- The active sample contract is `Person` under `IdbDemoStorage/Contracts/Person/`.
+- Storage implementations for the sample live under `IdbDemoStorage/Storage/Person/`.
+- Migration classes for the sample live under `IdbDemoStorage/Migrations/Person/`.
+- Some namespaces still use the `MigrationTool.Contracts.*` pattern even when the files are stored under `IdbDemoStorage/`.
 
-Safety notes for agents (do not guess non-discoverable facts):
-- Do not assume database-backed storage — this repo uses file-backed storage paths supplied to the CLI.
-- Follow the README examples for version naming and CLI switches — they are the source of truth.
+## MigrationTool behavior
 
-If anything here is unclear or you want more detail (for example: specific public APIs to call, common tests to reference, or standard locations for integration tests), say which area to expand and I will iterate.
+- `baseline` requires exactly one of:
+  - `--contracts-dir <path>`
+  - `--config-file-dir <path>`
+- `--contracts-dir` points at the contracts root, not an individual version folder.
+- `--config-file-dir` may point to a single `*Options.cs` file or a directory containing one.
+- When `baseline` increments an existing contract, the tool also scaffolds missing adjacent migration files automatically.
+- `migrate scaffold` backfills missing migration files without creating a new baseline.
+- The tool can scaffold a contract options file into a sibling `Options/` folder when one does not already exist.
+
+Prefer absolute paths in examples and tooling. The CLI normalizes user-supplied paths from its executable directory, so repo-relative arguments are easy to misread.
+
+## Key files
+
+- CLI entry point: `MigrationTool/Program.cs`
+- Baseline generation: `MigrationTool/BaselineGenerator.cs`
+- Migration scaffolding: `MigrationTool/MigrationScaffolder.cs`
+- Repository registration: `Idb.Libraries/Implementation/Extentions/RepositoryServiceCollectionExtensions.cs`
+- File repository core: `Idb.Libraries/Implementation/Repositories/FileEnvelopeRepository.cs`
+- Writer and reader: `Idb.Libraries/Implementation/Serialization/FileObjectWriter.cs`, `Idb.Libraries/Implementation/Serialization/FileObjectReader.cs`
+- Sample options: `IdbDemoStorage/Options/PersonOptions.cs`
+- Demo app: `InterfaceDb.ConsoleApp/Program.cs`
+
+## Build and verification guidance
+
+- Build solution:
+  - `dotnet build InterfaceDB.sln`
+- Run console demo:
+  - `dotnet run --project InterfaceDb.ConsoleApp/InterfaceDb.ConsoleApp.csproj`
+- Run benchmarks:
+  - `dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release`
+  - `dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release`
+
+There is no dedicated test project in the current solution. Validation is primarily build plus targeted app or benchmark execution.
+
+## Benchmark prerequisites
+
+- SQL benchmarks require a valid connection string in:
+  - `StorageBenchmarks/appsettings.json`
+  - `StorageBenchmarks.Transactions/appsettings.json`
+- File benchmarks currently write under `G:\PerformanceTest\...`. Change the code if that drive is unavailable.
+
+## Safety notes
+
+- Do not describe the old README as authoritative without checking the code first.
+- Do not assume relative CLI paths are repo-relative.
+- Treat scaffolded migrations as placeholders until the conversion logic is implemented.

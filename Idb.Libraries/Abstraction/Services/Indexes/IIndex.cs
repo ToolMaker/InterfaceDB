@@ -7,7 +7,7 @@ namespace Idb.Libraries.Abstractions.Services.Indexes;
 /// </summary>
 /// <typeparam name="TContract">Contract interface the index targets.</typeparam>
 public interface IIndex<TContract>
-    where TContract : class
+    where TContract : class, IStoredContract<TContract>
 {
     /// <summary>
     /// Logical name of the index (used for configuration and reporting).

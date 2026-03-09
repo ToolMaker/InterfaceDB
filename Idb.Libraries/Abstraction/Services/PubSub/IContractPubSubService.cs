@@ -8,7 +8,7 @@ namespace Idb.Libraries.Abstractions.Services.PubSub;
 /// </summary>
 /// <typeparam name="TContract">Event payload type.</typeparam>
 public interface IContractPubSubService<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     /// <summary>
     /// Registers a handler that should be invoked whenever a contract is added.

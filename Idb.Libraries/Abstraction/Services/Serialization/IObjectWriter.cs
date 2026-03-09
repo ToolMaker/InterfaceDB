@@ -10,7 +10,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     /// <typeparam name="TContract">Contract interface the writer persists.</typeparam>
     /// <typeparam name="TLocationType">Type describing where the payload will be written (file info, blob, etc.).</typeparam>
     public interface IObjectWriter<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         /// <summary>
         /// Persists the supplied contract instance and produces a fresh envelope describing the stored payload.

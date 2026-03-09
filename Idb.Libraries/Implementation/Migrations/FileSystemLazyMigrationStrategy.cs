@@ -15,7 +15,7 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Lazy migration strategy that upgrades payloads on-demand.
 /// </summary>
 public sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigrationStrategyBase<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     public FileSystemLazyMigrationStrategy(
         IDbContractConfigDto<TContract> contractConfig,

@@ -11,7 +11,7 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     /// <typeparam name="TContract">Contract interface associated with the reader instance.</typeparam>
     /// <typeparam name="TLocationType">Type describing where the payload lives (file system, blob, etc.).</typeparam>
     public interface IObjectReader<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         /// <summary>
         /// Streams every persisted envelope discovered under the supplied root location.

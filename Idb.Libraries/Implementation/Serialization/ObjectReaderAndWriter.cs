@@ -5,7 +5,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 namespace Idb.Libraries.Implementation.Serialization
 {
     public class ObjectReaderAndWriter<TContract> : IReaderAndWriter<TContract>
-        where TContract : class, IRepoDto<TContract>
+        where TContract : class, IStoredContract<TContract>
     {
         public ObjectReaderAndWriter(
             IObjectReader<TContract> reader,

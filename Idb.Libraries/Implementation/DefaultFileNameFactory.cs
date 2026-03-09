@@ -4,7 +4,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
 
 public class DefaultFileNameFactory<TContract> : IEnvelopeKeyAndLocationFactory<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _config;
     public DefaultFileNameFactory(IDbContractConfigDto<TContract> config)

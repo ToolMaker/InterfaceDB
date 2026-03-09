@@ -14,7 +14,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
 public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
     

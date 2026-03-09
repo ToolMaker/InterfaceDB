@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Repository;
 using System.Threading.Channels;
@@ -22,7 +23,7 @@ public static class RepositoryBulkExtensions
         IEnumerable<TContract> items,
         StoragePolicy? policy = null,
         CancellationToken cancellationToken = default)
-        where TContract : class
+        where TContract : class, IStoredContract<TContract>
     {
         if (repository is null)
         {

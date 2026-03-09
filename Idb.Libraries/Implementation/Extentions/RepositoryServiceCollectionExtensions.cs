@@ -26,7 +26,7 @@ namespace Idb.Libraries.Implementation.Extentions
             this IServiceCollection services,
             IDbContractConfigDto<TContract> contractConfig,
             MigrationStrategyType strategyType = MigrationStrategyType.None)
-            where TContract : class, IRepoDto<TContract>
+            where TContract : class, IStoredContract<TContract>
         {
             services.AddSingleton(contractConfig);
             services.AddSingleton(contractConfig);

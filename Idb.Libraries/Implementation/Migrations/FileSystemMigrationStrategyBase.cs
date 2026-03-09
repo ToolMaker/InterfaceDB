@@ -22,7 +22,7 @@ namespace Idb.Libraries.Implementation.Migrations;
 /// Shared migration helpers for file-system-backed strategies.
 /// </summary>
 public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStrategy<TContract>
-    where TContract : class, IRepoDto<TContract>
+    where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IReadOnlyList<MigrationDescriptor> _migrationDescriptors;

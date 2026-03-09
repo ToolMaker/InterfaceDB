@@ -728,7 +728,6 @@ internal static class Program
         var lines = new[]
         {
             "using System;",
-            "using System.IO;",
             "using Idb.Libraries.Abstractions.Dtos;",
             "using Idb.Libraries.Abstractions.Enums;",
             "using Idb.Libraries.Abstractions.Services.Indexes;",
@@ -737,7 +736,7 @@ internal static class Program
             $"namespace {namespaceName};",
             string.Empty,
             $"// TODO: Update the generic argument if your runtime contract type differs from {contractInterface}.",
-            $"public sealed class {className} : IDbContractConfigDto<{contractInterface}, FileInfo>",
+            $"public sealed class {className} : IDbContractConfigDto<{contractInterface}>",
             "{",
             $"    public string Key {{ get; set; }} = \"{sanitizedKey}\";",
             $"    public string ContractName {{ get; set; }} = \"{sanitizedContractName}\";",
