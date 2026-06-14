@@ -16,7 +16,7 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
         IServiceProvider serviceProvider,
         IReaderAndWriter<TContract> readerAndWriter,
         IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
-        : base(contractConfig, serviceProvider, readerAndWriter, envelopes, precreateShardFolders: false)
+        : base(contractConfig, serviceProvider, readerAndWriter, envelopes)
     {
     }
 }

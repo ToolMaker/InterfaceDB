@@ -17,16 +17,19 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly StoragePolicy _storagePolicy;
         private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
+        private readonly IFileWriteLock _fileWriteLock;
 
         public FileObjectWriter(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
             IDbContractConfigDto<TContract> contractConfig,
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+            IFileWriteLock fileWriteLock)
         {
             _serializer = serializer;
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
             _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+            _fileWriteLock = fileWriteLock ?? throw new ArgumentNullException(nameof(fileWriteLock));
             _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
@@ -68,31 +71,53 @@ namespace Idb.Libraries.Implementation.Serialization
                     Directory.CreateDirectory(dir);
                 }
 
-                if (_storagePolicy.UseSingleWriteBuffer)
-                {
-                    // Pre-serialize to one buffer and write once; avoids per-file FileStream internal buffer allocations
-                    var payload = _serializer.Serialize(envelope);
-                    using var handle = File.OpenHandle(path, FileMode.Create, FileAccess.Write, FileShare.None,
-                        options: FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    await RandomAccess.WriteAsync(handle, payload, 0, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    // Stream payload directly to disk to avoid large intermediate arrays
-                    var fso = new FileStreamOptions
-                    {
-                        Mode = FileMode.Create,
-                        Access = FileAccess.Write,
-                        Share = FileShare.None,
-                        Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-                        BufferSize = _storagePolicy.NormalizedBufferSize
-                    };
+                await using var writeLock = await _fileWriteLock.AcquireAsync(path, cancellationToken).ConfigureAwait(false);
+                var tempPath = CreateTempPath(path);
 
-                    using (var stream = new FileStream(path, fso))
+                try
+                {
+                    if (_storagePolicy.UseSingleWriteBuffer)
                     {
-                        await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
-                        // Rely on FileStream.Dispose to flush buffers; skipping per-write flush improves throughput under load.
+                        // Pre-serialize to one buffer and write once; avoids per-file FileStream internal buffer allocations
+                        var payload = _serializer.Serialize(envelope);
+                        using var handle = File.OpenHandle(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                            options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
+                        await RandomAccess.WriteAsync(handle, payload, 0, cancellationToken).ConfigureAwait(false);
                     }
+                    else
+                    {
+                        // Stream payload directly to disk to avoid large intermediate arrays
+                        var fso = new FileStreamOptions
+                        {
+                            Mode = FileMode.CreateNew,
+                            Access = FileAccess.Write,
+                            Share = FileShare.None,
+                            Options = FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough,
+                            BufferSize = _storagePolicy.NormalizedBufferSize
+                        };
+
+                        using (var stream = new FileStream(tempPath, fso))
+                        {
+                            await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+
+                    CommitTempFile(tempPath, path);
+                }
+                catch
+                {
+                    try
+                    {
+                        if (File.Exists(tempPath))
+                        {
+                            File.Delete(tempPath);
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    throw;
                 }
 
                 // Update envelope cache after successful persistence (policy-driven)
@@ -122,6 +147,20 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 semaphore?.Release();
             }
+        }
+
+        private static string CreateTempPath(string payloadPath)
+            => payloadPath + ".tmp." + Guid.NewGuid().ToString("N");
+
+        private static void CommitTempFile(string tempPath, string payloadPath)
+        {
+            if (File.Exists(payloadPath))
+            {
+                File.Replace(tempPath, payloadPath, destinationBackupFileName: null);
+                return;
+            }
+
+            File.Move(tempPath, payloadPath);
         }
     }
 }

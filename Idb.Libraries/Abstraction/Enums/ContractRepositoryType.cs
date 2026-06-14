@@ -15,9 +15,5 @@ public enum ContractRepositoryType
     /// </summary>
     FileSystem,
 
-    /// <summary>
-    /// Uses the sharded file-system backed repository implementation.
-    /// </summary>
-    ShardedFileSystem,
 }
 

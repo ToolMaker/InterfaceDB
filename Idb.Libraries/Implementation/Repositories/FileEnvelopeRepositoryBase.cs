@@ -24,7 +24,10 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private readonly string _dataRoot;
     private readonly IMigrationStrategy<TContract>? _migrationStrategy;
     private readonly IReaderAndWriter<TContract> _readerAndWriter;
-    private readonly bool _precreateShardFolders;
+    private readonly IEnvelopeStorageChangeSource<TContract>? _storageChangeSource;
+    private readonly IEnvelopeStorageChangeHandler<TContract>? _storageChangeHandler;
+    private Func<EnvelopeStorageChange, ValueTask>? _storageChangeSubscription;
+    private int _storageChangeSourceStarted;
 
     private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
@@ -36,15 +39,15 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         IDbContractConfigDto<TContract> contractConfig,
         IServiceProvider serviceProvider,
         IReaderAndWriter<TContract> readerAndWriter,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
-        bool precreateShardFolders)
+        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _migrationStrategy = (IMigrationStrategy<TContract>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract>));
+        _storageChangeSource = _serviceProvider.GetService<IEnvelopeStorageChangeSource<TContract>>();
+        _storageChangeHandler = _serviceProvider.GetService<IEnvelopeStorageChangeHandler<TContract>>();
         _readerAndWriter = readerAndWriter ?? throw new ArgumentNullException(nameof(readerAndWriter));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
-        _precreateShardFolders = precreateShardFolders;
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
         {
@@ -57,7 +60,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
         var activeVersionRoot = Path.Combine(_dataRoot, activeVersion);
         Directory.CreateDirectory(activeVersionRoot);
-        InitializeLayout(activeVersionRoot);
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
@@ -176,6 +178,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         {
             await HydrateCacheAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        await StartStorageChangeSourceAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
@@ -196,34 +200,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
             _envelopes[envelope.EnvelopeCacheKey] = envelope;
             yield return envelope;
-        }
-    }
-
-    private void InitializeLayout(string activeVersionRoot)
-    {
-        if (!_precreateShardFolders)
-        {
-            return;
-        }
-
-        var policy = _contractConfig.StoragePolicy ?? StoragePolicy.Default;
-        if (!policy.PrecreateShardFolders)
-        {
-            return;
-        }
-
-        try
-        {
-            for (int i = 0; i < 256; i++)
-            {
-                var shard = i.ToString("x2");
-                var shardDir = Path.Combine(activeVersionRoot, shard);
-                Directory.CreateDirectory(shardDir);
-            }
-        }
-        catch
-        {
-            // best-effort; writer still ensures directory exists
         }
     }
 
@@ -364,6 +340,80 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
     private static bool IsEagerStrategy(MigrationStrategyType strategy)
         => strategy is MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant;
+
+    private async ValueTask StartStorageChangeSourceAsync(CancellationToken cancellationToken)
+    {
+        if (_storageChangeSource is null
+            || _storageChangeHandler is null
+            || Interlocked.Exchange(ref _storageChangeSourceStarted, 1) != 0)
+        {
+            return;
+        }
+
+        _storageChangeSubscription = HandleStorageChangeAsync;
+        _storageChangeSource.Changed += _storageChangeSubscription;
+        await _storageChangeSource.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask HandleStorageChangeAsync(EnvelopeStorageChange change)
+    {
+        if (_storageChangeHandler is null)
+        {
+            return;
+        }
+
+        var result = await _storageChangeHandler.HandleAsync(change).ConfigureAwait(false);
+        switch (result.ChangeType)
+        {
+            case EnvelopeStorageChangeType.Created:
+                if (result.NewEnvelope is not null)
+                {
+                    await ContractStored(result.NewEnvelope).ConfigureAwait(false);
+                    await ContractAdded(result.NewEnvelope).ConfigureAwait(false);
+                }
+                break;
+
+            case EnvelopeStorageChangeType.Changed:
+                if (result.NewEnvelope is not null)
+                {
+                    await ContractStored(result.NewEnvelope).ConfigureAwait(false);
+                }
+                break;
+
+            case EnvelopeStorageChangeType.Deleted:
+                if (result.OldEnvelope is not null)
+                {
+                    await ContractDeleted(result.OldEnvelope).ConfigureAwait(false);
+                }
+                break;
+
+            case EnvelopeStorageChangeType.Renamed:
+                if (result.OldEnvelope is not null)
+                {
+                    await ContractRemoved(result.OldEnvelope).ConfigureAwait(false);
+                }
+
+                if (result.NewEnvelope is not null)
+                {
+                    await ContractStored(result.NewEnvelope).ConfigureAwait(false);
+                    await ContractAdded(result.NewEnvelope).ConfigureAwait(false);
+                }
+                break;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_storageChangeSource is not null)
+        {
+            if (_storageChangeSubscription is not null)
+            {
+                _storageChangeSource.Changed -= _storageChangeSubscription;
+            }
+
+            await _storageChangeSource.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 
     #region PubSub Area
     public IContractSubscription SubscribeToAdded(

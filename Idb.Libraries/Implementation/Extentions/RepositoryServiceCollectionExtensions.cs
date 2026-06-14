@@ -30,7 +30,6 @@ namespace Idb.Libraries.Implementation.Extentions
             return contractConfig.RepositoryType switch
             {
                 ContractRepositoryType.None or ContractRepositoryType.FileSystem => services.AddFileRepository(contractConfig, strategyType),
-                ContractRepositoryType.ShardedFileSystem => services.AddShardedFileRepository(contractConfig, strategyType),
                 _ => throw new InvalidOperationException($"Unsupported repository type '{contractConfig.RepositoryType}'.")
             };
         }
@@ -42,44 +41,32 @@ namespace Idb.Libraries.Implementation.Extentions
             where TContract : class, IStoredContract<TContract>
         {
             ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.FileSystem);
-            return AddRepositoryCore<TContract, FlatFileNameFactory<TContract>, FileEnvelopeRepository<TContract>>(
+            return AddRepositoryCore<TContract>(
                 services,
                 contractConfig,
                 strategyType);
         }
 
-        public static IServiceCollection AddShardedFileRepository<TContract>(
-            this IServiceCollection services,
-            IDbContractConfigDto<TContract> contractConfig,
-            MigrationStrategyType strategyType = MigrationStrategyType.None)
-            where TContract : class, IStoredContract<TContract>
-        {
-            ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.ShardedFileSystem);
-            return AddRepositoryCore<TContract, ShardedFileNameFactory<TContract>, ShardedFileEnvelopeRepository<TContract>>(
-                services,
-                contractConfig,
-                strategyType);
-        }
-
-        private static IServiceCollection AddRepositoryCore<TContract, TFileNameFactory, TEnvelopeRepository>(
+        private static IServiceCollection AddRepositoryCore<TContract>(
             IServiceCollection services,
             IDbContractConfigDto<TContract> contractConfig,
             MigrationStrategyType strategyType)
             where TContract : class, IStoredContract<TContract>
-            where TFileNameFactory : class, IEnvelopeKeyAndLocationFactory<TContract>
-            where TEnvelopeRepository : class, IEnvelopeRepository<TContract>
         {
             services.AddSingleton(contractConfig);
             services.AddSingleton<IDbContractConfigDto<TContract>>(contractConfig);
-            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract>, TFileNameFactory>();
+            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract>, FlatFileNameFactory<TContract>>();
 
             var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
             services.AddSingleton<IObjectSerializer<TContract>>(new BinaryObjectSerializer<TContract>(serializerOptions));
-            services.AddSingleton<IEnvelopeRepository<TContract>, TEnvelopeRepository>();
+            services.AddSingleton<IEnvelopeRepository<TContract>, FileEnvelopeRepository<TContract>>();
             services.AddSingleton<IIndexManager<TContract>, PassthroughIndexManager<TContract>>();
             services.AddTransient<IObjectEnvelope<TContract>, FileObjectEnvelope<TContract>>();
             services.AddSingleton<IEnvelopeLifecycle<TContract>, EnvelopeLifecycle<TContract>>();
             services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract>>>();
+            services.AddSingleton<IFileWriteLock, SidecarFileWriteLock<TContract>>();
+            services.AddSingleton<IEnvelopeStorageChangeSource<TContract>, FileEnvelopeStorageChangeSource<TContract>>();
+            services.AddSingleton<IEnvelopeStorageChangeHandler<TContract>, FileEnvelopeStorageChangeHandler<TContract>>();
             services.AddTransient<IObjectReader<TContract>, FileObjectReader<TContract>>();
             services.AddTransient<IObjectWriter<TContract>, FileObjectWriter<TContract>>();
             services.AddTransient<IReaderAndWriter<TContract>, ObjectReaderAndWriter<TContract>>();

@@ -35,7 +35,6 @@
     <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
     <Compile Include="Implementation\FlatFileNameFactory.cs" />
-    <Compile Include="Implementation\ShardedFileNameFactory.cs" />
     <Compile Include="Implementation\Extentions\RepositoryServiceCollectionExtensions.cs" />
     <Compile Include="Implementation\Extentions\StringExtensions.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
@@ -45,14 +44,16 @@
     <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepositoryBase.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
-    <Compile Include="Implementation\Repositories\ShardedFileEnvelopeRepository.cs" />
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
     <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
+    <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeHandler.cs" />
+    <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeSource.cs" />
     <Compile Include="Implementation\Serialization\FileObjectEnvelope.cs" />
     <Compile Include="Implementation\Serialization\FileObjectReader.cs" />
     <Compile Include="Implementation\Serialization\FileObjectWriter.cs" />
     <Compile Include="Implementation\Serialization\ObjectReaderAndWriter.cs" />
+    <Compile Include="Implementation\Serialization\SidecarFileWriteLock.cs" />
   </ItemGroup>
 
 </Project>
