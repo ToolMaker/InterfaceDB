@@ -222,7 +222,7 @@ public class TransactionBenchmarks : IDisposable
             ActiveVersion = "1.0.0",
             Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
             IndexProvisioningMode = IndexProvisioningModeType.None,
-            RepositoryType = ContractRepositoryType.ShardedFileSystem,
+            RepositoryType = ContractRepositoryType.FileSystem,
         };
 
         var services = new ServiceCollection();

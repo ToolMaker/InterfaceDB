@@ -1,6 +1,6 @@
 # InterfaceDB
 
-InterfaceDB is a sandbox for an interface-first storage stack. The repository combines a file-backed repository implementation, a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
+InterfaceDB is a sandbox for an interface-first object storage stack. The current baseline is a simple flat file-backed repository for desktop/mobile style local storage, plus a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
 
 ## Solution layout
 
@@ -48,13 +48,13 @@ The storage stack is built around versioned interfaces:
 
 1. Define a contract interface, make it inherit `IStoredContract<TContract>`, and decorate it with `[StorageScope(VersionTag = "...")]`.
 2. Implement the contract in one or more concrete classes.
-3. Register the repository with `AddRepository<TContract>(...)`, `AddFileRepository<TContract>(...)`, or `AddShardedFileRepository<TContract>(...)`.
+3. Register the repository with `AddRepository<TContract>(...)` or `AddFileRepository<TContract>(...)`.
 4. Persist and query contracts through `IRepository<TContract>`.
 5. When the contract shape changes, generate the next baseline and implement the scaffolded migration logic.
 
 `IStoredContract<TContract>` exposes a getter-only `Envelope`. Concrete implementations should use a non-public setter such as `public IObjectEnvelope<TContract>? Envelope { get; private set; }`. The library sets and clears that property internally during wrap and unwrap operations.
 
-The file-backed implementations store MessagePack payloads on disk under a versioned directory layout.
+The file-backed implementation stores MessagePack payloads on disk under a versioned directory layout.
 
 Flat file-system layout:
 
@@ -64,17 +64,7 @@ Data/
     <key>.mpk
 ```
 
-Sharded file-system layout:
-
-```text
-Data/
-  1.0.0/
-    00/
-    01/
-    ...
-```
-
-Select between flat and sharded storage with `ContractRepositoryType` or the corresponding DI registration method. `StoragePolicy` still controls write concurrency, cache hydration, notifications, and shard-folder precreation.
+This flat layout is the only active filesystem layout. Higher-throughput storage backends, such as SQL/document/object database envelope stores, are future roadmap work. `StoragePolicy` controls write concurrency, cache hydration, notifications, sidecar write locks, and file change watching.
 
 ## Sample contract in this repo
 

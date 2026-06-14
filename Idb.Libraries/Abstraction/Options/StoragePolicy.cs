@@ -48,6 +48,37 @@ public sealed record StoragePolicy
     public bool UseWriterSemaphore { get; init; } = true;
 
     /// <summary>
+    /// When true, file writes acquire a sidecar lock file before committing payload bytes.
+    /// This protects the same payload from concurrent writers across repository instances and processes.
+    /// </summary>
+    public bool UseSidecarWriteLocks { get; init; } = true;
+
+    /// <summary>
+    /// Maximum time to wait for a sidecar write lock before failing the write.
+    /// </summary>
+    public TimeSpan WriteLockTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Delay between sidecar write lock acquisition attempts.
+    /// </summary>
+    public TimeSpan WriteLockRetryDelay { get; init; } = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Age after which an unheld sidecar lock file can be treated as stale and removed.
+    /// </summary>
+    public TimeSpan StaleWriteLockTimeout { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// When true, file-system repositories watch committed payload files for external changes and keep the envelope cache in sync.
+    /// </summary>
+    public bool WatchStorageChanges { get; init; } = true;
+
+    /// <summary>
+    /// Delay used to coalesce repeated file-system notifications for the same payload path.
+    /// </summary>
+    public TimeSpan StorageChangeDebounce { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
     /// Buffer size (in bytes) used when streaming payloads to disk.
     /// Values less than or equal to zero fall back to <see cref="DefaultBufferSize"/>.
     /// </summary>
@@ -73,19 +104,6 @@ public sealed record StoragePolicy
     /// </summary>
     public bool HydrateOnInitialize { get; init; } = true;
 
-    /// <summary>
-    /// Legacy compatibility flag from when sharding was selected through storage policy.
-    /// Repository layout is now chosen via <c>ContractRepositoryType</c> and DI registration.
-    /// Flat and sharded repositories ignore this flag.
-    /// </summary>
-    public bool UseShardedDirectories { get; init; } = false;
-
-    /// <summary>
-    /// When true, the sharded file-system repository pre-creates 00-ff shard subfolders during initialization.
-    /// Flat file-system repositories ignore this setting.
-    /// </summary>
-    public bool PrecreateShardFolders { get; init; } = true;
-
     internal int NormalizedConcurrency
     {
         get
@@ -94,4 +112,20 @@ public sealed record StoragePolicy
             return candidate < 1 ? 1 : candidate;
         }
     }
+
+    internal TimeSpan NormalizedWriteLockTimeout => WriteLockTimeout <= TimeSpan.Zero
+        ? TimeSpan.FromSeconds(30)
+        : WriteLockTimeout;
+
+    internal TimeSpan NormalizedWriteLockRetryDelay => WriteLockRetryDelay <= TimeSpan.Zero
+        ? TimeSpan.FromMilliseconds(50)
+        : WriteLockRetryDelay;
+
+    internal TimeSpan NormalizedStaleWriteLockTimeout => StaleWriteLockTimeout <= TimeSpan.Zero
+        ? TimeSpan.FromMinutes(5)
+        : StaleWriteLockTimeout;
+
+    internal TimeSpan NormalizedStorageChangeDebounce => StorageChangeDebounce <= TimeSpan.Zero
+        ? TimeSpan.FromMilliseconds(100)
+        : StorageChangeDebounce;
 }
