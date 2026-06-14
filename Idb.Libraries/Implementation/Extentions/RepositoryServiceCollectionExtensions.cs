@@ -18,23 +18,64 @@ namespace Idb.Libraries.Implementation.Extentions
     using Idb.Libraries.Implementation.Serialization;
     using MessagePack;
     using Microsoft.Extensions.DependencyInjection;
-    // using IMigrationContract = Idb.Libraries.Abstraction.Services.Migrations.IMigration;
 
     public static class RepositoryServiceCollectionExtensions
     {
+        public static IServiceCollection AddRepository<TContract>(
+            this IServiceCollection services,
+            IDbContractConfigDto<TContract> contractConfig,
+            MigrationStrategyType strategyType = MigrationStrategyType.None)
+            where TContract : class, IStoredContract<TContract>
+        {
+            return contractConfig.RepositoryType switch
+            {
+                ContractRepositoryType.None or ContractRepositoryType.FileSystem => services.AddFileRepository(contractConfig, strategyType),
+                ContractRepositoryType.ShardedFileSystem => services.AddShardedFileRepository(contractConfig, strategyType),
+                _ => throw new InvalidOperationException($"Unsupported repository type '{contractConfig.RepositoryType}'.")
+            };
+        }
+
         public static IServiceCollection AddFileRepository<TContract>(
             this IServiceCollection services,
             IDbContractConfigDto<TContract> contractConfig,
             MigrationStrategyType strategyType = MigrationStrategyType.None)
             where TContract : class, IStoredContract<TContract>
         {
+            ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.FileSystem);
+            return AddRepositoryCore<TContract, FlatFileNameFactory<TContract>, FileEnvelopeRepository<TContract>>(
+                services,
+                contractConfig,
+                strategyType);
+        }
+
+        public static IServiceCollection AddShardedFileRepository<TContract>(
+            this IServiceCollection services,
+            IDbContractConfigDto<TContract> contractConfig,
+            MigrationStrategyType strategyType = MigrationStrategyType.None)
+            where TContract : class, IStoredContract<TContract>
+        {
+            ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.ShardedFileSystem);
+            return AddRepositoryCore<TContract, ShardedFileNameFactory<TContract>, ShardedFileEnvelopeRepository<TContract>>(
+                services,
+                contractConfig,
+                strategyType);
+        }
+
+        private static IServiceCollection AddRepositoryCore<TContract, TFileNameFactory, TEnvelopeRepository>(
+            IServiceCollection services,
+            IDbContractConfigDto<TContract> contractConfig,
+            MigrationStrategyType strategyType)
+            where TContract : class, IStoredContract<TContract>
+            where TFileNameFactory : class, IEnvelopeKeyAndLocationFactory<TContract>
+            where TEnvelopeRepository : class, IEnvelopeRepository<TContract>
+        {
             services.AddSingleton(contractConfig);
-            services.AddSingleton(contractConfig);
-            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract>, DefaultFileNameFactory<TContract>>();
+            services.AddSingleton<IDbContractConfigDto<TContract>>(contractConfig);
+            services.AddSingleton<IEnvelopeKeyAndLocationFactory<TContract>, TFileNameFactory>();
 
             var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
             services.AddSingleton<IObjectSerializer<TContract>>(new BinaryObjectSerializer<TContract>(serializerOptions));
-            services.AddSingleton<IEnvelopeRepository<TContract>, FileEnvelopeRepository<TContract>>();
+            services.AddSingleton<IEnvelopeRepository<TContract>, TEnvelopeRepository>();
             services.AddSingleton<IIndexManager<TContract>, PassthroughIndexManager<TContract>>();
             services.AddTransient<IObjectEnvelope<TContract>, FileObjectEnvelope<TContract>>();
             services.AddSingleton<IEnvelopeLifecycle<TContract>, EnvelopeLifecycle<TContract>>();
@@ -64,11 +105,24 @@ namespace Idb.Libraries.Implementation.Extentions
             services.AddSingleton<IRepository<TContract>>(sp =>
             {
                 var manager = sp.GetRequiredService<IIndexManager<TContract>>();
-                return new InterfaceRepositryDb<TContract>(manager);
+                var config = sp.GetRequiredService<IDbContractConfigDto<TContract>>();
+                return new InterfaceRepositryDb<TContract>(manager, config);
             });
 
             return services;
         }
-    }
 
+        private static void ValidateRepositoryType(
+            ContractRepositoryType configuredType,
+            ContractRepositoryType expectedType)
+        {
+            if (configuredType == ContractRepositoryType.None || configuredType == expectedType)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"Repository config declares '{configuredType}', but this registration expects '{expectedType}'.");
+        }
+    }
 }

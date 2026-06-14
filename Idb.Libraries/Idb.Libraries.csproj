@@ -1,18 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MessagePack" Version="3.1.4" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.7" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.7" />
-    <PackageReference Include="System.IO.Hashing" Version="9.0.0" />
+    <PackageReference Include="MessagePack" Version="3.1.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
+    <PackageReference Include="System.IO.Hashing" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,6 +34,8 @@
   <ItemGroup>
     <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\FlatFileNameFactory.cs" />
+    <Compile Include="Implementation\ShardedFileNameFactory.cs" />
     <Compile Include="Implementation\Extentions\RepositoryServiceCollectionExtensions.cs" />
     <Compile Include="Implementation\Extentions\StringExtensions.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
@@ -41,7 +43,9 @@
     <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
     <Compile Include="Implementation\Migrations\FileSystemLazyMigrationStrategy.cs" />
     <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />
+    <Compile Include="Implementation\Repositories\FileEnvelopeRepositoryBase.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
+    <Compile Include="Implementation\Repositories\ShardedFileEnvelopeRepository.cs" />
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
     <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />

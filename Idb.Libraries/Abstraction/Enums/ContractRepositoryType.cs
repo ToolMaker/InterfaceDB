@@ -11,8 +11,13 @@ public enum ContractRepositoryType
     None = 0,
 
     /// <summary>
-    /// Uses the file-system backed repository implementation.
+    /// Uses the flat file-system backed repository implementation.
     /// </summary>
     FileSystem,
+
+    /// <summary>
+    /// Uses the sharded file-system backed repository implementation.
+    /// </summary>
+    ShardedFileSystem,
 }
 

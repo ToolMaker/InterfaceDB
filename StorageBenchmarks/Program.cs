@@ -12,6 +12,7 @@ using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Implementation.Cache;
 using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Implementation.Extentions;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
@@ -42,8 +43,8 @@ public class PersonStorageBenchmark : IDisposable
     private DbContextOptions<StorageBenchmarks.Ef.BenchDbContext>? _efOptions;
     private static int _efLoggedException;
     private List<ContractPerson.IPerson>? _iterationPersons;
-    private IRepository<ContractPerson.IPerson> repository;
-    private StoragePolicy policy;
+    private IRepository<ContractPerson.IPerson> repository = null!;
+    private StoragePolicy policy = StoragePolicy.Default;
 
     internal static IConfiguration? Configuration { get; set; }
 
@@ -86,7 +87,8 @@ public class PersonStorageBenchmark : IDisposable
     [Benchmark(Description = "File system repository")]
     public async Task FileSystem_Store100()
     {
-        await repository.SaveManyAsync(_iterationPersons, policy).ConfigureAwait(false);
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
     }
 
     [GlobalSetup(Target = nameof(SqlServer_Store100))]
@@ -370,7 +372,7 @@ public class PersonStorageBenchmark : IDisposable
             ActiveVersion = "1.0.0",
             Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
             IndexProvisioningMode = IndexProvisioningModeType.None,
-            RepositoryType = ContractRepositoryType.FileSystem,
+            RepositoryType = ContractRepositoryType.ShardedFileSystem,
             StoragePolicy = StoragePolicy.Default with
             {
                 HydrateOnInitialize = false,
@@ -386,29 +388,7 @@ public class PersonStorageBenchmark : IDisposable
         };
 
         var services = new ServiceCollection();
-        services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson>>(options);
-        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson>, DefaultFileNameFactory<ContractPerson.IPerson>>();
-
-        var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
-
-        // Shared envelope cache used by reader, writer, and repository
-        services.AddSingleton<IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ContractPerson.IPerson>>, EnvelopeConcurrentDictionary<string, IObjectEnvelope<ContractPerson.IPerson>>>();
-
-        services.AddTransient<IObjectEnvelope<ContractPerson.IPerson>, FileObjectEnvelope<ContractPerson.IPerson>>();
-        services.AddSingleton<IEnvelopeLifecycle<ContractPerson.IPerson>, EnvelopeLifecycle<ContractPerson.IPerson>>();
-        services.AddTransient<IObjectReader<ContractPerson.IPerson>, FileObjectReader<ContractPerson.IPerson>>();
-        services.AddTransient<IObjectWriter<ContractPerson.IPerson>, FileObjectWriter<ContractPerson.IPerson>>();
-        services.AddTransient<IReaderAndWriter<ContractPerson.IPerson>, ObjectReaderAndWriter<ContractPerson.IPerson>>();
-
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
-        services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
-        {
-            var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson>(manager);
-        });
+        services.AddRepository<ContractPerson.IPerson>(options);
 
         return services.BuildServiceProvider();
     }

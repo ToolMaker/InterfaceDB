@@ -57,6 +57,11 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 // Ensure directory exists once per target path (reduce repeated OS calls)
                 var path = envelope.Location;
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    throw new InvalidOperationException("Envelope location must be initialized before writing.");
+                }
+
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(dir) && _ensuredDirs.TryAdd(dir, 0))
                 {
@@ -67,7 +72,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 {
                     // Pre-serialize to one buffer and write once; avoids per-file FileStream internal buffer allocations
                     var payload = _serializer.Serialize(envelope);
-                    using var handle = File.OpenHandle(path!, FileMode.Create, FileAccess.Write, FileShare.None,
+                    using var handle = File.OpenHandle(path, FileMode.Create, FileAccess.Write, FileShare.None,
                         options: FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await RandomAccess.WriteAsync(handle, payload, 0, cancellationToken).ConfigureAwait(false);
                 }

@@ -8,6 +8,7 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Extentions;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
@@ -221,24 +222,11 @@ public class TransactionBenchmarks : IDisposable
             ActiveVersion = "1.0.0",
             Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
             IndexProvisioningMode = IndexProvisioningModeType.None,
-            RepositoryType = ContractRepositoryType.FileSystem,
+            RepositoryType = ContractRepositoryType.ShardedFileSystem,
         };
 
         var services = new ServiceCollection();
-        services.AddSingleton(options);
-        services.AddSingleton<IDbContractConfigDto<ContractPerson.IPerson>>(options);
-        services.AddSingleton<IEnvelopeKeyAndLocationFactory<ContractPerson.IPerson>, DefaultFileNameFactory<ContractPerson.IPerson>>();
-
-        var serializerOptions = MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
-        services.AddSingleton<IObjectSerializer<ContractPerson.IPerson>>(new BinaryObjectSerializer<ContractPerson.IPerson>(serializerOptions));
-
-        services.AddSingleton<IEnvelopeRepository<ContractPerson.IPerson>, FileEnvelopeRepository<ContractPerson.IPerson>>();
-        services.AddSingleton<IIndexManager<ContractPerson.IPerson>, PassthroughIndexManager<ContractPerson.IPerson>>();
-        services.AddSingleton<IRepository<ContractPerson.IPerson>>(sp =>
-        {
-            var manager = sp.GetRequiredService<IIndexManager<ContractPerson.IPerson>>();
-            return new InterfaceRepositryDb<ContractPerson.IPerson>(manager);
-        });
+        services.AddRepository<ContractPerson.IPerson>(options);
 
         return services.BuildServiceProvider();
     }

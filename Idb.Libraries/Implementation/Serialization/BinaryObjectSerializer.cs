@@ -86,14 +86,19 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             var version = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
             var cacheKey = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
             var typeName = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
-            var type = ResolveType(typeName);
-            var instance = MessagePackSerializer.Deserialize(type!, ms, _fastOptions);
+            var type = ResolveType(typeName)
+                ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
+            var instance = MessagePackSerializer.Deserialize(type, ms, _fastOptions);
+            if (instance is not TContract contractInstance)
+            {
+                throw new InvalidOperationException($"Serialized payload type '{type.FullName}' is not assignable to '{typeof(TContract).FullName}'.");
+            }
 
             var envelope = new PlainEnvelope
             {
                 VersionTag = version,
                 EnvelopeCacheKey = cacheKey,
-                ObjectInstance = (TContract)instance,
+                ObjectInstance = contractInstance,
                 Location = default!
             };
             return envelope;
@@ -238,14 +243,19 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             var version = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var cacheKey = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var typeName = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            var type = ResolveType(typeName);
-            var instanceObj = await MessagePackSerializer.DeserializeAsync(type!, source, _fastOptions, cancellationToken).ConfigureAwait(false);
+            var type = ResolveType(typeName)
+                ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
+            var instanceObj = await MessagePackSerializer.DeserializeAsync(type, source, _fastOptions, cancellationToken).ConfigureAwait(false);
+            if (instanceObj is not TContract contractInstance)
+            {
+                throw new InvalidOperationException($"Serialized payload type '{type.FullName}' is not assignable to '{typeof(TContract).FullName}'.");
+            }
 
             var env = new PlainEnvelope
             {
                 VersionTag = version,
                 EnvelopeCacheKey = cacheKey,
-                ObjectInstance = (TContract)instanceObj,
+                ObjectInstance = contractInstance,
                 Location = default!
             };
             return env;
