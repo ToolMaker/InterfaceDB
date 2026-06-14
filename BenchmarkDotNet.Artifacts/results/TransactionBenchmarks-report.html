@@ -2,7 +2,7 @@
 <html lang='en'>
 <head>
 <meta charset='utf-8' />
-<title>TransactionBenchmarks-20251023-135014</title>
+<title>TransactionBenchmarks-20260309-210326</title>
 
 <style type="text/css">
 	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
@@ -13,21 +13,21 @@
 </head>
 <body>
 <pre><code>
-BenchmarkDotNet v0.13.12, Windows 10 (10.0.19045.6332/22H2/2022Update)
+BenchmarkDotNet v0.13.12, Windows 10 (10.0.19045.6937/22H2/2022Update)
 AMD Ryzen 9 3950X, 1 CPU, 32 logical and 16 physical cores
-.NET SDK 9.0.306
-  [Host]     : .NET 9.0.10 (9.0.1025.47515), X64 RyuJIT AVX2
-  Job-AVRYPF : .NET 9.0.10 (9.0.1025.47515), X64 RyuJIT AVX2
+.NET SDK 10.0.102
+  [Host]     : .NET 9.0.13 (9.0.1326.6317), X64 RyuJIT AVX2
+  Job-ULKJYT : .NET 9.0.13 (9.0.1326.6317), X64 RyuJIT AVX2
 </code></pre>
 <pre><code>InvocationCount=1  UnrollFactor=1  
 </code></pre>
 
 <table>
-<thead><tr><th>Method                                             </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Median</th><th>Gen0</th><th>Gen1</th><th>Allocated</th>
+<thead><tr><th>Method                                             </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0 </th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
 </tr>
-</thead><tbody><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>9.250 s</td><td>0.1796 s</td><td>0.2271 s</td><td>9.250 s</td><td>17000.0000</td><td>6000.0000</td><td>135.98 MB</td>
-</tr><tr><td>&#39;SQL Server (transaction) - store 50k persons&#39;</td><td>3.039 s</td><td>0.0930 s</td><td>0.2654 s</td><td>3.024 s</td><td>4000.0000</td><td>1000.0000</td><td>38.53 MB</td>
-</tr><tr><td>&#39;Dapper (transaction) - store 50k persons&#39;</td><td>3.498 s</td><td>0.0832 s</td><td>0.2374 s</td><td>3.414 s</td><td>17000.0000</td><td>1000.0000</td><td>136.95 MB</td>
+</thead><tbody><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>4.283 s</td><td>0.0830 s</td><td>0.1050 s</td><td>102000.0000</td><td>71000.0000</td><td>1000.0000</td><td>483.65 MB</td>
+</tr><tr><td>&#39;SQL Server (transaction) - store 50k persons&#39;</td><td>3.376 s</td><td>0.0674 s</td><td>0.1810 s</td><td>4000.0000</td><td>1000.0000</td><td>-</td><td>38.53 MB</td>
+</tr><tr><td>&#39;Dapper (transaction) - store 50k persons&#39;</td><td>3.636 s</td><td>0.0690 s</td><td>0.1226 s</td><td>17000.0000</td><td>1000.0000</td><td>-</td><td>136.95 MB</td>
 </tr></tbody></table>
 </body>
 </html>

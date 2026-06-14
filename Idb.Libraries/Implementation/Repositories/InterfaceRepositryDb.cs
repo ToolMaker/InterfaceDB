@@ -17,12 +17,21 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
-    
+    private readonly ContractRepositoryType _repositoryType;
 
     public InterfaceRepositryDb(
-        IIndexManager<TContract> indexManager)
+        IIndexManager<TContract> indexManager,
+        IDbContractConfigDto<TContract> contractConfig)
     {
         _indexManager = indexManager ?? throw new ArgumentNullException(nameof(indexManager));
+        if (contractConfig is null)
+        {
+            throw new ArgumentNullException(nameof(contractConfig));
+        }
+
+        _repositoryType = contractConfig.RepositoryType is ContractRepositoryType.None
+            ? ContractRepositoryType.FileSystem
+            : contractConfig.RepositoryType;
 
         var contractType = typeof(TContract);
         if (!contractType.IsInterface)
@@ -36,7 +45,7 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         }
     }
 
-    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
+    public ContractRepositoryType RepositoryType => _repositoryType;
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         => _indexManager.InitializeAsync(cancellationToken);
@@ -77,4 +86,3 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return _indexManager.ExistsAsync(entityToCheck, cancellationToken);
     }
 }
-

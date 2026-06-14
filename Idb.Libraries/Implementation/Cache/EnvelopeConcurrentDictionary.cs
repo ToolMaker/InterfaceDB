@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 namespace Idb.Libraries.Implementation.Cache
 {
     public class EnvelopeConcurrentDictionary<TKey, TValue> : ConcurrentDictionary<TKey,TValue>,IEnvelopeDictionaryCaheManager<TKey,TValue>
+        where TKey : notnull
     {
     }
 }

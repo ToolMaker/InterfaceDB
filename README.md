@@ -21,7 +21,7 @@ InterfaceDB is a sandbox for an interface-first storage stack. The repository co
 
 ## Build and run
 
-1. Install the .NET 9 SDK.
+1. Install the .NET 10 SDK.
 2. Build the solution:
 
 ```bash
@@ -48,13 +48,23 @@ The storage stack is built around versioned interfaces:
 
 1. Define a contract interface, make it inherit `IStoredContract<TContract>`, and decorate it with `[StorageScope(VersionTag = "...")]`.
 2. Implement the contract in one or more concrete classes.
-3. Register the repository with `AddFileRepository<TContract>(...)`.
+3. Register the repository with `AddRepository<TContract>(...)`, `AddFileRepository<TContract>(...)`, or `AddShardedFileRepository<TContract>(...)`.
 4. Persist and query contracts through `IRepository<TContract>`.
 5. When the contract shape changes, generate the next baseline and implement the scaffolded migration logic.
 
 `IStoredContract<TContract>` exposes a getter-only `Envelope`. Concrete implementations should use a non-public setter such as `public IObjectEnvelope<TContract>? Envelope { get; private set; }`. The library sets and clears that property internally during wrap and unwrap operations.
 
-The default implementation stores MessagePack payloads on disk under a versioned directory layout:
+The file-backed implementations store MessagePack payloads on disk under a versioned directory layout.
+
+Flat file-system layout:
+
+```text
+Data/
+  1.0.0/
+    <key>.mpk
+```
+
+Sharded file-system layout:
 
 ```text
 Data/
@@ -64,7 +74,7 @@ Data/
     ...
 ```
 
-Directory sharding, write concurrency, cache hydration, and notification behavior are controlled through `StoragePolicy`.
+Select between flat and sharded storage with `ContractRepositoryType` or the corresponding DI registration method. `StoragePolicy` still controls write concurrency, cache hydration, notifications, and shard-folder precreation.
 
 ## Sample contract in this repo
 

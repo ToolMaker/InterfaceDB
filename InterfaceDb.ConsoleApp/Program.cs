@@ -12,7 +12,7 @@ Directory.SetCurrentDirectory(AppContext.BaseDirectory);
 var personOptions = new PersonOptions();
 
 var services = new ServiceCollection();
-services.AddFileRepository<ContractPerson.IPerson>(personOptions, MigrationStrategyType.None);
+services.AddRepository<ContractPerson.IPerson>(personOptions, MigrationStrategyType.None);
 
 using var serviceProvider = services.BuildServiceProvider();
 var repository = serviceProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();

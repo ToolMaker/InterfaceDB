@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 namespace Idb.Libraries.Abstraction.Services.Cache
 {
     public interface IEnvelopeDictionaryCaheManager<TKey,TValue> : IDictionary<TKey,TValue>
+        where TKey : notnull
     {
 
     }
