@@ -43,8 +43,17 @@ public sealed class LockingIntegrationTests
             process.ExitCode,
             $"Integration harness failed.{Environment.NewLine}STDOUT:{Environment.NewLine}{standardOutput}{Environment.NewLine}STDERR:{Environment.NewLine}{standardError}");
 
-        StringAssert.Contains(standardOutput, "PASS single save cleans sidecar artifacts");
+        StringAssert.Contains(standardOutput, "PASS single save cleans write artifacts");
+        StringAssert.Contains(standardOutput, "PASS single cardinality rejects detached duplicates and permits loaded updates");
+        StringAssert.Contains(standardOutput, "PASS single cardinality is atomic across repository instances");
+        StringAssert.Contains(standardOutput, "PASS multiple cardinality creates distinct physical objects");
+        StringAssert.Contains(standardOutput, "PASS repository query cardinality methods enforce result bounds");
         StringAssert.Contains(standardOutput, "PASS two processes can write the same payload");
+        StringAssert.Contains(standardOutput, "PASS losing proposal returns and caches canonical winner");
+        StringAssert.Contains(standardOutput, "PASS initialization commits newest abandoned proposal");
+        StringAssert.Contains(standardOutput, "PASS eager migration drains proposals before migrating");
+        StringAssert.Contains(standardOutput, "PASS encrypted storage round trips and rejects tampering");
+        StringAssert.Contains(standardOutput, "PASS encrypted eager migration drains and migrates proposals");
         StringAssert.Contains(standardOutput, "All integration tests passed.");
     }
 }

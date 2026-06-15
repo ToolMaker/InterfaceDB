@@ -1,7 +1,9 @@
 ﻿using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
 
@@ -17,19 +19,22 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly StoragePolicy _storagePolicy;
         private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
-        private readonly IFileWriteLock _fileWriteLock;
+        private readonly IFileWriteCoordinator _fileWriteCoordinator;
+        private readonly IEnvelopeKeyAndLocationFactory<TContract> _keyAndLocationFactory;
 
         public FileObjectWriter(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
             IDbContractConfigDto<TContract> contractConfig,
             IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
-            IFileWriteLock fileWriteLock)
+            IFileWriteCoordinator fileWriteCoordinator,
+            IEnvelopeKeyAndLocationFactory<TContract> keyAndLocationFactory)
         {
             _serializer = serializer;
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
             _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
-            _fileWriteLock = fileWriteLock ?? throw new ArgumentNullException(nameof(fileWriteLock));
+            _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
+            _keyAndLocationFactory = keyAndLocationFactory ?? throw new ArgumentNullException(nameof(keyAndLocationFactory));
             _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
@@ -46,6 +51,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 throw new ArgumentNullException(nameof(objectInstance));
             }
 
+            var isNewStorageObject = objectInstance.Envelope is null;
             var envelope = await _envelopeLifecycle
             .WrapAsync(objectInstance)
             .ConfigureAwait(false);
@@ -71,77 +77,76 @@ namespace Idb.Libraries.Implementation.Serialization
                     Directory.CreateDirectory(dir);
                 }
 
-                await using var writeLock = await _fileWriteLock.AcquireAsync(path, cancellationToken).ConfigureAwait(false);
-                var tempPath = CreateTempPath(path);
-
-                try
-                {
-                    if (_storagePolicy.UseSingleWriteBuffer)
+                var proposalIsCanonical = await _fileWriteCoordinator.PublishAndCommitAsync(
+                    path,
+                    requireNewPayload: isNewStorageObject
+                        && _keyAndLocationFactory.ObjectCardinality == StorageObjectCardinality.Single,
+                    async (proposalPath, token) =>
                     {
-                        // Pre-serialize to one buffer and write once; avoids per-file FileStream internal buffer allocations
-                        var payload = _serializer.Serialize(envelope);
-                        using var handle = File.OpenHandle(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                            options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
-                        await RandomAccess.WriteAsync(handle, payload, 0, cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        // Stream payload directly to disk to avoid large intermediate arrays
-                        var fso = new FileStreamOptions
+                        if (_storagePolicy.UseSingleWriteBuffer)
                         {
-                            Mode = FileMode.CreateNew,
-                            Access = FileAccess.Write,
-                            Share = FileShare.None,
-                            Options = FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough,
-                            BufferSize = _storagePolicy.NormalizedBufferSize
-                        };
-
-                        using (var stream = new FileStream(tempPath, fso))
-                        {
-                            await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
+                            // Publish only after a complete payload has been flushed to disk.
+                            var payload = _serializer.Serialize(envelope);
+                            using var handle = File.OpenHandle(
+                                proposalPath,
+                                FileMode.CreateNew,
+                                FileAccess.Write,
+                                FileShare.None,
+                                options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
+                            await RandomAccess.WriteAsync(handle, payload, 0, token).ConfigureAwait(false);
+                            RandomAccess.FlushToDisk(handle);
                         }
-                    }
-
-                    CommitTempFile(tempPath, path);
-                }
-                catch
-                {
-                    try
-                    {
-                        if (File.Exists(tempPath))
+                        else
                         {
-                            File.Delete(tempPath);
-                        }
-                    }
-                    catch
-                    {
-                    }
+                            var fso = new FileStreamOptions
+                            {
+                                Mode = FileMode.CreateNew,
+                                Access = FileAccess.Write,
+                                Share = FileShare.None,
+                                Options = FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough,
+                                BufferSize = _storagePolicy.NormalizedBufferSize
+                            };
 
-                    throw;
-                }
+                            await using var stream = new FileStream(proposalPath, fso);
+                            await _serializer.SerializeAsync(envelope, stream, token).ConfigureAwait(false);
+                            await stream.FlushAsync(token).ConfigureAwait(false);
+                            stream.Flush(flushToDisk: true);
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                var canonicalEnvelope = proposalIsCanonical
+                    ? envelope
+                    : await ReadCanonicalEnvelopeAsync(
+                        path,
+                        envelope.EnvelopeCacheKey,
+                        cancellationToken).ConfigureAwait(false);
 
                 // Update envelope cache after successful persistence (policy-driven)
-                if (_storagePolicy.CacheEnvelopeOnWrite && !string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+                if (_storagePolicy.CacheEnvelopeOnWrite && !string.IsNullOrWhiteSpace(canonicalEnvelope.EnvelopeCacheKey))
                 {
                     if (_storagePolicy.KeepObjectInstanceInCacheOnWrite)
                     {
-                        _envelopes[envelope.EnvelopeCacheKey] = envelope;
+                        _envelopes[canonicalEnvelope.EnvelopeCacheKey] = canonicalEnvelope;
                     }
                     else
                     {
                         // Cache a lightweight skeleton to avoid retaining the full object graph in memory
                         var skeleton = new FileObjectEnvelope<TContract>(_contractConfig)
                         {
-                            EnvelopeCacheKey = envelope.EnvelopeCacheKey,
-                            VersionTag = envelope.VersionTag,
-                            Location = envelope.Location,
+                            EnvelopeCacheKey = canonicalEnvelope.EnvelopeCacheKey,
+                            VersionTag = canonicalEnvelope.VersionTag,
+                            Location = canonicalEnvelope.Location,
                             ObjectInstance = null
                         };
-                        _envelopes[envelope.EnvelopeCacheKey] = skeleton;
+                        _envelopes[canonicalEnvelope.EnvelopeCacheKey] = skeleton;
                     }
                 }
 
-                return _envelopeLifecycle.Unwrap(envelope);
+                _envelopeLifecycle.Unwrap(envelope);
+                return ReferenceEquals(canonicalEnvelope, envelope)
+                    ? objectInstance
+                    : _envelopeLifecycle.Unwrap(canonicalEnvelope);
             }
             finally
             {
@@ -149,18 +154,36 @@ namespace Idb.Libraries.Implementation.Serialization
             }
         }
 
-        private static string CreateTempPath(string payloadPath)
-            => payloadPath + ".tmp." + Guid.NewGuid().ToString("N");
-
-        private static void CommitTempFile(string tempPath, string payloadPath)
+        private async ValueTask<IObjectEnvelope<TContract>> ReadCanonicalEnvelopeAsync(
+            string path,
+            string expectedCacheKey,
+            CancellationToken cancellationToken)
         {
-            if (File.Exists(payloadPath))
+            const int attempts = 5;
+            for (var attempt = 1; attempt <= attempts; attempt++)
             {
-                File.Replace(tempPath, payloadPath, destinationBackupFileName: null);
-                return;
+                try
+                {
+                    await using var stream = new FileStream(
+                        path,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete,
+                        _storagePolicy.NormalizedBufferSize,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    var canonical = await _serializer.DeserializeAsync(stream, cancellationToken).ConfigureAwait(false);
+                    canonical.Location = path;
+                    canonical.EnvelopeCacheKey = expectedCacheKey;
+                    return canonical;
+                }
+                catch (IOException) when (attempt < attempts)
+                {
+                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                }
             }
 
-            File.Move(tempPath, payloadPath);
+            throw new IOException($"Unable to read canonical payload '{path}' after coalescing.");
         }
+
     }
 }

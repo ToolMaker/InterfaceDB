@@ -174,7 +174,8 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
         var fileName = Path.GetFileName(path);
         if (string.IsNullOrWhiteSpace(fileName)
             || fileName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)
-            || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
+            || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains(".pending.", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

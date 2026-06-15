@@ -2,6 +2,7 @@ using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using System.Runtime.CompilerServices;
 
@@ -19,9 +20,11 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
         IEnvelopeKeyAndLocationFactory<TContract> factory,
+        IEncryptor encryptor,
+        IFileWriteCoordinator fileWriteCoordinator,
         IObjectReader<TContract> reader,
         IObjectWriter<TContract> writer)
-        : base(contractConfig, serializer, factory, migrations, strategyType, reader, writer)
+        : base(contractConfig, serializer, factory, migrations, strategyType, encryptor, fileWriteCoordinator, reader, writer)
     {
         if (strategyType is not (MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant))
         {

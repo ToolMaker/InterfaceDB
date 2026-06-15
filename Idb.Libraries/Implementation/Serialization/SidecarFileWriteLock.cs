@@ -120,7 +120,10 @@ public sealed class SidecarFileWriteLock<TContract> : IFileWriteLock
                 return;
             }
 
-            lockInfo.Delete();
+            using (new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+            }
+            File.Delete(lockPath);
         }
         catch
         {

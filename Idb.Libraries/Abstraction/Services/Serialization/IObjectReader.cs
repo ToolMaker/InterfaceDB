@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Threading;
 using Idb.Libraries.Abstractions.Dtos;
 
@@ -13,17 +12,6 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
     public interface IObjectReader<TContract>
         where TContract : class, IStoredContract<TContract>
     {
-        /// <summary>
-        /// Streams every persisted envelope discovered under the supplied root location.
-        /// Implementations walk provider-specific layouts (folders, buckets, partitions) and hydrate envelopes on demand.
-        /// </summary>
-        /// <param name="rootLocationOfContract">Root descriptor (e.g., directory, container) that contains all contract versions.</param>
-        /// <param name="cancellationToken">Token that propagates cancellation.</param>
-        /// <returns>Async sequence of envelopes paired with their storage metadata.</returns>
-        IAsyncEnumerable<TContract> ReadAsync(
-            string rootLocationOfContract,
-            CancellationToken cancellationToken = default);
-
         Task<TContract> ReadAsync(
             FileInfo file,
             CancellationToken cancellationToken = default);

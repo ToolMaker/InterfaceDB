@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 
@@ -60,18 +61,77 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
     public async ValueTask<TContract> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default)
-    {
-        if (filterFunction is null)
-        {
-            throw new ArgumentNullException(nameof(filterFunction));
-        }
+        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ?? null!;
 
-        await foreach (var match in _indexManager.QueryAsync(filterFunction, cancellationToken).ConfigureAwait(false))
+    public IAsyncEnumerable<TContract> QueryManyAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filterFunction);
+        return _indexManager.QueryAsync(filterFunction, cancellationToken);
+    }
+
+    public async ValueTask<TContract?> QueryFirstAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+    {
+        await foreach (var match in QueryManyAsync(filterFunction, cancellationToken).ConfigureAwait(false))
         {
             return match;
         }
 
-        return null!;
+        return null;
+    }
+
+    public async ValueTask<TContract> QuerySingleAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? noneExceptionFactory = null,
+        Func<Exception>? multipleExceptionFactory = null)
+    {
+        await using var enumerator = QueryManyAsync(filterFunction, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                noneExceptionFactory,
+                RepositoryQueryCardinalityException.NoMatches);
+        }
+
+        var single = enumerator.Current;
+        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                multipleExceptionFactory,
+                RepositoryQueryCardinalityException.MultipleMatches);
+        }
+
+        return single;
+    }
+
+    public async ValueTask<TContract?> QuerySingleOrDefaultAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? multipleExceptionFactory = null)
+    {
+        await using var enumerator = QueryManyAsync(filterFunction, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var single = enumerator.Current;
+        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                multipleExceptionFactory,
+                RepositoryQueryCardinalityException.MultipleMatches);
+        }
+
+        return single;
     }
 
     public ValueTask<bool> ExistsAsync(
@@ -84,5 +144,14 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         }
 
         return _indexManager.ExistsAsync(entityToCheck, cancellationToken);
+    }
+
+    private static Exception CreateException(
+        Func<Exception>? exceptionFactory,
+        Func<Exception> defaultFactory)
+    {
+        var exception = (exceptionFactory ?? defaultFactory)();
+        return exception
+            ?? throw new InvalidOperationException("A repository query exception factory returned null.");
     }
 }

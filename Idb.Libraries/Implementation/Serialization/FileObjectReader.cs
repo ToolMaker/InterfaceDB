@@ -25,13 +25,10 @@ namespace Idb.Libraries.Implementation.Serialization
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         }
 
-        public IAsyncEnumerable<TContract> ReadAsync(string rootLocationOfContract, CancellationToken cancellationToken = default)
-        {
-            throw new NotImplementedException();
-        }
-
         public async Task<TContract> ReadAsync(FileInfo file, CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(file);
+
             // Try cache by conventional key (file name without extension)
             var candidateKey = Path.GetFileNameWithoutExtension(file.Name);
             if (!string.IsNullOrWhiteSpace(candidateKey) && _envelopes.TryGetValue(candidateKey, out var cached) && cached is not null)
@@ -74,6 +71,13 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 envelope = await _serializer.DeserializeAsync(stream, cancellationToken).ConfigureAwait(false);
             }
+
+            envelope.Location = file.FullName;
+            if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+            {
+                envelope.EnvelopeCacheKey = candidateKey;
+            }
+
             return _envelopeLifecycle.Unwrap(envelope);
         }
     }
