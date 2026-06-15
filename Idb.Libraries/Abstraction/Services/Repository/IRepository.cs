@@ -1,7 +1,5 @@
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
-using System.Linq.Expressions;
-
 namespace Idb.Libraries.Abstractions.Services.Repository;
 
 /// <summary>
@@ -31,7 +29,10 @@ public interface IRepository<TContract>
     /// </summary>
     /// <param name="entityToSave">Contract instance to store.</param>
     /// <param name="cancellationToken">Token that propagates cancellation.</param>
-    /// <returns>The entity reference managed by the repository after persistence.</returns>
+    /// <returns>
+    /// The canonical entity after persistence. Under coalescing last-write-wins storage, this may be a newer
+    /// competing value rather than <paramref name="entityToSave"/>.
+    /// </returns>
     ValueTask<TContract> SaveAsync(
         TContract entityToSave,
         CancellationToken cancellationToken = default);
@@ -47,6 +48,37 @@ public interface IRepository<TContract>
     ValueTask<TContract> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Streams every entity matching the supplied predicate.
+    /// </summary>
+    IAsyncEnumerable<TContract> QueryManyAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the first matching entity, or <c>null</c> when no entity matches.
+    /// </summary>
+    ValueTask<TContract?> QueryFirstAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns exactly one matching entity.
+    /// </summary>
+    ValueTask<TContract> QuerySingleAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? noneExceptionFactory = null,
+        Func<Exception>? multipleExceptionFactory = null);
+
+    /// <summary>
+    /// Returns one matching entity or <c>null</c>, and rejects multiple matches.
+    /// </summary>
+    ValueTask<TContract?> QuerySingleOrDefaultAsync(
+        Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? multipleExceptionFactory = null);
 
     /// <summary>
     /// Checks whether an entity with equivalent identity already exists.

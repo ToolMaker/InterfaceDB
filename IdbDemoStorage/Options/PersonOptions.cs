@@ -21,6 +21,7 @@ public sealed class PersonOptions : IDbContractConfigDto<MigrationTool.Contracts
     public IIndex<MigrationTool.Contracts.Person.v1_0_0.IPerson>[]? Indexes { get; set; } = Array.Empty<IIndex<MigrationTool.Contracts.Person.v1_0_0.IPerson>>();
     public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;
     public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;
+    public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; set; } =
         StoragePolicy.Default with { MaxConcurrency = Environment.ProcessorCount };
 }

@@ -34,6 +34,8 @@
   <ItemGroup>
     <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
+    <Compile Include="Implementation\Encryption\AesGcmEncryptor.cs" />
+    <Compile Include="Implementation\Encryption\EncryptionNone.cs" />
     <Compile Include="Implementation\FlatFileNameFactory.cs" />
     <Compile Include="Implementation\Extentions\RepositoryServiceCollectionExtensions.cs" />
     <Compile Include="Implementation\Extentions\StringExtensions.cs" />
@@ -47,6 +49,8 @@
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
     <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
+    <Compile Include="Implementation\Serialization\CoalescingFileWriteCoordinator.cs" />
+    <Compile Include="Implementation\Serialization\EncryptingObjectSerializer.cs" />
     <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeHandler.cs" />
     <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeSource.cs" />
     <Compile Include="Implementation\Serialization\FileObjectEnvelope.cs" />

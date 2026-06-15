@@ -131,6 +131,43 @@ Envelope references are guarded during serialization to avoid object-envelope-ob
 
 Current limitation: payloads still depend on concrete .NET type names. Stable type aliases are a future hardening item.
 
+## Encryption At Rest
+
+Encryption is applied after the complete envelope has been serialized and before its bytes are written:
+
+```text
+object -> IDB2 serialization -> IEncryptor.Encrypt -> file
+file -> IEncryptor.Decrypt -> IDB2 deserialization -> object
+```
+
+`EncryptionNone` is registered by default and returns the serialized bytes unchanged. Existing unencrypted repositories therefore keep the normal `IDB2` file format.
+
+`AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
+
+- encryption format/algorithm version;
+- nonce size;
+- authentication tag size;
+- random nonce;
+- authentication tag;
+- encrypted `IDB2` payload.
+
+The `IDB2` envelope metadata and object body are both encrypted. The filename and version directory remain visible.
+
+AES-GCM can be selected before repository registration:
+
+```csharp
+services.AddInterfaceDbAesGcmEncryption(
+    keyProvider,
+    new AesGcmEncryptorOptions());
+services.AddRepository<IMyContract>(options);
+```
+
+Custom encryption can be registered with `AddInterfaceDbEncryption(IEncryptor)`.
+
+For rollout over existing plaintext files, `AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old `IDB2` payloads to be read while all new writes use `IDBE`. This compatibility setting should be disabled after the old files have been rewritten.
+
+The current `IKeyProvider` supplies one active key and does not yet persist a key identifier. Transparent multi-key rotation is therefore future work.
+
 ## Envelope Lifecycle
 
 `EnvelopeLifecycle<TContract>` handles wrapping and unwrapping.
@@ -162,6 +199,19 @@ On read:
 
 If the envelope already has a location, the factory leaves it alone.
 
+## Storage Object Cardinality
+
+`StorageObjectCardinality` controls how envelope-less objects receive physical identities:
+
+- `Single`: the factory resolves one canonical key and path. Creating another envelope-less object at that path throws `StorageObjectAlreadyExistsException`. A loaded object carrying the existing envelope can update it normally.
+- `Multiple`: the factory resolves a unique physical identity for every new envelope-less object. The default flat factory uses a GUID.
+
+For `Single`, the default flat factory uses the contract name as its key. Custom factories can derive a key from `Envelope.ObjectInstance` without requiring a prescribed ID property.
+
+Single-object creation is checked while holding the payload lock, so concurrent processes cannot both create the same path. `IEnvelopeKeyAndLocationFactory<TContract>.ObjectCardinality` exposes the setting to naming and persistence.
+
+Repository registration preserves a factory registered by the consumer before `AddRepository`.
+
 ## Envelope Cache
 
 The cache is currently an in-memory concurrent dictionary abstraction:
@@ -183,11 +233,14 @@ Current write flow:
 1. Wrap object into envelope.
 2. Resolve target payload path.
 3. Ensure target directory exists.
-4. Acquire sidecar write lock for the payload path.
-5. Write serialized bytes to a unique temp file.
-6. Commit temp file to payload path.
-7. Update envelope cache according to policy.
-8. Unwrap object and return it.
+4. Register an active writer lease for migration coordination.
+5. Write serialized bytes to a unique `.writing` proposal.
+6. Flush the complete proposal and atomically rename it to `.ready`.
+7. Acquire the payload sidecar lock.
+8. Select the newest ready proposal and atomically move it over the canonical payload.
+9. Remove superseded proposals and repeat until no ready proposal remains.
+10. Update envelope cache according to policy.
+11. Unwrap object and return it.
 
 ## Sidecar Write Locks
 
@@ -223,22 +276,29 @@ Lock policy lives in `StoragePolicy`:
 
 This lock is primarily for out-of-process synchronization. It serializes writes to the same payload file while allowing writes to different files to proceed independently.
 
-## Atomic Commit
+## Coalescing Last-Write-Wins Commit
 
-Writers do not write directly over the payload file.
-
-They write to:
+Concurrent writers do not wait before serializing their replacement payload. Each writer first creates:
 
 ```text
-<key>.mpk.tmp.<guid>
+<key>.mpk.pending.<guid>.writing
 ```
 
-Then commit with:
+After the bytes are complete and flushed, the proposal is published atomically as:
 
-- `File.Replace` if the payload already exists;
-- `File.Move` if this is the first payload write.
+```text
+<key>.mpk.pending.<published-ticks>.<guid>.ready
+```
 
-The temp file is deleted on write failure. Successful writes should leave no `.lock` or `.tmp.*` files.
+Only `.ready` files are eligible for commit. The payload lock owner orders ready proposals by their publication identifier, atomically moves the newest over `<key>.mpk`, and deletes older proposals. If proposals arrive while it is working, it repeats the scan.
+
+Every publisher attempts to acquire the payload lock after publishing. Therefore, if the previous lock owner exits just before seeing a new proposal, the publishing process becomes the next owner and finishes the commit.
+
+Repository initialization also drains abandoned `.ready` proposals. Stale incomplete `.writing` files are deleted after the configured stale-lock timeout.
+
+The semantic is whole-object last-write-wins. Superseded intermediate object replacements are intentionally not applied.
+
+`SaveAsync` returns the value that is canonical when its coalescing operation completes. If the caller's proposal loses to a newer ready proposal, the writer reloads that winner, stores the winning envelope in cache, and returns the winning object. The losing input object still has its original storage envelope restored.
 
 ## Storage Change Watching
 
@@ -262,6 +322,7 @@ It watches committed payload changes and ignores transient files:
 
 - `*.lock`
 - `*.tmp.*`
+- `*.pending.*`
 - non-payload extensions
 
 Events are debounced using `StoragePolicy.StorageChangeDebounce`.
@@ -302,6 +363,21 @@ Important limitation: existing object references already held by application cod
 The file repository publishes these events for direct writes and for storage watcher changes.
 
 Subscriptions are in-process. They are not a distributed event bus.
+
+## Repository Query Semantics
+
+The public repository exposes the existing internal async result stream through:
+
+- `QueryManyAsync`: streams every match without materializing the complete result set;
+- `QueryFirstAsync`: returns the first match or `null`;
+- `QuerySingleAsync`: requires exactly one match;
+- `QuerySingleOrDefaultAsync`: allows zero or one match and returns `null` for zero.
+
+`QuerySingleAsync` accepts optional factories for the no-match and multiple-match exceptions. `QuerySingleOrDefaultAsync` accepts an optional factory for the multiple-match exception. When omitted, InterfaceDB throws `RepositoryQueryCardinalityException`.
+
+The cancellation token is the second parameter for all query methods. `QuerySingleAsync` and `QuerySingleOrDefaultAsync` enumerate at most two matches because a second result is sufficient to establish a cardinality violation.
+
+The original `QueryAsync` method remains as a compatibility alias for first-or-default behavior.
 
 ## Storage Policy
 
@@ -367,7 +443,17 @@ Strategies can be configured as:
 - `EagerStrict`
 - `EagerTolerant`
 
-Current state: runtime migrations need hardening before production use. Known concerns include registration, envelope-aware deserialization, and complete version-chain validation.
+Before eager migration, the repository acquires a contract-wide migration scope:
+
+1. prevent new writers from registering;
+2. wait for registered writers to finish;
+3. drain completed pending proposals;
+4. migrate committed payloads;
+5. release waiting writers.
+
+Migration now reads the `IDB2` envelope header separately from the object body, preserves the envelope cache key, applies the migration chain to the body, and writes the result through the normal coalescing writer.
+
+Runtime migrations still need broader production hardening, particularly complete version-chain validation, tolerant-mode diagnostics, rollback behavior, and generated-contract compatibility coverage.
 
 ## Demo Storage
 
@@ -423,7 +509,7 @@ The current system does not yet provide:
 
 - full secondary indexing;
 - distributed event bus;
-- production-hardened runtime migrations;
+- fully production-hardened runtime migrations;
 - stable type alias serialization;
 - transactional multi-record commits;
 - automatic replacement of all object references held by user code after external file changes.
@@ -441,7 +527,9 @@ Current practical verification:
 
 `InterfaceDb.Tests` is the VS-discoverable MSTest project. It invokes `InterfaceDb.IntegrationTests`, which is a no-external-package console harness. The harness currently verifies:
 
-- a single save creates a readable payload and leaves no `.lock` or `.tmp.*` files;
-- two child processes can load the same payload, write concurrently through the same file path, complete successfully, leave one readable payload, and leave no sidecar artifacts.
+- a single save creates a readable payload and leaves no lock or pending-write artifacts;
+- two child processes can publish writes to the same payload and leave one readable last-write-wins result;
+- initialization commits the newest abandoned ready proposal and removes superseded proposals;
+- eager migration drains old-version proposals, migrates the newest value, preserves the key, and writes to the active version directory.
 
-The test suite should still be expanded for file watcher change/delete/rename behavior and runtime migrations.
+The test suite should still be expanded for file watcher change/delete/rename behavior and longer migration chains.

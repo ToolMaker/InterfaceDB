@@ -8,6 +8,12 @@ public sealed class AesGcmEncryptorOptions
     /// <summary>Size of the nonce (IV). 12 is the NIST-recommended value for GCM.</summary>
     public int NonceSize { get; init; } = 12;
 
+    /// <summary>
+    /// Allows existing plaintext IDB2 payloads to be read during an encryption rollout.
+    /// New writes are always encrypted.
+    /// </summary>
+    public bool AllowUnencryptedPayloads { get; init; }
+
     /// <summary>Add future flags here, e.g., compression or encoding scheme.</summary>
     // public bool UseCompression { get; init; }
 }

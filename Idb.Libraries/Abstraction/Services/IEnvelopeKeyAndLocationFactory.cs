@@ -1,6 +1,7 @@
 namespace Idb.Libraries.Abstractions.Services
 {
     using Idb.Libraries.Abstractions.Dtos;
+    using Idb.Libraries.Abstractions.Enums;
     using Idb.Libraries.Abstractions.Services.Serialization;
     using System.IO;
     /// <summary>
@@ -10,6 +11,11 @@ namespace Idb.Libraries.Abstractions.Services
     public interface IEnvelopeKeyAndLocationFactory<TContract>
         where TContract : class, IStoredContract<TContract>
     {
+        /// <summary>
+        /// Gets the object cardinality used when resolving new storage identities.
+        /// </summary>
+        StorageObjectCardinality ObjectCardinality { get; }
+
         /// <summary>
         /// Sets the FileName and EnvelopeCacheKey properties on the envelope based on the contract instance.
         /// </summary>

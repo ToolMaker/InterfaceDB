@@ -65,6 +65,11 @@ public interface IDbContractConfigDto<TContract>
     ContractRepositoryType RepositoryType { get; }
 
     /// <summary>
+    /// Controls whether the factory-resolved identity represents one stored object or many physical objects.
+    /// </summary>
+    StorageObjectCardinality ObjectCardinality => StorageObjectCardinality.Multiple;
+
+    /// <summary>
     /// Optional storage policy that tweaks repository behavior (buffer sizes, concurrency, notifications).
     /// </summary>
     StoragePolicy? StoragePolicy { get; }

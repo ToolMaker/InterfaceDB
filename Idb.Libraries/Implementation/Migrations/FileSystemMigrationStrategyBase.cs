@@ -9,12 +9,15 @@ using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
 using MessagePack;
 using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Serialization;
+using MessagePack.Resolvers;
 
 namespace Idb.Libraries.Implementation.Migrations;
 
@@ -28,6 +31,8 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     private readonly IReadOnlyList<MigrationDescriptor> _migrationDescriptors;
     private readonly IObjectReader<TContract>? _reader;
     private readonly IObjectWriter<TContract>? _writer;
+    private readonly IFileWriteCoordinator _fileWriteCoordinator;
+    private readonly IEncryptor _encryptor;
 
     protected FileSystemMigrationStrategyBase(
         IDbContractConfigDto<TContract> contractConfig,
@@ -35,6 +40,8 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory,
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
+        IEncryptor encryptor,
+        IFileWriteCoordinator fileWriteCoordinator,
         IObjectReader<TContract>? reader = null,
         IObjectWriter<TContract>? writer = null)
     {
@@ -43,6 +50,8 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         FileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
         _reader = reader;
         _writer = writer;
+        _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
+        _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
         StrategyType = strategyType;
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
@@ -54,6 +63,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         ActiveVersion = _contractConfig.ActiveVersion ?? "1.0.0";
         FileExtension = NormalizeExtension(_contractConfig.FileExtension.NormalizeExtension());
         SerializerOptions = ResolveSerializerOptions(Serializer);
+        ContractSerializerOptions = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
         IsTolerant = StrategyType == MigrationStrategyType.EagerTolerant;
 
         _migrationDescriptors = (migrations ?? Enumerable.Empty<IMigration>())
@@ -79,6 +89,8 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     protected bool IsTolerant { get; }
 
     protected MessagePackSerializerOptions SerializerOptions { get; }
+
+    protected MessagePackSerializerOptions ContractSerializerOptions { get; }
 
     protected IReadOnlyList<MigrationDescriptor> MigrationDescriptors => _migrationDescriptors;
 
@@ -144,6 +156,11 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         bool deleteLegacyOnSuccess,
         CancellationToken cancellationToken)
     {
+        await _fileWriteCoordinator
+            .DrainPendingWritesAsync(legacyFile.FullName, cancellationToken)
+            .ConfigureAwait(false);
+        legacyFile.Refresh();
+
         var sourceVersion = ExtractVersionFromFile(legacyFile);
         var chain = BuildMigrationChain(sourceVersion, ActiveVersion);
         if (chain.Count == 0)
@@ -167,8 +184,12 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             return savedCurrent;
         }
 
-        var currentPayload = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
+        var storedPayload = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
+        storedPayload = _encryptor.Decrypt(storedPayload);
+        var serializedEnvelope = ReadSerializedEnvelope(legacyFile, storedPayload);
+        var currentPayload = serializedEnvelope.ObjectPayload;
         var currentVersion = sourceVersion;
+        IMigration? latestMigration = null;
 
         foreach (var descriptor in chain)
         {
@@ -185,13 +206,29 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
             currentPayload = SerializeMigration(migrationInstance);
             currentVersion = descriptor.TargetVersion;
+            latestMigration = migrationInstance;
         }
 
-        var migratedInstance = MessagePackSerializer.Deserialize<TContract>(currentPayload, SerializerOptions);
+        if (latestMigration is not TContract migratedInstance)
+        {
+            throw new InvalidOperationException(
+                $"Migration result does not implement active contract '{typeof(TContract).FullName}'.");
+        }
+
         if (_writer is null)
         {
             return migratedInstance;
         }
+
+        var targetEnvelope = new FileObjectEnvelope<TContract>(_contractConfig)
+        {
+            EnvelopeCacheKey = serializedEnvelope.CacheKey,
+            VersionTag = ActiveVersion,
+            Location = null,
+            ObjectInstance = migratedInstance
+        };
+        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(migratedInstance, targetEnvelope);
+
         var saved = await _writer.WriteAsync(migratedInstance, cancellationToken).ConfigureAwait(false);
         if (deleteLegacyOnSuccess)
         {
@@ -251,10 +288,32 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     }
 
     private IMigration DeserializeMigration(byte[] payload, Type migrationType)
-        => (IMigration)MessagePackSerializer.Deserialize(migrationType, payload, SerializerOptions)!;
+        => (IMigration)MessagePackSerializer.Deserialize(migrationType, payload, ContractSerializerOptions)!;
 
     private byte[] SerializeMigration(IMigration migrationInstance)
-        => MessagePackSerializer.Serialize(migrationInstance.GetType(), migrationInstance, SerializerOptions);
+        => MessagePackSerializer.Serialize(migrationInstance.GetType(), migrationInstance, ContractSerializerOptions);
+
+    private SerializedEnvelope ReadSerializedEnvelope(FileInfo file, byte[] payload)
+    {
+        if (payload.Length < 4
+            || payload[0] != (byte)'I'
+            || payload[1] != (byte)'D'
+            || payload[2] != (byte)'B'
+            || payload[3] != (byte)'2')
+        {
+            return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload);
+        }
+
+        using var stream = new MemoryStream(payload, writable: false);
+        stream.Position = 4;
+        _ = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
+        var cacheKey = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
+        _ = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
+
+        var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
+        stream.ReadExactly(objectPayload);
+        return new SerializedEnvelope(cacheKey, objectPayload);
+    }
 
     protected static async ValueTask DeleteLegacyFileAsync(FileInfo legacyFile, CancellationToken cancellationToken)
     {
@@ -322,5 +381,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         internal Version SourceVersionParsed { get; }
         internal Version TargetVersionParsed { get; }
     }
+
+    private sealed record SerializedEnvelope(string CacheKey, byte[] ObjectPayload);
 }
 

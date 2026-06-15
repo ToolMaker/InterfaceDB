@@ -26,6 +26,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private readonly IReaderAndWriter<TContract> _readerAndWriter;
     private readonly IEnvelopeStorageChangeSource<TContract>? _storageChangeSource;
     private readonly IEnvelopeStorageChangeHandler<TContract>? _storageChangeHandler;
+    private readonly IFileWriteCoordinator _fileWriteCoordinator;
     private Func<EnvelopeStorageChange, ValueTask>? _storageChangeSubscription;
     private int _storageChangeSourceStarted;
 
@@ -46,6 +47,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         _migrationStrategy = (IMigrationStrategy<TContract>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract>));
         _storageChangeSource = _serviceProvider.GetService<IEnvelopeStorageChangeSource<TContract>>();
         _storageChangeHandler = _serviceProvider.GetService<IEnvelopeStorageChangeHandler<TContract>>();
+        _fileWriteCoordinator = _serviceProvider.GetRequiredService<IFileWriteCoordinator>();
         _readerAndWriter = readerAndWriter ?? throw new ArgumentNullException(nameof(readerAndWriter));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
 
@@ -151,6 +153,13 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     {
         if (_migrationStrategy is not null && IsEagerStrategy(_migrationStrategy.StrategyType))
         {
+            await using var migrationScope = await _fileWriteCoordinator
+                .AcquireMigrationScopeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await _fileWriteCoordinator
+                .DrainPendingWritesAsync(_dataRoot, _contractConfig.FileExtension, cancellationToken)
+                .ConfigureAwait(false);
+
             var tolerant = _migrationStrategy.StrategyType == MigrationStrategyType.EagerTolerant;
             try
             {
@@ -167,6 +176,12 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             {
                 // Tolerant mode keeps legacy payloads accessible when eager migration encounters issues.
             }
+        }
+        else
+        {
+            await _fileWriteCoordinator
+                .DrainPendingWritesAsync(_dataRoot, _contractConfig.FileExtension, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         await foreach (var _ in LoadAsync(_dataRoot, cancellationToken).ConfigureAwait(false))

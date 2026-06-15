@@ -748,6 +748,7 @@ internal static class Program
             $"    public IIndex<{contractInterface}>[]? Indexes {{ get; set; }} = Array.Empty<IIndex<{contractInterface}>>();",
             "    public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;",
             "    public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;",
+            "    public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;",
             "    public StoragePolicy? StoragePolicy { get; set; } = StoragePolicy.Default;",
             "}",
             string.Empty,

@@ -30,16 +30,6 @@ Planned indexing work should include:
 
 ## Near-Term Gaps
 
-### Identity-Based Existence Checks
-
-`ExistsAsync` currently depends on the envelope cache key carried by the saved instance. A new object with the same logical identity may not be recognized unless it has the same envelope metadata.
-
-Potential fix:
-
-- Define explicit storage identity, either through an interface such as `IIdentifiableContract<TKey>` or an attribute such as `[StorageIdentity]`.
-- Use that identity for stable existence checks.
-- Add tests for saved-instance checks and new-instance same-identity checks.
-
 ### Stable Serialized Type Names
 
 Serialized payloads currently include the concrete .NET runtime type name. This is fragile if classes move, namespaces change, or assemblies are renamed.
@@ -62,6 +52,12 @@ Potential fix:
 - Add tests using real legacy payload files.
 
 ## Completed Cleanup
+
+### Factory-Based Identity and Cardinality
+
+Storage identity remains delegated to `IEnvelopeKeyAndLocationFactory<TContract>` and does not require an ID property or attribute.
+
+`StorageObjectCardinality.Single` rejects detached duplicate creation at an existing factory-resolved path while allowing envelope-aware updates. `Multiple` assigns a unique physical identity to each new object. Single creation is enforced under the out-of-process payload lock.
 
 ### Package Vulnerabilities
 

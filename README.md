@@ -66,6 +66,31 @@ Data/
 
 This flat layout is the only active filesystem layout. Higher-throughput storage backends, such as SQL/document/object database envelope stores, are future roadmap work. `StoragePolicy` controls write concurrency, cache hydration, notifications, sidecar write locks, and file change watching.
 
+Storage identity is factory-driven. `StorageObjectCardinality.Single` allows one object per factory-resolved path and rejects detached duplicate creation, while `Multiple` gives every new envelope-less object a unique physical key. Custom `IEnvelopeKeyAndLocationFactory<TContract>` implementations can derive keys from object state without requiring a prescribed ID property.
+
+Repository queries support streaming and bounded cardinality:
+
+```csharp
+await foreach (var person in repository.QueryManyAsync(x => x.Role == "Student"))
+{
+}
+
+var first = await repository.QueryFirstAsync(x => x.Role == "Student");
+var exactlyOne = await repository.QuerySingleAsync(x => x.Name == "Jane");
+var optional = await repository.QuerySingleOrDefaultAsync(x => x.Name == "Jane");
+```
+
+Single-result methods accept optional exception factories for cardinality violations.
+
+Optional encryption at rest is applied to the complete serialized envelope. The default `EncryptionNone` implementation keeps normal `IDB2` files unchanged. AES-GCM can be enabled before repository registration:
+
+```csharp
+services.AddInterfaceDbAesGcmEncryption(keyProvider);
+services.AddRepository<IMyContract>(options);
+```
+
+AES-GCM files use an authenticated `IDBE` outer frame containing the encrypted `IDB2` payload.
+
 ## Sample contract in this repo
 
 The sample storage project currently centers on `Person`:
