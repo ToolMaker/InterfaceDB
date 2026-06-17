@@ -2,12 +2,12 @@ using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
-using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
@@ -20,13 +20,14 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
-    private readonly IServiceProvider _serviceProvider;
+    private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
     private readonly string _dataRoot;
     private readonly IMigrationStrategy<TContract>? _migrationStrategy;
     private readonly IReaderAndWriter<TContract> _readerAndWriter;
     private readonly IEnvelopeStorageChangeSource<TContract>? _storageChangeSource;
     private readonly IEnvelopeStorageChangeHandler<TContract>? _storageChangeHandler;
     private readonly IFileWriteCoordinator _fileWriteCoordinator;
+    private readonly StoragePolicy _storagePolicy;
     private Func<EnvelopeStorageChange, ValueTask>? _storageChangeSubscription;
     private int _storageChangeSourceStarted;
 
@@ -38,16 +39,22 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
     protected FileEnvelopeRepositoryBase(
         IDbContractConfigDto<TContract> contractConfig,
-        IServiceProvider serviceProvider,
         IReaderAndWriter<TContract> readerAndWriter,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
+        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IMigrationStrategy<TContract>? migrationStrategy = null,
+        IEnvelopeStorageChangeSource<TContract>? storageChangeSource = null,
+        IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler = null)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
-        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-        _migrationStrategy = (IMigrationStrategy<TContract>?)_serviceProvider.GetService(typeof(IMigrationStrategy<TContract>));
-        _storageChangeSource = _serviceProvider.GetService<IEnvelopeStorageChangeSource<TContract>>();
-        _storageChangeHandler = _serviceProvider.GetService<IEnvelopeStorageChangeHandler<TContract>>();
-        _fileWriteCoordinator = _serviceProvider.GetRequiredService<IFileWriteCoordinator>();
+        _migrationStrategy = migrationStrategy;
+        _storageChangeSource = storageChangeSource;
+        _storageChangeHandler = storageChangeHandler;
+        _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
         _readerAndWriter = readerAndWriter ?? throw new ArgumentNullException(nameof(readerAndWriter));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
 
@@ -92,17 +99,155 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         TContract objectInstance,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(objectInstance);
+
+        var isNewStorageObject = objectInstance.Envelope is null;
+        var existingLocator = objectInstance.Envelope?.Location;
+        if (!string.IsNullOrWhiteSpace(existingLocator))
+        {
+            _storageChangeSource?.AcknowledgeLocalChange(existingLocator);
+        }
+
         objectInstance = await ReaderAndWriter.Writer.WriteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         var envelope = objectInstance.Envelope ?? throw new InvalidOperationException("Object instance must have a valid envelope after writing.");
+        _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
 
-        var notify = _contractConfig.StoragePolicy?.RaiseNotifications ?? StoragePolicy.Default.RaiseNotifications;
+        var notify = _storagePolicy.RaiseNotifications;
         if (notify)
         {
             await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
-            await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+            if (isNewStorageObject)
+            {
+                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         return objectInstance;
+    }
+
+    public async ValueTask<bool> DeleteAsync(
+        TContract objectInstance,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(objectInstance);
+
+        var envelope = objectInstance.Envelope
+            ?? throw new StorageObjectNotPersistedException(typeof(TContract));
+
+        if (envelope.State == StorageObjectState.Deleted)
+        {
+            return false;
+        }
+
+        ValidateEnvelopeForDelete(envelope);
+        var storageKey = envelope.EnvelopeCacheKey;
+        var providerLocator = envelope.Location!;
+        _storageChangeSource?.AcknowledgeLocalChange(providerLocator);
+
+        bool removedActiveStorage;
+        try
+        {
+            removedActiveStorage = _storagePolicy.DurabilityMode == StorageDurabilityMode.Performance
+                ? DeletePerformance(providerLocator)
+                : await _fileWriteCoordinator
+                    .DeleteAndCommitAsync(providerLocator, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (TimeoutException ex)
+        {
+            throw new StorageConcurrencyException(
+                $"Delete could not safely acquire storage coordination for object '{storageKey}'.",
+                storageKey,
+                providerLocator,
+                ex);
+        }
+        catch (StorageException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new StorageOperationException(
+                StorageOperation.Delete,
+                storageKey,
+                providerLocator,
+                ex);
+        }
+
+        if (File.Exists(providerLocator))
+        {
+            return false;
+        }
+
+        envelope.State = StorageObjectState.Deleted;
+        _envelopes.Remove(storageKey);
+
+        var notify = _storagePolicy.RaiseNotifications;
+        if (removedActiveStorage && notify)
+        {
+            await ContractDeleted(envelope, cancellationToken).ConfigureAwait(false);
+        }
+
+        return removedActiveStorage;
+    }
+
+    private void ValidateEnvelopeForDelete(IObjectEnvelope<TContract> envelope)
+    {
+        if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+        {
+            throw new InvalidStorageEnvelopeException(
+                "The provider storage key is missing.",
+                envelope.EnvelopeCacheKey,
+                envelope.Location);
+        }
+
+        if (string.IsNullOrWhiteSpace(envelope.Location))
+        {
+            throw new InvalidStorageEnvelopeException(
+                "The provider locator is missing.",
+                envelope.EnvelopeCacheKey,
+                envelope.Location);
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(envelope.Location);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new InvalidStorageEnvelopeException(
+                $"The file provider locator is invalid: {ex.Message}",
+                envelope.EnvelopeCacheKey,
+                envelope.Location);
+        }
+
+        var relativePath = Path.GetRelativePath(_dataRoot, fullPath);
+        if (Path.IsPathRooted(relativePath)
+            || relativePath.Equals("..", StringComparison.Ordinal)
+            || relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || relativePath.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new InvalidStorageEnvelopeException(
+                "The file provider locator is outside the configured storage root.",
+                envelope.EnvelopeCacheKey,
+                envelope.Location);
+        }
+    }
+
+    private static bool DeletePerformance(string providerLocator)
+    {
+        if (!File.Exists(providerLocator))
+        {
+            return false;
+        }
+
+        File.Delete(providerLocator);
+        return true;
     }
 
     public async IAsyncEnumerable<IObjectEnvelope<TContract>> QueryAsync(
@@ -125,13 +270,30 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 continue;
             }
 
-            var instance = envelope.ObjectInstance;
-            if (instance is null && !string.IsNullOrWhiteSpace(envelope.Location))
+            var currentEnvelope = envelope;
+            var instance = currentEnvelope.ObjectInstance;
+            if (instance is null
+                && _migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
+                && !string.Equals(
+                    currentEnvelope.VersionTag,
+                    _contractConfig.ActiveVersion,
+                    StringComparison.OrdinalIgnoreCase))
             {
-                var file = new FileInfo(envelope.Location);
+                instance = await _migrationStrategy
+                    .MigrateAsync(currentEnvelope, cancellationToken)
+                    .ConfigureAwait(false);
+                if (instance?.Envelope is not null)
+                {
+                    currentEnvelope = instance.Envelope;
+                }
+            }
+
+            if (instance is null && !string.IsNullOrWhiteSpace(currentEnvelope.Location))
+            {
+                var file = new FileInfo(currentEnvelope.Location);
                 var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
                 instance = hydrated;
-                envelope.ObjectInstance = hydrated;
+                currentEnvelope.ObjectInstance = hydrated;
             }
 
             if (instance is null)
@@ -144,7 +306,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 continue;
             }
 
-            yield return envelope;
+            yield return currentEnvelope;
             await Task.Yield();
         }
     }
@@ -188,7 +350,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         {
         }
 
-        var effectivePolicy = _contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        var effectivePolicy = _storagePolicy;
         if (effectivePolicy.HydrateOnInitialize)
         {
             await HydrateCacheAsync(cancellationToken).ConfigureAwait(false);
@@ -220,7 +382,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
     private async ValueTask HydrateCacheAsync(CancellationToken cancellationToken)
     {
-        var policy = _contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        var policy = _storagePolicy;
         var dop = policy.NormalizedConcurrency;
         var snapshot = _envelopes.Values.ToArray();
 
@@ -233,6 +395,15 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             try
             {
                 if (envelope is null || envelope.ObjectInstance is not null || string.IsNullOrWhiteSpace(envelope.Location))
+                {
+                    return;
+                }
+
+                if (_migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
+                    && !string.Equals(
+                        envelope.VersionTag,
+                        _contractConfig.ActiveVersion,
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     return;
                 }
@@ -266,8 +437,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
         IObjectEnvelope<TContract> CreateSkeleton(FileInfo file, string? version)
         {
-            var env = _serviceProvider.GetService<IObjectEnvelope<TContract>>()
-                ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
+            var env = _envelopeFactory()
+                ?? throw new InvalidOperationException("Envelope factory returned null.");
             env.EnvelopeCacheKey = Path.GetFileNameWithoutExtension(file.Name);
             env.Location = file.FullName;
             env.VersionTag = string.IsNullOrWhiteSpace(version) ? (_contractConfig.ActiveVersion ?? "1.0.0") : version!;
@@ -301,55 +472,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 yield return CreateSkeleton(file, version);
                 await Task.Yield();
             }
-        }
-    }
-
-    private TContract? ResolveEnvelopeVersion(TContract objectInstance)
-    {
-        if (objectInstance is null)
-        {
-            throw new ArgumentNullException(nameof(objectInstance));
-        }
-
-        var envelope = objectInstance.Envelope;
-        if (envelope is null)
-        {
-            return objectInstance;
-        }
-
-        if (string.Equals(envelope.VersionTag, _contractConfig.ActiveVersion, StringComparison.OrdinalIgnoreCase))
-        {
-            return objectInstance;
-        }
-
-        if (_migrationStrategy is null)
-        {
-            return objectInstance;
-        }
-
-        return _migrationStrategy.StrategyType switch
-        {
-            MigrationStrategyType.Lazy => _migrationStrategy.Migrate(objectInstance, CancellationToken.None) ?? objectInstance,
-            MigrationStrategyType.EagerStrict => null,
-            MigrationStrategyType.EagerTolerant => TryMigrateTolerant(objectInstance),
-            _ => objectInstance
-        };
-    }
-
-    private TContract? TryMigrateTolerant(TContract objectInstance)
-    {
-        if (_migrationStrategy is null)
-        {
-            return objectInstance;
-        }
-
-        try
-        {
-            return _migrationStrategy.Migrate(objectInstance, CancellationToken.None) ?? objectInstance;
-        }
-        catch
-        {
-            return objectInstance;
         }
     }
 

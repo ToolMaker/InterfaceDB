@@ -14,14 +14,9 @@ public sealed class SidecarFileWriteLock<TContract> : IFileWriteLock
     private static readonly string ProcessOwnerId = Guid.NewGuid().ToString("N");
     private readonly StoragePolicy _storagePolicy;
 
-    public SidecarFileWriteLock(IDbContractConfigDto<TContract> contractConfig)
+    public SidecarFileWriteLock(StoragePolicy storagePolicy)
     {
-        if (contractConfig is null)
-        {
-            throw new ArgumentNullException(nameof(contractConfig));
-        }
-
-        _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
     }
 
     public async ValueTask<IAsyncDisposable> AcquireAsync(

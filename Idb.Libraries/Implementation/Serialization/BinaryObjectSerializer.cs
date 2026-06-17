@@ -287,5 +287,6 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         public string VersionTag { get; set; } = string.Empty;
         public TContract? ObjectInstance { get; set; }
         public string? Location { get; set; }
+        public Idb.Libraries.Abstractions.Enums.StorageObjectState State { get; set; }
     }
 }

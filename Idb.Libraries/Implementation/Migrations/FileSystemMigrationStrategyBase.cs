@@ -15,6 +15,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
 using MessagePack;
 using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Serialization;
 using MessagePack.Resolvers;
@@ -33,25 +34,28 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     private readonly IObjectWriter<TContract>? _writer;
     private readonly IFileWriteCoordinator _fileWriteCoordinator;
     private readonly IEncryptor _encryptor;
+    private readonly StoragePolicy _storagePolicy;
 
     protected FileSystemMigrationStrategyBase(
         IDbContractConfigDto<TContract> contractConfig,
         IObjectSerializer<TContract> serializer,
-        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory,
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory,
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
         IEncryptor encryptor,
         IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
         IObjectReader<TContract>? reader = null,
         IObjectWriter<TContract>? writer = null)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        FileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
+        StorageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
         _reader = reader;
         _writer = writer;
         _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
         _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         StrategyType = strategyType;
 
         if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
@@ -72,13 +76,14 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             .OrderBy(m => m.SourceVersionParsed)
             .ThenBy(m => m.TargetVersionParsed)
             .ToList();
+        ValidateMigrationDefinitions(_migrationDescriptors);
     }
 
     public MigrationStrategyType StrategyType { get; }
 
     protected IObjectSerializer<TContract> Serializer { get; }
 
-    protected IEnvelopeKeyAndLocationFactory<TContract> FileNameFactory { get; }
+    protected IEnvelopeStorageIdentityFactory<TContract> StorageIdentityFactory { get; }
 
     protected DirectoryInfo DataRootDirectory { get; }
 
@@ -94,7 +99,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     protected IReadOnlyList<MigrationDescriptor> MigrationDescriptors => _migrationDescriptors;
 
-    protected StoragePolicy EffectivePolicy => _contractConfig.StoragePolicy ?? StoragePolicy.Default;
+    protected StoragePolicy EffectivePolicy => _storagePolicy;
 
     public virtual async IAsyncEnumerable<TContract> OnInitializeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -151,6 +156,31 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         return migrated ?? objectInstance;
     }
 
+    public virtual ValueTask<TContract?> MigrateAsync(
+        IObjectEnvelope<TContract> envelope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+
+        if (string.Equals(envelope.VersionTag, ActiveVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ValueTask<TContract?>(envelope.ObjectInstance);
+        }
+
+        if (string.IsNullOrWhiteSpace(envelope.Location))
+        {
+            throw new InvalidStorageEnvelopeException(
+                "Migration requires a provider locator.",
+                envelope.EnvelopeCacheKey,
+                envelope.Location);
+        }
+
+        return MigrateFileAsync(
+            new FileInfo(envelope.Location),
+            deleteLegacyOnSuccess: true,
+            cancellationToken);
+    }
+
     protected async ValueTask<TContract?> MigrateFileAsync(
         FileInfo legacyFile,
         bool deleteLegacyOnSuccess,
@@ -162,7 +192,16 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         legacyFile.Refresh();
 
         var sourceVersion = ExtractVersionFromFile(legacyFile);
-        var chain = BuildMigrationChain(sourceVersion, ActiveVersion);
+        IReadOnlyList<MigrationDescriptor> chain;
+        try
+        {
+            chain = BuildMigrationChain(sourceVersion, ActiveVersion);
+        }
+        catch (MigrationException) when (IsTolerant)
+        {
+            return null;
+        }
+
         if (chain.Count == 0)
         {
             // No migration needed; materialize current instance and (optionally) persist via writer
@@ -193,15 +232,42 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
         foreach (var descriptor in chain)
         {
-            var migrationInstance = DeserializeMigration(currentPayload, descriptor.MigrationType);
-            if (!migrationInstance.Up())
+            IMigration migrationInstance;
+            try
+            {
+                migrationInstance = DeserializeMigration(currentPayload, descriptor.MigrationType);
+                if (!migrationInstance.Up())
+                {
+                    throw new MigrationExecutionException(
+                        descriptor.MigrationType,
+                        descriptor.SourceVersion,
+                        descriptor.TargetVersion,
+                        serializedEnvelope.CacheKey,
+                        legacyFile.FullName);
+                }
+            }
+            catch (MigrationException) when (IsTolerant)
+            {
+                return null;
+            }
+            catch (MigrationException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 if (IsTolerant)
                 {
                     return null;
                 }
 
-                throw new InvalidOperationException($"Migration '{descriptor.MigrationType.Name}' failed to upgrade '{legacyFile.FullName}'.");
+                throw new MigrationExecutionException(
+                    descriptor.MigrationType,
+                    descriptor.SourceVersion,
+                    descriptor.TargetVersion,
+                    serializedEnvelope.CacheKey,
+                    legacyFile.FullName,
+                    ex);
             }
 
             currentPayload = SerializeMigration(migrationInstance);
@@ -244,47 +310,75 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             return Array.Empty<MigrationDescriptor>();
         }
 
-        if (_migrationDescriptors.Count == 0)
-        {
-            return Array.Empty<MigrationDescriptor>();
-        }
-
         var chain = new List<MigrationDescriptor>();
-        var guard = 0;
         var currentVersion = sourceVersion;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        while (!string.Equals(currentVersion, targetVersion, StringComparison.OrdinalIgnoreCase) && guard++ < _migrationDescriptors.Count)
+        while (!string.Equals(currentVersion, targetVersion, StringComparison.OrdinalIgnoreCase))
         {
-            var next = _migrationDescriptors
-                .Where(m => string.Equals(m.SourceVersion, currentVersion, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(m => m.TargetVersionParsed)
-                .FirstOrDefault();
-
-            if (next is null)
+            if (!visited.Add(currentVersion))
             {
-                if (IsTolerant)
-                {
-                    return Array.Empty<MigrationDescriptor>();
-                }
+                var cycle = _migrationDescriptors.First(migration =>
+                    string.Equals(migration.SourceVersion, currentVersion, StringComparison.OrdinalIgnoreCase));
+                throw new InvalidMigrationDefinitionException(
+                    cycle.MigrationType,
+                    cycle.SourceVersion,
+                    cycle.TargetVersion,
+                    "the migration chain contains a cycle.");
+            }
 
-                throw new InvalidOperationException($"No migration path found from '{sourceVersion}' to '{targetVersion}'.");
+            var candidates = _migrationDescriptors
+                .Where(m => string.Equals(m.SourceVersion, currentVersion, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (candidates.Length == 0)
+            {
+                throw new MissingMigrationException(sourceVersion, targetVersion, currentVersion);
+            }
+
+            if (candidates.Length > 1)
+            {
+                throw new AmbiguousMigrationException(
+                    currentVersion,
+                    candidates.Select(candidate => candidate.MigrationType));
+            }
+
+            var next = candidates[0];
+            if (next.TargetVersionParsed > ParseVersionRequired(targetVersion, typeof(TContract), targetVersion, targetVersion))
+            {
+                throw new MissingMigrationException(sourceVersion, targetVersion, currentVersion);
             }
 
             chain.Add(next);
             currentVersion = next.TargetVersion;
         }
 
-        if (!string.Equals(currentVersion, targetVersion, StringComparison.OrdinalIgnoreCase))
-        {
-            if (IsTolerant)
-            {
-                return Array.Empty<MigrationDescriptor>();
-            }
+        return chain;
+    }
 
-            throw new InvalidOperationException($"Migration chain from '{sourceVersion}' to '{targetVersion}' is incomplete.");
+    private static void ValidateMigrationDefinitions(IReadOnlyList<MigrationDescriptor> descriptors)
+    {
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.TargetVersionParsed <= descriptor.SourceVersionParsed)
+            {
+                throw new InvalidMigrationDefinitionException(
+                    descriptor.MigrationType,
+                    descriptor.SourceVersion,
+                    descriptor.TargetVersion,
+                    "target version must be greater than source version.");
+            }
         }
 
-        return chain;
+        foreach (var duplicate in descriptors.GroupBy(
+                     descriptor => descriptor.SourceVersion,
+                     StringComparer.OrdinalIgnoreCase)
+                 .Where(group => group.Count() > 1))
+        {
+            throw new AmbiguousMigrationException(
+                duplicate.Key,
+                duplicate.Select(descriptor => descriptor.MigrationType));
+        }
     }
 
     private IMigration DeserializeMigration(byte[] payload, Type migrationType)
@@ -358,8 +452,23 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
     }
 
-    protected static Version ParseVersionSafe(string version)
-        => Version.TryParse(version, out var parsed) ? parsed : new Version(0, 0);
+    private static Version ParseVersionRequired(
+        string version,
+        Type migrationType,
+        string sourceVersion,
+        string targetVersion)
+    {
+        if (Version.TryParse(version, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new InvalidMigrationDefinitionException(
+            migrationType,
+            sourceVersion,
+            targetVersion,
+            $"'{version}' is not a valid version.");
+    }
 
     protected static string ExtractVersionFromFile(FileInfo file)
         => file.Directory?.Name ?? string.Empty;
@@ -371,8 +480,16 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             SourceVersion = sourceVersion ?? throw new ArgumentNullException(nameof(sourceVersion));
             TargetVersion = targetVersion ?? throw new ArgumentNullException(nameof(targetVersion));
             MigrationType = migrationType ?? throw new ArgumentNullException(nameof(migrationType));
-            SourceVersionParsed = ParseVersionSafe(SourceVersion);
-            TargetVersionParsed = ParseVersionSafe(TargetVersion);
+            SourceVersionParsed = ParseVersionRequired(
+                SourceVersion,
+                MigrationType,
+                SourceVersion,
+                TargetVersion);
+            TargetVersionParsed = ParseVersionRequired(
+                TargetVersion,
+                MigrationType,
+                SourceVersion,
+                TargetVersion);
         }
 
         internal string SourceVersion { get; }

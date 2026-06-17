@@ -1,4 +1,5 @@
 using System;
+using Idb.Libraries.Abstractions.Enums;
 
 namespace Idb.Libraries.Abstractions.Options;
 
@@ -19,18 +20,17 @@ public sealed record StoragePolicy
     public int MaxConcurrency { get; init; } = 12;
 
     /// <summary>
+    /// Controls whether writes favor throughput or durable out-of-process coordination.
+    /// </summary>
+    public StorageDurabilityMode DurabilityMode { get; init; } = StorageDurabilityMode.Performance;
+
+    /// <summary>
     /// When false, change notifications such as <c>ContractAdded</c> are skipped during writes.
     /// </summary>
     public bool RaiseNotifications { get; init; } = true;
 
     /// <summary>
-    /// When true, the writer adds/updates the envelope in the in-memory cache after a successful write.
-    /// Disable in bulk-write scenarios to reduce memory retention and GC pressure.
-    /// </summary>
-    public bool CacheEnvelopeOnWrite { get; init; } = true;
-
-    /// <summary>
-    /// When adding to cache on write, controls whether the envelope's ObjectInstance should be retained.
+    /// Controls whether the cached envelope's ObjectInstance should be retained after writes.
     /// Set to false to store a lightweight skeleton (ObjectInstance = null).
     /// </summary>
     public bool KeepObjectInstanceInCacheOnWrite { get; init; } = true;
@@ -77,6 +77,11 @@ public sealed record StoragePolicy
     /// Delay used to coalesce repeated file-system notifications for the same payload path.
     /// </summary>
     public TimeSpan StorageChangeDebounce { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// Duration for which watcher events are suppressed after a local repository operation.
+    /// </summary>
+    public TimeSpan LocalStorageChangeSuppression { get; init; } = TimeSpan.FromMilliseconds(750);
 
     /// <summary>
     /// Buffer size (in bytes) used when streaming payloads to disk.
@@ -128,4 +133,8 @@ public sealed record StoragePolicy
     internal TimeSpan NormalizedStorageChangeDebounce => StorageChangeDebounce <= TimeSpan.Zero
         ? TimeSpan.FromMilliseconds(100)
         : StorageChangeDebounce;
+
+    internal TimeSpan NormalizedLocalStorageChangeSuppression => LocalStorageChangeSuppression <= TimeSpan.Zero
+        ? TimeSpan.FromMilliseconds(750)
+        : LocalStorageChangeSuppression;
 }

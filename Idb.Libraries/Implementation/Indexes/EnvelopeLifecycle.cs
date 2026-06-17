@@ -2,7 +2,6 @@ using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 using System.Reflection;
 
@@ -14,14 +13,15 @@ namespace Idb.Libraries.Implementation.Indexes;
 public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
     where TContract : class, IStoredContract<TContract>
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly IEnvelopeKeyAndLocationFactory<TContract> _fileNameFactory;
+    private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
+    private readonly IEnvelopeStorageIdentityFactory<TContract> _storageIdentityFactory;
 
-    public EnvelopeLifecycle(IServiceProvider serviceProvider, 
-        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory)
+    public EnvelopeLifecycle(
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory)
     {
-        _serviceProvider = serviceProvider;
-        _fileNameFactory = fileNameFactory ?? throw new ArgumentNullException(nameof(fileNameFactory));
+        _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
+        _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
     }
 
     public async ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
@@ -35,8 +35,8 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
 
         if (entity.Envelope == null)
         {
-            wrappedEnvelope = _serviceProvider.GetService<IObjectEnvelope<TContract>>()
-                ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."); ;
+            wrappedEnvelope = _envelopeFactory()
+                ?? throw new InvalidOperationException("Envelope factory returned null.");
         }
         else
         {
@@ -45,7 +45,7 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
 
         StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope: null);
         wrappedEnvelope.ObjectInstance = entity;
-        _fileNameFactory.InitEnvelope(wrappedEnvelope);
+        _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
         
         return wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
     }

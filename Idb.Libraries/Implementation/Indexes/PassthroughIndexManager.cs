@@ -70,6 +70,14 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         => _envelopeRepository.InitializeAsync(cancellationToken);
 
+    public ValueTask<bool> DeleteAsync(
+        TContract entity,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        return _envelopeRepository.DeleteAsync(entity, cancellationToken);
+    }
+
     public IAsyncEnumerable<TContract> QueryAsync(
         Func<TContract, bool> predicate,
         CancellationToken cancellationToken = default)

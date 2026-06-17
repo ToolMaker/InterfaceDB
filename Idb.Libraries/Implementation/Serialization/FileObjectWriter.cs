@@ -2,6 +2,7 @@
 using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -20,22 +21,23 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
-        private readonly IEnvelopeKeyAndLocationFactory<TContract> _keyAndLocationFactory;
+        private readonly IEnvelopeStorageIdentityFactory<TContract> _storageIdentityFactory;
 
         public FileObjectWriter(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
             IDbContractConfigDto<TContract> contractConfig,
+            StoragePolicy storagePolicy,
             IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
             IFileWriteCoordinator fileWriteCoordinator,
-            IEnvelopeKeyAndLocationFactory<TContract> keyAndLocationFactory)
+            IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory)
         {
             _serializer = serializer;
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
             _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
             _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
-            _keyAndLocationFactory = keyAndLocationFactory ?? throw new ArgumentNullException(nameof(keyAndLocationFactory));
-            _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
+            _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
+            _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
                 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
@@ -49,6 +51,13 @@ namespace Idb.Libraries.Implementation.Serialization
             if (objectInstance is null)
             {
                 throw new ArgumentNullException(nameof(objectInstance));
+            }
+
+            if (objectInstance.Envelope?.State == StorageObjectState.Deleted)
+            {
+                throw new StorageObjectDeletedException(
+                    objectInstance.Envelope.EnvelopeCacheKey,
+                    objectInstance.Envelope.Location);
             }
 
             var isNewStorageObject = objectInstance.Envelope is null;
@@ -77,10 +86,24 @@ namespace Idb.Libraries.Implementation.Serialization
                     Directory.CreateDirectory(dir);
                 }
 
+                if (_storagePolicy.DurabilityMode == StorageDurabilityMode.Performance)
+                {
+                    await WritePerformanceAsync(
+                        envelope,
+                        path,
+                        isNewStorageObject
+                            && _storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single,
+                        cancellationToken).ConfigureAwait(false);
+
+                    UpdateEnvelopeCache(envelope);
+                    _envelopeLifecycle.Unwrap(envelope);
+                    return objectInstance;
+                }
+
                 var proposalIsCanonical = await _fileWriteCoordinator.PublishAndCommitAsync(
                     path,
                     requireNewPayload: isNewStorageObject
-                        && _keyAndLocationFactory.ObjectCardinality == StorageObjectCardinality.Single,
+                        && _storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single,
                     async (proposalPath, token) =>
                     {
                         if (_storagePolicy.UseSingleWriteBuffer)
@@ -122,26 +145,7 @@ namespace Idb.Libraries.Implementation.Serialization
                         envelope.EnvelopeCacheKey,
                         cancellationToken).ConfigureAwait(false);
 
-                // Update envelope cache after successful persistence (policy-driven)
-                if (_storagePolicy.CacheEnvelopeOnWrite && !string.IsNullOrWhiteSpace(canonicalEnvelope.EnvelopeCacheKey))
-                {
-                    if (_storagePolicy.KeepObjectInstanceInCacheOnWrite)
-                    {
-                        _envelopes[canonicalEnvelope.EnvelopeCacheKey] = canonicalEnvelope;
-                    }
-                    else
-                    {
-                        // Cache a lightweight skeleton to avoid retaining the full object graph in memory
-                        var skeleton = new FileObjectEnvelope<TContract>(_contractConfig)
-                        {
-                            EnvelopeCacheKey = canonicalEnvelope.EnvelopeCacheKey,
-                            VersionTag = canonicalEnvelope.VersionTag,
-                            Location = canonicalEnvelope.Location,
-                            ObjectInstance = null
-                        };
-                        _envelopes[canonicalEnvelope.EnvelopeCacheKey] = skeleton;
-                    }
-                }
+                UpdateEnvelopeCache(canonicalEnvelope);
 
                 _envelopeLifecycle.Unwrap(envelope);
                 return ReferenceEquals(canonicalEnvelope, envelope)
@@ -152,6 +156,68 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 semaphore?.Release();
             }
+
+        }
+
+        private async ValueTask WritePerformanceAsync(
+            IObjectEnvelope<TContract> envelope,
+            string path,
+            bool requireNewPayload,
+            CancellationToken cancellationToken)
+        {
+            if (requireNewPayload && File.Exists(path))
+            {
+                throw new StorageObjectAlreadyExistsException(path);
+            }
+
+            var fileMode = requireNewPayload ? FileMode.CreateNew : FileMode.Create;
+            if (_storagePolicy.UseSingleWriteBuffer)
+            {
+                var payload = _serializer.Serialize(envelope);
+                using var handle = File.OpenHandle(
+                    path,
+                    fileMode,
+                    FileAccess.Write,
+                    FileShare.None,
+                    options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+                await RandomAccess.WriteAsync(handle, payload, 0, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            var fso = new FileStreamOptions
+            {
+                Mode = fileMode,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+                BufferSize = _storagePolicy.NormalizedBufferSize
+            };
+
+            await using var stream = new FileStream(path, fso);
+            await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
+        }
+
+        private void UpdateEnvelopeCache(IObjectEnvelope<TContract> envelope)
+        {
+            if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+            {
+                return;
+            }
+
+            if (_storagePolicy.KeepObjectInstanceInCacheOnWrite)
+            {
+                _envelopes[envelope.EnvelopeCacheKey] = envelope;
+                return;
+            }
+
+            var skeleton = new FileObjectEnvelope<TContract>(_contractConfig)
+            {
+                EnvelopeCacheKey = envelope.EnvelopeCacheKey,
+                VersionTag = envelope.VersionTag,
+                Location = envelope.Location,
+                ObjectInstance = null
+            };
+            _envelopes[envelope.EnvelopeCacheKey] = skeleton;
         }
 
         private async ValueTask<IObjectEnvelope<TContract>> ReadCanonicalEnvelopeAsync(

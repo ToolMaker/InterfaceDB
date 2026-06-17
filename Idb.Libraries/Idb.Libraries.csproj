@@ -36,9 +36,16 @@
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
     <Compile Include="Implementation\Encryption\AesGcmEncryptor.cs" />
     <Compile Include="Implementation\Encryption\EncryptionNone.cs" />
+    <Compile Include="Implementation\Encryption\FileSystemEncryptionRotationOperation.cs" />
+    <Compile Include="Implementation\Encryption\WindowsCredentialEncryptionKeyStore.cs" />
     <Compile Include="Implementation\FlatFileNameFactory.cs" />
+    <Compile Include="Implementation\FlatFileStorageIdentityFactory.cs" />
     <Compile Include="Implementation\Extentions\RepositoryServiceCollectionExtensions.cs" />
     <Compile Include="Implementation\Extentions\StringExtensions.cs" />
+    <Compile Include="Implementation\InMemoryGuidV7EnvelopeKeyFactory.cs" />
+    <Compile Include="Implementation\InMemorySequentialBigIntegerEnvelopeKeyFactory.cs" />
+    <Compile Include="Implementation\InMemorySequentialIntEnvelopeKeyFactory.cs" />
+    <Compile Include="Implementation\InMemorySequentialLongEnvelopeKeyFactory.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
     <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
     <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
@@ -47,7 +54,6 @@
     <Compile Include="Implementation\Repositories\FileEnvelopeRepositoryBase.cs" />
     <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
     <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
-    <Compile Include="Implementation\Repositories\RepositoryBulkExtensions.cs" />
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
     <Compile Include="Implementation\Serialization\CoalescingFileWriteCoordinator.cs" />
     <Compile Include="Implementation\Serialization\EncryptingObjectSerializer.cs" />

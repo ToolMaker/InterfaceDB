@@ -15,20 +15,25 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StoragePolicy _storagePolicy;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _debounces = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _localSuppressions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, PayloadStamp> _snapshot = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _rescanGate = new(1, 1);
     private FileSystemWatcher? _watcher;
     private int _started;
 
-    public FileEnvelopeStorageChangeSource(IDbContractConfigDto<TContract> contractConfig)
+    public FileEnvelopeStorageChangeSource(
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
-        _storagePolicy = contractConfig.StoragePolicy ?? StoragePolicy.Default;
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
     }
 
     public event Func<EnvelopeStorageChange, ValueTask>? Changed;
 
     public ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
-        if (!_storagePolicy.WatchStorageChanges || Interlocked.Exchange(ref _started, 1) != 0)
+        if (Interlocked.Exchange(ref _started, 1) != 0)
         {
             return ValueTask.CompletedTask;
         }
@@ -40,6 +45,12 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
 
         var dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
         Directory.CreateDirectory(dataRoot);
+        CaptureSnapshot(dataRoot);
+
+        if (!_storagePolicy.WatchStorageChanges)
+        {
+            return ValueTask.CompletedTask;
+        }
 
         _watcher = new FileSystemWatcher(dataRoot)
         {
@@ -88,32 +99,109 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
         }
 
         _debounces.Clear();
+        _localSuppressions.Clear();
+        _snapshot.Clear();
+        _rescanGate.Dispose();
     }
 
     private void OnCreated(object sender, FileSystemEventArgs e)
-        => Debounce(e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Created, null, e.FullPath));
+        => Debounce(e.FullPath, e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Created, null, e.FullPath));
 
     private void OnChanged(object sender, FileSystemEventArgs e)
-        => Debounce(e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Changed, null, e.FullPath));
+        => Debounce(e.FullPath, e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Changed, null, e.FullPath));
 
     private void OnDeleted(object sender, FileSystemEventArgs e)
-        => Debounce(e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Deleted, e.FullPath, null));
+        => Debounce(e.FullPath, e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Deleted, e.FullPath, null));
 
     private void OnRenamed(object sender, RenamedEventArgs e)
-        => Debounce(e.FullPath, new EnvelopeStorageChange(EnvelopeStorageChangeType.Renamed, e.OldFullPath, e.FullPath));
+        => Debounce(
+            e.OldFullPath + "\0" + e.FullPath,
+            e.FullPath,
+            new EnvelopeStorageChange(EnvelopeStorageChangeType.Renamed, e.OldFullPath, e.FullPath));
 
     private void OnError(object sender, ErrorEventArgs e)
-        => _ = PublishAsync(new EnvelopeStorageChange(EnvelopeStorageChangeType.Error, null, null, e.GetException()));
+        => _ = RecoverFromErrorAsync(e.GetException());
 
-    private void Debounce(string path, EnvelopeStorageChange change)
+    public void AcknowledgeLocalChange(string providerLocator)
     {
-        if (!IsPayloadPath(path))
+        if (string.IsNullOrWhiteSpace(providerLocator))
         {
             return;
         }
 
+        _localSuppressions[Path.GetFullPath(providerLocator)] =
+            DateTimeOffset.UtcNow + _storagePolicy.NormalizedLocalStorageChangeSuppression;
+    }
+
+    public async ValueTask RescanAsync(CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_contractConfig.DataRoot))
+        {
+            return;
+        }
+
+        await _rescanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
+            var current = EnumerateSnapshot(dataRoot);
+
+            foreach (var prior in _snapshot.ToArray())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!current.ContainsKey(prior.Key))
+                {
+                    _snapshot.TryRemove(prior.Key, out _);
+                    await PublishAsync(new EnvelopeStorageChange(
+                        EnvelopeStorageChangeType.Deleted,
+                        prior.Key,
+                        null)).ConfigureAwait(false);
+                }
+            }
+
+            foreach (var item in current)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!_snapshot.TryGetValue(item.Key, out var prior))
+                {
+                    _snapshot[item.Key] = item.Value;
+                    await PublishAsync(new EnvelopeStorageChange(
+                        EnvelopeStorageChangeType.Created,
+                        null,
+                        item.Key)).ConfigureAwait(false);
+                }
+                else if (!prior.Equals(item.Value))
+                {
+                    _snapshot[item.Key] = item.Value;
+                    await PublishAsync(new EnvelopeStorageChange(
+                        EnvelopeStorageChangeType.Changed,
+                        null,
+                        item.Key)).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            _rescanGate.Release();
+        }
+    }
+
+    private void Debounce(string debounceKey, string payloadPath, EnvelopeStorageChange change)
+    {
+        if (!IsPayloadPath(payloadPath))
+        {
+            return;
+        }
+
+        payloadPath = Path.GetFullPath(payloadPath);
+        if (IsLocallySuppressed(payloadPath))
+        {
+            UpdateSnapshotForSuppressedChange(payloadPath, change.ChangeType);
+            return;
+        }
+
         var cts = new CancellationTokenSource();
-        var prior = _debounces.AddOrUpdate(path, cts, (_, existing) =>
+        var prior = _debounces.AddOrUpdate(debounceKey, cts, (_, existing) =>
         {
             existing.Cancel();
             existing.Dispose();
@@ -126,17 +214,31 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
             return;
         }
 
-        _ = PublishAfterDelayAsync(path, change, cts);
+        _ = PublishAfterDelayAsync(debounceKey, payloadPath, change, cts);
     }
 
     private async Task PublishAfterDelayAsync(
-        string path,
+        string debounceKey,
+        string payloadPath,
         EnvelopeStorageChange change,
         CancellationTokenSource cts)
     {
         try
         {
             await Task.Delay(_storagePolicy.NormalizedStorageChangeDebounce, cts.Token).ConfigureAwait(false);
+            if (IsLocallySuppressed(payloadPath))
+            {
+                UpdateSnapshotForSuppressedChange(payloadPath, change.ChangeType);
+                return;
+            }
+
+            if (change.ChangeType == EnvelopeStorageChangeType.Renamed
+                && !string.IsNullOrWhiteSpace(change.OldPath))
+            {
+                _snapshot.TryRemove(Path.GetFullPath(change.OldPath), out _);
+            }
+
+            UpdateSnapshot(payloadPath, change.ChangeType);
             await PublishAsync(change).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -144,9 +246,84 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
         }
         finally
         {
-            _debounces.TryRemove(new KeyValuePair<string, CancellationTokenSource>(path, cts));
+            _debounces.TryRemove(new KeyValuePair<string, CancellationTokenSource>(debounceKey, cts));
             cts.Dispose();
         }
+    }
+
+    private async Task RecoverFromErrorAsync(Exception? error)
+    {
+        await PublishAsync(new EnvelopeStorageChange(
+            EnvelopeStorageChangeType.Error,
+            null,
+            null,
+            error)).ConfigureAwait(false);
+        try
+        {
+            await RescanAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    private bool IsLocallySuppressed(string path)
+    {
+        if (!_localSuppressions.TryGetValue(path, out var expires))
+        {
+            return false;
+        }
+
+        if (expires >= DateTimeOffset.UtcNow)
+        {
+            return true;
+        }
+
+        _localSuppressions.TryRemove(path, out _);
+        return false;
+    }
+
+    private void UpdateSnapshotForSuppressedChange(string path, EnvelopeStorageChangeType changeType)
+    {
+        UpdateSnapshot(path, changeType);
+    }
+
+    private void UpdateSnapshot(string path, EnvelopeStorageChangeType changeType)
+    {
+        if (changeType == EnvelopeStorageChangeType.Deleted || !File.Exists(path))
+        {
+            _snapshot.TryRemove(path, out _);
+            return;
+        }
+
+        var info = new FileInfo(path);
+        _snapshot[path] = PayloadStamp.From(info);
+    }
+
+    private void CaptureSnapshot(string dataRoot)
+    {
+        _snapshot.Clear();
+        foreach (var item in EnumerateSnapshot(dataRoot))
+        {
+            _snapshot[item.Key] = item.Value;
+        }
+    }
+
+    private Dictionary<string, PayloadStamp> EnumerateSnapshot(string dataRoot)
+    {
+        if (!Directory.Exists(dataRoot))
+        {
+            return new Dictionary<string, PayloadStamp>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return Directory
+            .EnumerateFiles(dataRoot, "*", SearchOption.AllDirectories)
+            .Where(IsPayloadPath)
+            .Select(path => new FileInfo(path))
+            .ToDictionary(
+                info => info.FullName,
+                PayloadStamp.From,
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private async ValueTask PublishAsync(EnvelopeStorageChange change)
@@ -182,5 +359,14 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
 
         var extension = _contractConfig.FileExtension.NormalizeExtension();
         return string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private readonly record struct PayloadStamp(long Length, DateTime LastWriteUtc)
+    {
+        internal static PayloadStamp From(FileInfo info)
+        {
+            info.Refresh();
+            return new PayloadStamp(info.Length, info.LastWriteTimeUtc);
+        }
     }
 }

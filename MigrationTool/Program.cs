@@ -61,6 +61,7 @@ internal static class Program
             "baseline" => HandleBaselineCommand(args),
             "baseline-sequence" => await RunBaselineSequenceAsync().ConfigureAwait(false),
             "migrate" => HandleMigrateCommand(args),
+            "encryption" => await EncryptionRotationCommand.RunAsync(args).ConfigureAwait(false),
             _ => PrintUsage(),
         };
 
@@ -978,12 +979,13 @@ internal static class Program
 
     private static int PrintUsage()
     {
-        Console.WriteLine("Migration Tool");
+        Console.WriteLine("InterfaceDB Maintenance Tool");
         Console.WriteLine("Commands:");
         Console.WriteLine("  baseline <ContractName> --contracts-dir <path>");
         Console.WriteLine("  baseline [<ContractName>] --config-file-dir <path>");
         Console.WriteLine("  baseline-sequence");
         Console.WriteLine("  migrate scaffold <ContractName>");
+        EncryptionRotationCommand.PrintUsage();
         Console.WriteLine("  Required option sets:");
         Console.WriteLine("    <ContractName> with --contracts-dir <path>    Root folder where the contract baselines are generated.");
         Console.WriteLine("    [<ContractName>] with --config-file-dir <path>  Contract options C# file (or directory) used to infer baseline locations.");

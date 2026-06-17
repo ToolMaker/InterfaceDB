@@ -38,6 +38,22 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Persists multiple entities using the repository's configured bulk-write policy.
+    /// </summary>
+    /// <returns>The canonical entities returned by the underlying storage layer, in input order.</returns>
+    ValueTask<IReadOnlyList<TContract>> SaveManyAsync(
+        IEnumerable<TContract> entitiesToSave,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes the exact persisted object identified by its envelope.
+    /// </summary>
+    /// <returns><c>true</c> when active storage existed; otherwise <c>false</c>.</returns>
+    ValueTask<bool> DeleteAsync(
+        TContract entityToDelete,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Queries the repository for an entity that satisfies the predicate and returns the materialized instance.
     /// The repository forwards the predicate to the index manager, which selects the optimal index,
     /// retrieves matching envelopes, and materializes contract instances to hand back.

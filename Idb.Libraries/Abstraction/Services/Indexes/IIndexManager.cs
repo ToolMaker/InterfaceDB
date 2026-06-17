@@ -23,6 +23,11 @@ public interface IIndexManager<TContract>
     ValueTask<TContract> SaveAsync(TContract entity, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Deletes the persisted object identified by the entity's envelope.
+    /// </summary>
+    ValueTask<bool> DeleteAsync(TContract entity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Retrieves an entity that satisfies the supplied predicate.
     /// Implementations unwrap the envelope, restore the contract's envelope reference, and should clear <c>Envelope.ObjectInstance</c> before returning to prevent retain cycles.
     /// </summary>
