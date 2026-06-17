@@ -34,6 +34,7 @@ BenchmarkRunner.Run<PersonStorageBenchmark>();
 public class PersonStorageBenchmark : IDisposable
 {
     private const int BenchmarkPersonCount = 100000;
+    private const int FileSystemBenchmarkConcurrency = 16;
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
 
     private ServiceProvider? _fileProvider;
@@ -88,7 +89,7 @@ public class PersonStorageBenchmark : IDisposable
     public async Task FileSystem_Store100()
     {
         var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
-        await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
+        await repository.SaveManyAsync(persons).ConfigureAwait(false);
     }
 
     [GlobalSetup(Target = nameof(SqlServer_Store100))]
@@ -376,11 +377,10 @@ public class PersonStorageBenchmark : IDisposable
             StoragePolicy = StoragePolicy.Default with
             {
                 HydrateOnInitialize = false,
-                // Cap concurrency to avoid overwhelming disk
-                MaxConcurrency = Math.Min(16, Environment.ProcessorCount),
+                // Cap concurrency to avoid overwhelming disk while keeping the current fastest baseline.
+                MaxConcurrency = Math.Min(FileSystemBenchmarkConcurrency, Environment.ProcessorCount),
                 FileWriteBufferSize = 16 * 1024,
                 RaiseNotifications = false,
-                CacheEnvelopeOnWrite = false,
                 KeepObjectInstanceInCacheOnWrite = false,
                 UseSingleWriteBuffer = true,
                 UseWriterSemaphore = false

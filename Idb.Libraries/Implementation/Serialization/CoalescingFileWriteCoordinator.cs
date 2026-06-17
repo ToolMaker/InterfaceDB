@@ -15,6 +15,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
     private const string PendingMarker = ".pending.";
     private const string WritingSuffix = ".writing";
     private const string ReadySuffix = ".ready";
+    private const string DeleteReadySuffix = ".delete.ready";
     private readonly IFileWriteLock _fileWriteLock;
     private readonly StoragePolicy _storagePolicy;
     private readonly string _storageRoot;
@@ -22,10 +23,11 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
 
     public CoalescingFileWriteCoordinator(
         IFileWriteLock fileWriteLock,
-        IDbContractConfigDto<TContract> contractConfig)
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy)
     {
         _fileWriteLock = fileWriteLock ?? throw new ArgumentNullException(nameof(fileWriteLock));
-        _storagePolicy = contractConfig?.StoragePolicy ?? StoragePolicy.Default;
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
             ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
     }
@@ -102,6 +104,112 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             File.Move(writingPath, readyPath);
             var canonicalProposal = await DrainPendingWritesCoreAsync(payloadPath, cancellationToken).ConfigureAwait(false);
             return string.Equals(canonicalProposal, readyPath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            TryDelete(writingPath);
+            throw;
+        }
+    }
+
+    public async ValueTask<bool> DeleteAndCommitAsync(
+        string payloadPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(payloadPath))
+        {
+            throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
+        }
+
+        await using var writerLease = await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+
+        var directory = Path.GetDirectoryName(payloadPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var hadActiveStorage = File.Exists(payloadPath)
+            || EnumerateReadyFiles(payloadPath).Any(path => !IsDeleteProposal(path));
+        var deleteProposal = CreateDeleteReadyPath(payloadPath);
+        var writingPath = payloadPath + PendingMarker + Guid.NewGuid().ToString("N") + ".delete" + WritingSuffix;
+        try
+        {
+            using (var stream = new FileStream(
+                writingPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.WriteThrough))
+            {
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(writingPath, deleteProposal);
+        }
+        catch
+        {
+            TryDelete(writingPath);
+            throw;
+        }
+
+        try
+        {
+            var canonicalProposal = await DrainPendingWritesCoreAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            return hadActiveStorage
+                && string.Equals(canonicalProposal, deleteProposal, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            TryDelete(deleteProposal);
+            throw;
+        }
+    }
+
+    public async ValueTask<bool> ReplaceIfUnchangedAsync(
+        string payloadPath,
+        ReadOnlyMemory<byte> expectedPayload,
+        ReadOnlyMemory<byte> replacementPayload,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(payloadPath))
+        {
+            throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
+        }
+
+        await using var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
+            ? NoopLease.Instance
+            : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+        await using var writeLock = await _fileWriteLock
+            .AcquireAsync(payloadPath, cancellationToken)
+            .ConfigureAwait(false);
+
+        CommitReadyFilesUnderLock(payloadPath);
+        if (!File.Exists(payloadPath))
+        {
+            return false;
+        }
+
+        var currentPayload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        if (!currentPayload.AsSpan().SequenceEqual(expectedPayload.Span))
+        {
+            return false;
+        }
+
+        var writingPath = payloadPath + PendingMarker + Guid.NewGuid().ToString("N") + WritingSuffix;
+        try
+        {
+            await File.WriteAllBytesAsync(writingPath, replacementPayload, cancellationToken).ConfigureAwait(false);
+            using (var handle = File.OpenHandle(writingPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                RandomAccess.FlushToDisk(handle);
+            }
+
+            var readyPath = CreateReadyPath(payloadPath);
+            File.Move(writingPath, readyPath);
+            CommitProposal(readyPath, payloadPath);
+            return true;
         }
         catch
         {
@@ -242,6 +350,13 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         var publishedTicks = DateTimeOffset.UtcNow.UtcTicks
             .ToString("D19", CultureInfo.InvariantCulture);
         return payloadPath + PendingMarker + publishedTicks + "." + Guid.NewGuid().ToString("N") + ReadySuffix;
+    }
+
+    private static string CreateDeleteReadyPath(string payloadPath)
+    {
+        var publishedTicks = DateTimeOffset.UtcNow.UtcTicks
+            .ToString("D19", CultureInfo.InvariantCulture);
+        return payloadPath + PendingMarker + publishedTicks + "." + Guid.NewGuid().ToString("N") + DeleteReadySuffix;
     }
 
     private async ValueTask<IAsyncDisposable> AcquireWriterLeaseAsync(CancellationToken cancellationToken)
@@ -388,6 +503,13 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
 
     private static void CommitProposal(string proposalPath, string payloadPath)
     {
+        if (IsDeleteProposal(proposalPath))
+        {
+            TryDelete(payloadPath);
+            TryDelete(proposalPath);
+            return;
+        }
+
         if (File.Exists(payloadPath))
         {
             File.Move(proposalPath, payloadPath, overwrite: true);
@@ -396,6 +518,9 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
 
         File.Move(proposalPath, payloadPath);
     }
+
+    private static bool IsDeleteProposal(string proposalPath)
+        => proposalPath.EndsWith(DeleteReadySuffix, StringComparison.OrdinalIgnoreCase);
 
     private static void TryDelete(string path)
     {

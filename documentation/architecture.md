@@ -58,6 +58,9 @@ This is intentional. InterfaceDB treats these as storage-aware objects, not pure
 - `VersionTag`
 - `ObjectInstance`
 - `Location`
+- `State`
+
+`Location` is an opaque provider locator. The file provider interprets it as a path; future SQL, document, event-stream, or memory providers can assign their own locator semantics. `State` is provider-neutral and prevents a deleted in-memory storage object from being saved accidentally.
 
 The envelope is the low-level DB metadata boundary. Upper layers usually receive the object itself, not a separate envelope wrapper, but the object keeps a reference to its envelope.
 
@@ -144,9 +147,10 @@ file -> IEncryptor.Decrypt -> IDB2 deserialization -> object
 
 `AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
 
-- encryption format/algorithm version;
+- encryption format version;
 - nonce size;
 - authentication tag size;
+- key identifier for key-aware version 2 payloads;
 - random nonce;
 - authentication tag;
 - encrypted `IDB2` payload.
@@ -166,7 +170,48 @@ Custom encryption can be registered with `AddInterfaceDbEncryption(IEncryptor)`.
 
 For rollout over existing plaintext files, `AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old `IDB2` payloads to be read while all new writes use `IDBE`. This compatibility setting should be disabled after the old files have been rewritten.
 
-The current `IKeyProvider` supplies one active key and does not yet persist a key identifier. Transparent multi-key rotation is therefore future work.
+`IKeyProvider` remains the simple single-key contract. `IRotatingKeyProvider` resolves an active key ID and historical keys by ID. New key-aware payloads store only the non-secret key ID; key material remains in the configured key store.
+
+`WindowsCredentialEncryptionKeyStore` stores active and historical keys as Generic Credentials for the current Windows user:
+
+```csharp
+var keyStore = new WindowsCredentialEncryptionKeyStore("People");
+keyStore.AddOrUpdateKey("key-2025", oldKey);
+keyStore.AddOrUpdateKey("key-2026", currentKey);
+keyStore.SetActiveKey("key-2026");
+
+services.AddInterfaceDbWindowsCredentialEncryption(
+    "People",
+    new AesGcmEncryptorOptions
+    {
+        LegacyKeyId = "key-2025",
+        RotationMode = EncryptionRotationMode.ReencryptOnRead
+    });
+services.AddRepository<IPerson>(options);
+```
+
+`LegacyKeyId` is required when a rotating provider must read version 1 `IDBE` files because those files predate key identifiers.
+
+Rotation has two independent execution modes:
+
+- `ReencryptOnRead` decrypts once with the payload's historical key and encrypts once with the active key. It does not process intermediate keys. The replacement is committed only if the stored bytes have not changed since the read.
+- `IEncryptionRotationOperation<TContract>.RotateAllAsync` acquires the exclusive storage scope, drains pending writes, and rewrites every payload not already using the active key. This is an encryption maintenance operation, not a schema migration.
+
+Lazy rotation is activated through `AesGcmEncryptorOptions.RotationMode` during encryption registration. It is intentionally not part of `StoragePolicy` because encryption behavior belongs to the selected encryption provider.
+
+Full rotation can be invoked in application code through `IEncryptionRotationOperation<TContract>` or from the maintenance CLI:
+
+```text
+dotnet run --project MigrationTool/MigrationTool.csproj -- encryption rotate
+  --database People
+  --data-root C:\Data\People
+  --extension .mpk
+  --legacy-key-id key-2025
+```
+
+The CLI project retains the `MigrationTool` name for backward compatibility, but presents itself as the InterfaceDB Maintenance Tool because it now owns baseline, migration-scaffolding, and encryption-maintenance commands.
+
+Historical keys must remain available while any payload references them. Remove an old key only after a full rotation reports that all payloads are current.
 
 ## Envelope Lifecycle
 
@@ -211,6 +256,39 @@ For `Single`, the default flat factory uses the contract name as its key. Custom
 Single-object creation is checked while holding the payload lock, so concurrent processes cannot both create the same path. `IEnvelopeKeyAndLocationFactory<TContract>.ObjectCardinality` exposes the setting to naming and persistence.
 
 Repository registration preserves a factory registered by the consumer before `AddRepository`.
+
+## Keyed Dependency Injection
+
+Every repository registration creates a keyed dependency graph. The public database key is:
+
+1. `IDbContractConfigDto<TContract>.EnvelopeDICacheKey`;
+2. `ContractName` when the first value is blank.
+
+Namespaces and contract versions are not used as DI keys.
+
+Two databases can use the same contract type with different roots and behavior:
+
+```csharp
+services.AddRepository<IPerson>(localOptions);
+services.AddRepository<IPerson>(archiveOptions);
+
+var local = provider.GetRequiredKeyedService<IRepository<IPerson>>("LocalPeople");
+var archive = provider.GetRequiredKeyedService<IRepository<IPerson>>("ArchivePeople");
+```
+
+The keyed graph isolates configuration, repository, cache, serializer, envelope lifecycle, reader/writer, change watcher, migration strategy, and write coordination.
+
+Database-specific encryption and filename factories can be registered before the repository:
+
+```csharp
+services.AddInterfaceDbAesGcmEncryption("SecurePeople", keyProvider);
+services.AddInterfaceDbKeyAndLocationFactory<IPerson>("SecurePeople", factory);
+services.AddRepository<IPerson>(secureOptions);
+```
+
+Repeated registration of the same contract, key, and configuration instance is idempotent. Registering the same contract/key with a different configuration instance throws a clear configuration error.
+
+For backward compatibility, unkeyed services resolve to the first database registered for that contract. Applications with multiple databases should use keyed resolution explicitly.
 
 ## Envelope Cache
 
@@ -300,6 +378,32 @@ The semantic is whole-object last-write-wins. Superseded intermediate object rep
 
 `SaveAsync` returns the value that is canonical when its coalescing operation completes. If the caller's proposal loses to a newer ready proposal, the writer reloads that winner, stores the winning envelope in cache, and returns the winning object. The losing input object still has its original storage envelope restored.
 
+Writes and deletes share the same cross-process last-operation-wins model. A timed-out delete removes its own uncommitted delete proposal, preventing a failed call from deleting storage later during recovery.
+
+## Delete Path
+
+`DeleteAsync` requires the exact persisted object and its envelope. Detached objects without an envelope throw `StorageObjectNotPersistedException`.
+
+The file provider publishes deletion into the same ordered stream as writes:
+
+```text
+<key>.mpk.pending.<published-ticks>.<guid>.delete.ready
+```
+
+The payload lock owner selects the newest completed write or delete proposal. A winning delete proposal removes the canonical payload and older proposals. Repository initialization also commits abandoned delete proposals, so a process failure does not leave an older pending write able to recreate deleted storage.
+
+After deletion, the envelope state becomes `Deleted`, the cache entry is removed, and the deleted notification is published. Repeating delete returns `false`. Saving that same storage-aware object throws `StorageObjectDeletedException`; explicit recreation requires a new envelope-less object.
+
+Provider-neutral storage failures use:
+
+- `StorageObjectNotPersistedException`
+- `InvalidStorageEnvelopeException`
+- `StorageObjectDeletedException`
+- `StorageConcurrencyException`
+- `StorageOperationException`
+
+Provider-specific exceptions such as `IOException` remain available through `InnerException`.
+
 ## Storage Change Watching
 
 File repositories now include a low-level storage change layer.
@@ -327,6 +431,16 @@ It watches committed payload changes and ignores transient files:
 
 Events are debounced using `StoragePolicy.StorageChangeDebounce`.
 
+The source maintains a snapshot of committed payload length and last-write time. On watcher error, including internal buffer overflow, it publishes the error and rescans storage:
+
+- missing snapshot paths emit `Deleted`;
+- new paths emit `Created`;
+- changed stamps emit `Changed`.
+
+`RescanAsync` exposes the same reconciliation explicitly. Rename events retain a separate debounce identity from changes to the new path, so an immediate rename/delete sequence still removes the old cache entry.
+
+Before local saves and deletes, the repository acknowledges the provider locator. Matching watcher echoes are suppressed for `StoragePolicy.LocalStorageChangeSuppression`, while the internal snapshot is still updated. This prevents duplicate local repository notifications.
+
 ## Storage Change Handling
 
 The handler treats file-system events as signals. The file remains the source of truth.
@@ -345,7 +459,8 @@ Behavior:
   - read new payload if valid;
   - publish removed/stored/added events as appropriate.
 - `Error`
-  - does not mutate cache.
+  - publishes the watcher error;
+  - triggers snapshot reconciliation.
 
 This keeps the envelope cache closer to disk state when another process changes files.
 
@@ -398,7 +513,22 @@ The policy is supplied through `IDbContractConfigDto<TContract>.StoragePolicy`.
 
 ## Migration Tool
 
-`MigrationTool` creates versioned contract baselines and migration stubs.
+The InterfaceDB Maintenance Tool, currently hosted by the backward-compatible `MigrationTool` project, creates versioned contract baselines and migration stubs and can run explicit encryption rotation.
+
+Each generated baseline also contains `.interfacedb-baseline`, an immutable identity manifest recording the logical contract name, storage version, and fully qualified interface name.
+
+## Contract Analyzer
+
+`Idb.Analyzers` is a `netstandard2.0` Roslyn analyzer package, allowing the same diagnostics to run in Visual Studio, VS Code, Rider, command-line builds, and CI.
+
+It compares `[StorageScope]` interfaces with the committed baseline manifests:
+
+- `IDB001` warns when a recorded interface was removed, renamed, or moved;
+- `IDB002` warns when a storage contract has no baseline manifest;
+- `IDB003` warns when an existing baseline's `VersionTag` was edited;
+- `IDB004` warns when a manifest cannot be interpreted.
+
+This tooling does not prevent deliberate schema changes. It requires them to follow the intended workflow: create a new versioned baseline, retain the previous contract identity, and provide a migration.
 
 Baseline folders look like:
 
@@ -452,6 +582,25 @@ Before eager migration, the repository acquires a contract-wide migration scope:
 5. release waiting writers.
 
 Migration now reads the `IDB2` envelope header separately from the object body, preserves the envelope cache key, applies the migration chain to the body, and writes the result through the normal coalescing writer.
+
+Migration chains follow these rules:
+
+- every migration target must be greater than its source;
+- only one migration may be registered for a source version;
+- each stored version must have a complete path to `ActiveVersion`;
+- migration state is serialized between each step, allowing multi-step chains;
+- legacy storage is deleted only after the complete chain is persisted successfully.
+
+Migration failures use:
+
+- `MissingMigrationException`
+- `AmbiguousMigrationException`
+- `InvalidMigrationDefinitionException`
+- `MigrationExecutionException`
+
+`EagerStrict` rolls back target payloads written during a failed initialization batch and propagates the failure. `EagerTolerant` retains unchanged legacy payloads when a chain is missing or migration code fails.
+
+Lazy migration begins from the skeleton envelope and provider locator. It reads the raw stored payload, applies the complete chain, and only then materializes the active contract. Legacy envelopes are deliberately excluded from startup cache hydration under the lazy strategy.
 
 Runtime migrations still need broader production hardening, particularly complete version-chain validation, tolerant-mode diagnostics, rollback behavior, and generated-contract compatibility coverage.
 

@@ -1,6 +1,7 @@
 using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstractions.Services.Migrations;
 
@@ -19,4 +20,11 @@ public interface IMigrationStrategy<TContract>
     IAsyncEnumerable<TContract> OnInitializeAsync(CancellationToken cancellationToken = default);
 
     TContract Migrate(TContract objectInstance, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Migrates storage identified by an envelope before the legacy object must be materialized.
+    /// </summary>
+    ValueTask<TContract?> MigrateAsync(
+        IObjectEnvelope<TContract> envelope,
+        CancellationToken cancellationToken = default);
 }

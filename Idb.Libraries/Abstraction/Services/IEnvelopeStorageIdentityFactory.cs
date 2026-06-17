@@ -3,12 +3,12 @@ namespace Idb.Libraries.Abstractions.Services
     using Idb.Libraries.Abstractions.Dtos;
     using Idb.Libraries.Abstractions.Enums;
     using Idb.Libraries.Abstractions.Services.Serialization;
-    using System.IO;
+
     /// <summary>
-    /// Produces unique storage identifiers for contract instances and initialized the location property
+    /// Resolves the storage identity and physical location for an envelope.
     /// </summary>
     /// <typeparam name="TContract">Contract type associated with the value.</typeparam>
-    public interface IEnvelopeKeyAndLocationFactory<TContract>
+    public interface IEnvelopeStorageIdentityFactory<TContract>
         where TContract : class, IStoredContract<TContract>
     {
         /// <summary>
@@ -23,4 +23,3 @@ namespace Idb.Libraries.Abstractions.Services
         void InitEnvelope(IObjectEnvelope<TContract> envelope);
     }
 }
-

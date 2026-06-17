@@ -1,4 +1,5 @@
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 
 namespace Idb.Libraries.Abstractions.Services.Serialization
 {
@@ -32,6 +33,11 @@ public interface IObjectEnvelope<TContract>
     /// Location descriptor where the serialized payload resides (e.g., file, blob, queue message).
         /// </summary>
         string? Location { get; set; }
+
+        /// <summary>
+        /// Tracks whether this envelope still represents an active storage object.
+        /// </summary>
+        StorageObjectState State { get; set; }
     }
 }
 

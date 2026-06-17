@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Migrations;
@@ -21,13 +22,14 @@ public sealed class FileSystemLazyMigrationStrategy<TContract> : FileSystemMigra
     public FileSystemLazyMigrationStrategy(
         IDbContractConfigDto<TContract> contractConfig,
         IObjectSerializer<TContract> serializer,
-        IEnvelopeKeyAndLocationFactory<TContract> fileNameFactory,
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory,
         IEnumerable<IMigration> migrations,
         IEncryptor encryptor,
         IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
         IObjectReader<TContract> reader,
         IObjectWriter<TContract> writer)
-        : base(contractConfig, serializer, fileNameFactory, migrations, MigrationStrategyType.Lazy, encryptor, fileWriteCoordinator, reader, writer)
+        : base(contractConfig, serializer, storageIdentityFactory, migrations, MigrationStrategyType.Lazy, encryptor, fileWriteCoordinator, storagePolicy, reader, writer)
     {
     }
 

@@ -1,6 +1,7 @@
 using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -19,12 +20,13 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
         IObjectSerializer<TContract> serializer,
         IEnumerable<IMigration> migrations,
         MigrationStrategyType strategyType,
-        IEnvelopeKeyAndLocationFactory<TContract> factory,
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory,
         IEncryptor encryptor,
         IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
         IObjectReader<TContract> reader,
         IObjectWriter<TContract> writer)
-        : base(contractConfig, serializer, factory, migrations, strategyType, encryptor, fileWriteCoordinator, reader, writer)
+        : base(contractConfig, serializer, storageIdentityFactory, migrations, strategyType, encryptor, fileWriteCoordinator, storagePolicy, reader, writer)
     {
         if (strategyType is not (MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant))
         {
@@ -56,7 +58,6 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
         if (StrategyType == MigrationStrategyType.EagerStrict)
         {
             var written = new System.Collections.Concurrent.ConcurrentBag<(string NewPath, FileInfo LegacyFile, TContract Saved)>();
-            var commitFailed = false;
             try
             {
                 await Parallel.ForEachAsync(legacyFiles, new ParallelOptions { MaxDegreeOfParallelism = dop, CancellationToken = cancellationToken }, async (file, ct) =>
@@ -70,16 +71,11 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
             }
             catch
             {
-                commitFailed = true;
-            }
-
-            if (commitFailed)
-            {
                 foreach (var entry in written)
                 {
                     try { if (File.Exists(entry.NewPath)) File.Delete(entry.NewPath); } catch { }
                 }
-                yield break;
+                throw;
             }
 
             foreach (var entry in written)

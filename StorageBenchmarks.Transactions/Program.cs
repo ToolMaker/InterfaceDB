@@ -21,22 +21,70 @@ using PerformanceCommon;
 using System.Data;
 using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
-TransactionBenchmarks.EnsureConfigurationInitialized();
-BenchmarkRunner.Run<TransactionBenchmarks>();
+try
+{
+    TransactionBenchmarks.EnsureConfigurationInitialized();
+    if (args.Any(argument => string.Equals(argument, "--smoke-sql", StringComparison.OrdinalIgnoreCase)))
+    {
+        TransactionBenchmarks.SmokeTestSqlConnection();
+        return;
+    }
+
+    if (args.Length == 0)
+    {
+        Console.WriteLine("InterfaceDB transaction benchmark runner");
+        Console.WriteLine();
+        Console.WriteLine("Run from a terminal so BenchmarkDotNet can report failures clearly:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions");
+        Console.WriteLine();
+        Console.WriteLine("Quick SQL configuration check:");
+        Console.WriteLine("  dotnet run --project StorageBenchmarks.Transactions -- --smoke-sql");
+        Console.WriteLine();
+        Console.WriteLine("Pass BenchmarkDotNet arguments after --, for example:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*");
+        return;
+    }
+
+    BenchmarkRunner.Run<TransactionBenchmarks>(args: args);
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine("StorageBenchmarks.Transactions failed.");
+    Console.Error.WriteLine(ex);
+    Environment.ExitCode = 1;
+}
 
 [MemoryDiagnoser]
 public class TransactionBenchmarks : IDisposable
 {
     private const int BenchmarkPersonCount = 50_000;
+    private const int QueryRepeatCount = 100;
+    private const int FileSystemBenchmarkConcurrency = 16;
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
+    private static readonly string[] QueryRoles = { "Student", "Employee" };
 
     private ServiceProvider? _fileProvider;
     private string? _fileDataRoot;
     private SqlConnection? _sqlConnection;
+    private SqlConnection? _sqlBulkConnection;
+    private SqlConnection? _sqlQueryConnection;
     private SqlConnection? _dapperConnection;
     private List<ContractPerson.IPerson>? _iterationPersons;
+    private IRepository<ContractPerson.IPerson>? _queryRepository;
 
     internal static IConfiguration? Configuration { get; set; }
+
+    public static void SmokeTestSqlConnection()
+    {
+        using var connection = CreateOpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT @@SERVERNAME AS ServerName, DB_NAME() AS DatabaseName";
+        using var reader = command.ExecuteReader();
+        if (reader.Read())
+        {
+            Console.WriteLine($"Connected to SQL Server '{reader.GetString(0)}', database '{reader.GetString(1)}'.");
+        }
+    }
 
     [GlobalSetup(Target = nameof(FileSystem_StoreTransaction))]
     public void SetupFileSystemAsync()
@@ -84,9 +132,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = null;
 
         var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
-        var config = _fileProvider.GetRequiredService<IDbContractConfigDto<ContractPerson.IPerson>>();
-        var policy = config.StoragePolicy ?? StoragePolicy.Default;
-        await repository.SaveManyAsync(persons, policy).ConfigureAwait(false);
+        await repository.SaveManyAsync(persons).ConfigureAwait(false);
     }
 
     [GlobalSetup(Target = nameof(SqlServer_StoreTransaction))]
@@ -189,6 +235,144 @@ public class TransactionBenchmarks : IDisposable
         transaction.Commit();
     }
 
+    [GlobalSetup(Target = nameof(SqlServer_BulkCopy))]
+    public void SetupSqlBulkCopy()
+    {
+        _sqlBulkConnection = CreateOpenConnection();
+        EnsureSqlSchema(_sqlBulkConnection);
+    }
+
+    [IterationSetup(Target = nameof(SqlServer_BulkCopy))]
+    public void PrepareSqlBulkCopyIteration()
+    {
+        if (_sqlBulkConnection is null)
+        {
+            throw new InvalidOperationException("SQL Server bulk connection not initialized.");
+        }
+
+        EnsureSqlSchema(_sqlBulkConnection);
+        _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+    }
+
+    [Benchmark(Description = "SQL Server (SqlBulkCopy) - store 50k persons")]
+    public void SqlServer_BulkCopy()
+    {
+        if (_sqlBulkConnection is null)
+        {
+            throw new InvalidOperationException("SQL Server bulk connection not initialized.");
+        }
+
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        using var bulkCopy = new SqlBulkCopy(
+            _sqlBulkConnection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(persons));
+    }
+
+    [GlobalSetup(Target = nameof(FileSystem_QueryBatch))]
+    public void SetupFileSystemQuery()
+    {
+        _fileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-query", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_fileDataRoot);
+        _fileProvider = BuildFileSystemProvider(_fileDataRoot, keepObjectsOnWrite: true);
+        _queryRepository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
+        _queryRepository.InitializeAsync().GetAwaiter().GetResult();
+        _queryRepository.SaveManyAsync(PersonDataFactory.ClonePersons(_seedPersons)).GetAwaiter().GetResult();
+        var validationCount = CountInterfaceDbMatchesAsync(_queryRepository, "Student", 20)
+            .GetAwaiter()
+            .GetResult();
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("InterfaceDB query benchmark setup produced no queryable records.");
+        }
+    }
+
+    [Benchmark(Description = "Interface DB - 100 predicate scans over 50k persons")]
+    public async Task<int> FileSystem_QueryBatch()
+    {
+        var repository = _queryRepository ?? throw new InvalidOperationException("File-system query repository not initialized.");
+        var total = 0;
+
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            await foreach (var _ in repository.QueryManyAsync(person => person.Role == role && person.Age >= minimumAge))
+            {
+                total++;
+            }
+        }
+
+        return total;
+    }
+
+    [GlobalSetup(Target = nameof(SqlServer_QueryBatch))]
+    public void SetupSqlServerQuery()
+    {
+        _sqlQueryConnection = CreateOpenConnection();
+        EnsureSqlSchema(_sqlQueryConnection);
+        using var bulkCopy = new SqlBulkCopy(
+            _sqlQueryConnection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
+        CreateSqlQueryIndexes(_sqlQueryConnection);
+        using var command = _sqlQueryConnection.CreateCommand();
+        command.CommandText = "SELECT COUNT_BIG(*) FROM dbo.Persons WHERE Role = N'Student' AND Age >= 20";
+        var validationCount = Convert.ToInt64(command.ExecuteScalar());
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("SQL Server query benchmark setup produced no queryable records.");
+        }
+    }
+
+    [Benchmark(Description = "SQL Server - 100 indexed count queries over 50k persons")]
+    public int SqlServer_QueryBatch()
+    {
+        if (_sqlQueryConnection is null)
+        {
+            throw new InvalidOperationException("SQL Server query connection not initialized.");
+        }
+
+        var total = 0;
+        using var command = _sqlQueryConnection.CreateCommand();
+        command.CommandText = "SELECT COUNT_BIG(*) FROM dbo.Persons WHERE Role = @role AND Age >= @minimumAge";
+        command.Parameters.Add("@role", SqlDbType.NVarChar, 100);
+        command.Parameters.Add("@minimumAge", SqlDbType.Int);
+
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            command.Parameters["@role"].Value = QueryRoles[i % QueryRoles.Length];
+            command.Parameters["@minimumAge"].Value = 20 + (i % 30);
+            total += Convert.ToInt32(command.ExecuteScalar());
+        }
+
+        return total;
+    }
+
     [GlobalCleanup]
     public void Cleanup() => Dispose();
 
@@ -205,13 +389,22 @@ public class TransactionBenchmarks : IDisposable
         _sqlConnection?.Dispose();
         _sqlConnection = null;
 
+        _sqlBulkConnection?.Dispose();
+        _sqlBulkConnection = null;
+
+        _sqlQueryConnection?.Dispose();
+        _sqlQueryConnection = null;
+
         _dapperConnection?.Dispose();
         _dapperConnection = null;
 
         _iterationPersons = null;
+        _queryRepository = null;
     }
 
-    private static ServiceProvider BuildFileSystemProvider(string dataRoot)
+    private static ServiceProvider BuildFileSystemProvider(
+        string dataRoot,
+        bool keepObjectsOnWrite = false)
     {
         var options = new PersonOptions
         {
@@ -223,6 +416,17 @@ public class TransactionBenchmarks : IDisposable
             Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
             IndexProvisioningMode = IndexProvisioningModeType.None,
             RepositoryType = ContractRepositoryType.FileSystem,
+            StoragePolicy = StoragePolicy.Default with
+            {
+                HydrateOnInitialize = false,
+                MaxConcurrency = Math.Min(FileSystemBenchmarkConcurrency, Environment.ProcessorCount),
+                FileWriteBufferSize = 16 * 1024,
+                RaiseNotifications = false,
+                KeepObjectInstanceInCacheOnWrite = keepObjectsOnWrite,
+                UseSingleWriteBuffer = true,
+                UseWriterSemaphore = false,
+                WatchStorageChanges = false
+            }
         };
 
         var services = new ServiceCollection();
@@ -264,6 +468,14 @@ public class TransactionBenchmarks : IDisposable
         return connectionString;
     }
 
+    private static string ResolveBenchmarkRoot()
+    {
+        const string preferredRoot = @"G:\PerformanceTest";
+        return Directory.Exists(Path.GetPathRoot(preferredRoot))
+            ? preferredRoot
+            : Path.Combine(Path.GetTempPath(), "InterfaceDbPerformanceTest");
+    }
+
     private static SqlConnection CreateOpenConnection()
     {
         var connectionString = ResolveSqlConnectionString();
@@ -292,6 +504,44 @@ public class TransactionBenchmarks : IDisposable
             );
             """;
         command.ExecuteNonQuery();
+    }
+
+    private static void CreateSqlQueryIndexes(SqlConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "CREATE INDEX IX_Persons_Role_Age ON dbo.Persons(Role, Age);";
+        command.ExecuteNonQuery();
+    }
+
+    private static async Task<int> CountInterfaceDbMatchesAsync(
+        IRepository<ContractPerson.IPerson> repository,
+        string role,
+        int minimumAge)
+    {
+        var count = 0;
+        await foreach (var _ in repository.QueryManyAsync(person => person.Role == role && person.Age >= minimumAge))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static DataTable CreatePersonDataTable(IEnumerable<ContractPerson.IPerson> persons)
+    {
+        var table = new DataTable();
+        table.Columns.Add("Id", typeof(Guid));
+        table.Columns.Add("Name", typeof(string));
+        table.Columns.Add("Age", typeof(int));
+        table.Columns.Add("Role", typeof(string));
+        table.Columns.Add("Surname", typeof(string));
+
+        foreach (var person in persons)
+        {
+            table.Rows.Add(person.Id, person.Name, person.Age, person.Role, string.Empty);
+        }
+
+        return table;
     }
 
     private sealed class DapperPersonEnvelope

@@ -14,7 +14,13 @@ public sealed class AesGcmEncryptorOptions
     /// </summary>
     public bool AllowUnencryptedPayloads { get; init; }
 
-    /// <summary>Add future flags here, e.g., compression or encoding scheme.</summary>
-    // public bool UseCompression { get; init; }
+    /// <summary>
+    /// Identifies the key used by legacy IDBE version 1 payloads, which did not store a key identifier.
+    /// </summary>
+    public string? LegacyKeyId { get; init; }
+
+    /// <summary>Controls whether reads transparently rewrite payloads that use a historical key.</summary>
+    public Idb.Libraries.Abstractions.Enums.EncryptionRotationMode RotationMode { get; init; }
+        = Idb.Libraries.Abstractions.Enums.EncryptionRotationMode.ReadHistoricalOnly;
 }
 

@@ -44,4 +44,8 @@ public interface IEnvelopeRepository<TContract> :
     ValueTask<TContract> WriteAsync(
             TContract contractInstance,
             CancellationToken cancellationToken = default);
+
+    ValueTask<bool> DeleteAsync(
+            TContract contractInstance,
+            CancellationToken cancellationToken = default);
 }

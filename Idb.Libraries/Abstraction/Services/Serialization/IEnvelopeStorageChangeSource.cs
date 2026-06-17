@@ -11,4 +11,14 @@ public interface IEnvelopeStorageChangeSource<TContract> : IAsyncDisposable
     event Func<EnvelopeStorageChange, ValueTask>? Changed;
 
     ValueTask StartAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Suppresses watcher echoes caused by a repository operation performed in this process.
+    /// </summary>
+    void AcknowledgeLocalChange(string providerLocator);
+
+    /// <summary>
+    /// Reconciles the watcher snapshot with the backing store.
+    /// </summary>
+    ValueTask RescanAsync(CancellationToken cancellationToken = default);
 }

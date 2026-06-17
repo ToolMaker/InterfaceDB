@@ -1,6 +1,7 @@
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Abstractions.Enums;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Idb.Libraries.Implementation.Serialization;
@@ -30,4 +31,6 @@ public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
     public TContract? ObjectInstance { get; set; }
 
     public string? Location { get; set; }
+
+    public StorageObjectState State { get; set; }
 }

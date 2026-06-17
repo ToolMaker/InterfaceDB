@@ -7,7 +7,9 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Applies encryption after envelope serialization and decryption before deserialization.
 /// </summary>
-public sealed class EncryptingObjectSerializer<TContract> : IObjectSerializer<TContract>
+public sealed class EncryptingObjectSerializer<TContract> :
+    IObjectSerializer<TContract>,
+    IRotationAwareObjectSerializer<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly BinaryObjectSerializer<TContract> _serializer;
@@ -28,6 +30,22 @@ public sealed class EncryptingObjectSerializer<TContract> : IObjectSerializer<TC
     {
         ArgumentNullException.ThrowIfNull(data);
         return _serializer.Deserialize(_encryptor.Decrypt(data));
+    }
+
+    public RotationAwareDeserializationResult<TContract> DeserializeForRead(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if (_encryptor is not IRotatingEncryptor rotatingEncryptor)
+        {
+            return new RotationAwareDeserializationResult<TContract>(Deserialize(data), null);
+        }
+
+        var decrypted = rotatingEncryptor.DecryptWithMetadata(data);
+        var envelope = _serializer.Deserialize(decrypted.Plaintext);
+        var replacement = decrypted.RequiresReencryption
+            ? _encryptor.Encrypt(decrypted.Plaintext)
+            : null;
+        return new RotationAwareDeserializationResult<TContract>(envelope, replacement);
     }
 
     public async ValueTask SerializeAsync(

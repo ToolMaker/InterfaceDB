@@ -2,6 +2,7 @@ using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
 
@@ -17,16 +18,19 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
     private readonly IObjectSerializer<TContract> _serializer;
     private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
     private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+    private readonly StoragePolicy _storagePolicy;
     private readonly string _dataRoot;
     private readonly string _fileExtension;
 
     public FileEnvelopeStorageChangeHandler(
         IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy,
         IObjectSerializer<TContract> serializer,
         IEnvelopeLifecycle<TContract> envelopeLifecycle,
         IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
@@ -82,6 +86,10 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
 
         var cacheKey = Path.GetFileNameWithoutExtension(path);
         _envelopes.TryGetValue(cacheKey, out var oldEnvelope);
+        if (oldEnvelope is not null)
+        {
+            oldEnvelope.State = StorageObjectState.Deleted;
+        }
         _envelopes.Remove(cacheKey);
 
         return new EnvelopeStorageChangeResult<TContract>(changeType, oldEnvelope, null);
@@ -137,7 +145,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
                     Access = FileAccess.Read,
                     Share = FileShare.ReadWrite | FileShare.Delete,
                     Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-                    BufferSize = _contractConfig.StoragePolicy?.NormalizedBufferSize ?? StoragePolicy.DefaultBufferSize
+                    BufferSize = _storagePolicy.NormalizedBufferSize
                 };
 
                 using var stream = new FileStream(file.FullName, fso);

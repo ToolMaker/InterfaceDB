@@ -1,0 +1,4 @@
+# InterfaceDB baseline identity v1
+logical-name=Person
+version=1.0.0
+metadata-name=MigrationTool.Contracts.Person.v1_0_0.IPerson

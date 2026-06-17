@@ -22,6 +22,23 @@ public interface IFileWriteCoordinator
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Atomically replaces a payload only when its committed bytes still match the expected bytes.
+    /// </summary>
+    ValueTask<bool> ReplaceIfUnchangedAsync(
+        string payloadPath,
+        ReadOnlyMemory<byte> expectedPayload,
+        ReadOnlyMemory<byte> replacementPayload,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Publishes a delete proposal into the same ordered stream as writes.
+    /// </summary>
+    /// <returns><c>true</c> when an active payload or pending write was removed.</returns>
+    ValueTask<bool> DeleteAndCommitAsync(
+        string payloadPath,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Commits any complete proposals left behind beneath a storage root.
     /// </summary>
     ValueTask DrainPendingWritesAsync(

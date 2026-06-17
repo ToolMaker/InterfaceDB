@@ -2,7 +2,7 @@
 <html lang='en'>
 <head>
 <meta charset='utf-8' />
-<title>TransactionBenchmarks-20260309-210326</title>
+<title>TransactionBenchmarks-20260616-215608</title>
 
 <style type="text/css">
 	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
@@ -13,21 +13,24 @@
 </head>
 <body>
 <pre><code>
-BenchmarkDotNet v0.13.12, Windows 10 (10.0.19045.6937/22H2/2022Update)
-AMD Ryzen 9 3950X, 1 CPU, 32 logical and 16 physical cores
-.NET SDK 10.0.102
-  [Host]     : .NET 9.0.13 (9.0.1326.6317), X64 RyuJIT AVX2
-  Job-ULKJYT : .NET 9.0.13 (9.0.1326.6317), X64 RyuJIT AVX2
+BenchmarkDotNet v0.15.8, Windows 10 (10.0.19045.7417/22H2/2022Update)
+AMD Ryzen 9 3950X 3.49GHz, 1 CPU, 32 logical and 16 physical cores
+.NET SDK 10.0.301
+  [Host]     : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+  DefaultJob : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+  Job-CNUJVU : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
 </code></pre>
-<pre><code>InvocationCount=1  UnrollFactor=1  
-</code></pre>
+<pre><code></code></pre>
 
 <table>
-<thead><tr><th>Method                                             </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0 </th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
+<thead><tr><th>Method                                             </th><th>Job </th><th>InvocationCount</th><th>UnrollFactor</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
 </tr>
-</thead><tbody><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>4.283 s</td><td>0.0830 s</td><td>0.1050 s</td><td>102000.0000</td><td>71000.0000</td><td>1000.0000</td><td>483.65 MB</td>
-</tr><tr><td>&#39;SQL Server (transaction) - store 50k persons&#39;</td><td>3.376 s</td><td>0.0674 s</td><td>0.1810 s</td><td>4000.0000</td><td>1000.0000</td><td>-</td><td>38.53 MB</td>
-</tr><tr><td>&#39;Dapper (transaction) - store 50k persons&#39;</td><td>3.636 s</td><td>0.0690 s</td><td>0.1226 s</td><td>17000.0000</td><td>1000.0000</td><td>-</td><td>136.95 MB</td>
+</thead><tbody><tr><td>&#39;Interface DB - 100 predicate scans over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>2,082.8 ms</td><td>38.02 ms</td><td>35.56 ms</td><td>2000.0000</td><td>2000.0000</td><td>2000.0000</td><td>78198.27 KB</td>
+</tr><tr><td>&#39;SQL Server - 100 indexed count queries over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>111.0 ms</td><td>0.71 ms</td><td>0.66 ms</td><td>-</td><td>-</td><td>-</td><td>348.21 KB</td>
+</tr><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>5,482.1 ms</td><td>104.35 ms</td><td>115.98 ms</td><td>5000.0000</td><td>1000.0000</td><td>-</td><td>180127.45 KB</td>
+</tr><tr><td>&#39;SQL Server (transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>3,476.2 ms</td><td>69.16 ms</td><td>164.36 ms</td><td>16000.0000</td><td>-</td><td>-</td><td>163676.52 KB</td>
+</tr><tr><td>&#39;Dapper (transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>3,668.0 ms</td><td>73.17 ms</td><td>131.94 ms</td><td>47000.0000</td><td>-</td><td>-</td><td>414453.66 KB</td>
+</tr><tr><td>&#39;SQL Server (SqlBulkCopy) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>181.5 ms</td><td>2.42 ms</td><td>2.27 ms</td><td>-</td><td>-</td><td>-</td><td>23661.09 KB</td>
 </tr></tbody></table>
 </body>
 </html>

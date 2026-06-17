@@ -28,30 +28,125 @@ Planned indexing work should include:
 - Persistence or deterministic rebuild strategy for large stores.
 - Tests covering indexed and non-indexed query paths.
 
-## Near-Term Gaps
+### Additional Encryption Key Stores
 
-### Stable Serialized Type Names
+Windows Credential Manager is the first implemented `IEncryptionKeyStore`. Future providers should preserve the same active-key and historical-key lookup contract for:
 
-Serialized payloads currently include the concrete .NET runtime type name. This is fragile if classes move, namespaces change, or assemblies are renamed.
+- Azure Key Vault;
+- AWS KMS or Secrets Manager;
+- HashiCorp Vault;
+- Apple Keychain;
+- Android Keystore;
+- hardware security modules;
+- development-only environment or configuration stores.
 
-Potential fix:
+### Field-Level Encryption
 
-- Add a type alias registry per contract/version.
-- Persist stable aliases instead of assembly-qualified type names for new records.
-- Keep backward-compatible reading for existing payloads that contain assembly-qualified names.
+Current encryption protects the complete serialized envelope payload. Future work can add property-level encryption for contracts that need selected fields encrypted independently before full payload serialization.
+
+One possible developer experience:
+
+```csharp
+public interface IPerson : IStoredContract<IPerson>
+{
+    string Name { get; }
+
+    [EncryptedStorageField]
+    string NationalIdentifier { get; }
+}
+```
+
+Suggested flow:
+
+1. During write, inspect the contract/implementation metadata for encrypted fields.
+2. Encrypt only those values before the object payload is serialized.
+3. Store enough non-secret field encryption metadata to choose the correct key on read.
+4. During read, decrypt the field once while materializing the object.
+5. Keep the decrypted value in memory on the materialized object, so property access does not decrypt repeatedly.
+
+The implementation should avoid mutating user objects unexpectedly. A safer design may require serializer-level hooks, generated storage proxies, or envelope-side encrypted field templates rather than reflection that changes live object state. This should be designed carefully after the indexing and batch-write layers are stable.
+
+### Adaptive Storage Policy Resolution
+
+`StoragePolicy` is currently explicit configuration. Repository registration accepts an optional policy override:
+
+```csharp
+services.AddRepository<IPerson>(
+    personOptions,
+    storagePolicy: StoragePolicy.Default with
+    {
+        MaxConcurrency = Environment.ProcessorCount
+    });
+```
+
+Future work can add an optional resolver layer that detects local or cloud storage characteristics and fills in a policy when the caller has not supplied one.
+
+Suggested abstraction:
+
+```csharp
+public interface IStoragePolicyResolver
+{
+    ValueTask<StoragePolicy> ResolveAsync(
+        StoragePolicyContext context,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Suggested resolution order:
+
+```text
+AddRepository storagePolicy
+    > contractConfig.StoragePolicy
+        > IStoragePolicyResolver result
+            > StoragePolicy.Default
+```
+
+The resolver should plug into repository registration rather than becoming a separate required setup step:
+
+```csharp
+services.AddRepository<IPerson>(
+    personOptions,
+    storagePolicyResolver: new AutoStoragePolicyResolver());
+```
+
+or, if DI-owned:
+
+```csharp
+services.AddRepository<IPerson>(
+    personOptions,
+    storagePolicyResolverKey: "local-nvme");
+```
+
+Resolver implementations should be conservative and provider-specific:
+
+- local drive heuristic resolver using OS/runtime drive information;
+- Azure VM resolver using Azure Instance Metadata Service storage profile, disk caching, IOPS and throughput throttle data;
+- AWS EC2 resolver using instance metadata plus EBS/NVMe volume information;
+- benchmark/probe resolver that measures actual small-object and sequential throughput before choosing concurrency and buffer settings.
+
+Detection must never override an explicit policy. It should only fill gaps or provide a recommended baseline. This keeps deployments deterministic while allowing optimized defaults for local M.2/NVMe, HDD/network shares, and provisioned cloud disks.
+
+### Maintenance Tool Rename
+
+The existing `MigrationTool` project now presents itself as the InterfaceDB Maintenance Tool and includes encryption rotation. A physical project and executable rename should be reserved for a major version, with a compatibility alias or forwarding command so existing scripts do not break.
+
+## Completed Cleanup
+
+### Encryption Key Rotation
+
+Key-aware `IDBE` version 2 payloads identify the exact historical key required for decryption. Windows Credential Manager stores active and historical keys. Rotation supports direct lazy re-encryption on read and an explicit full-store operation under the exclusive storage scope. Existing single-key providers and legacy `IDBE` version 1 payloads remain supported.
+
+### Contract Rename Protection
+
+`Idb.Analyzers` and immutable `.interfacedb-baseline` manifests warn when storage contracts are renamed, moved, removed, introduced without a baseline, or edited in place without following the versioned migration workflow.
 
 ### Runtime Migration Hardening
 
-Migration scaffolding exists, but runtime migration behavior needs stronger validation before it should be treated as production-ready.
+Migration chains now require one deterministic forward link per source version, preserve legacy storage on failure, support raw-payload lazy migration, and have multi-step, missing-link, ambiguous-link, backward-link, execution-failure, encryption, pending-write, and process-interruption coverage.
 
-Potential fix:
+### Filesystem Watcher Hardening
 
-- Make migration registration explicit and discoverable.
-- Validate complete adjacent-version migration chains at startup.
-- Ensure migrations read and write envelope-aware payloads correctly.
-- Add tests using real legacy payload files.
-
-## Completed Cleanup
+The watcher suppresses local event echoes, maintains a payload snapshot, rescans after errors or overflow, supports explicit reconciliation, and has external create/update/delete plus rename/delete race coverage.
 
 ### Factory-Based Identity and Cardinality
 
@@ -70,3 +165,7 @@ The solution was retargeted to .NET 10 and compiler warnings were cleaned up. A 
 ### Demo Storage Tracking
 
 The broad `IdbDemoStorage/*` ignore rule was removed so required demo storage source files can be tracked while `bin` and `obj` outputs remain ignored.
+
+### Registration-Level Storage Policy
+
+Repository registration now accepts an optional `StoragePolicy` override. The effective policy is registered in DI per database and low-level storage services consume that resolved policy instead of repeatedly reading the contract config.

@@ -44,6 +44,7 @@ public static class BaselineGenerator
             switch (options.ExistingBehavior)
             {
                 case BaselineExistingBehavior.Skip:
+                    WriteBaselineManifest(existingBaseline.Directory, options, targetNamespace, targetVersion);
                     Console.WriteLine($"Baseline for {options.ContractName} version {targetVersion} already exists. Skipping.");
                     return new BaselineResult(targetVersion.ToString(), previousBaseline?.Version.ToString(), targetNamespace);
 
@@ -68,6 +69,7 @@ public static class BaselineGenerator
                     break;
 
                 default:
+                    WriteBaselineManifest(existingBaseline.Directory, options, targetNamespace, targetVersion);
                     Console.WriteLine($"Baseline for {options.ContractName} version {targetVersion} already exists. Reusing existing files.");
                     return new BaselineResult(targetVersion.ToString(), previousBaseline?.Version.ToString(), targetNamespace);
             }
@@ -93,6 +95,7 @@ public static class BaselineGenerator
             CopyBaseline(previousBaseline.Directory, targetDirectory, options, previousBaseline.Version, targetVersion);
         }
 
+        WriteBaselineManifest(targetDirectory, options, targetNamespace, targetVersion);
         return new BaselineResult(targetVersion.ToString(), previousBaseline?.Version.ToString(), targetNamespace);
     }
 
@@ -218,6 +221,22 @@ public static class BaselineGenerator
             var destinationPath = Path.Combine(targetDirectory.FullName, sourceFile.Name);
             File.WriteAllText(destinationPath, content);
         }
+    }
+
+    private static void WriteBaselineManifest(
+        DirectoryInfo baselineDirectory,
+        BaselineOptions options,
+        string contractNamespace,
+        Version version)
+    {
+        var manifestPath = Path.Combine(baselineDirectory.FullName, ".interfacedb-baseline");
+        File.WriteAllLines(manifestPath, new[]
+        {
+            "# InterfaceDB baseline identity v1",
+            $"logical-name={options.ContractName}",
+            $"version={version}",
+            $"metadata-name={contractNamespace}.I{options.ContractName}"
+        });
     }
 
     public static Version ResolveTargetVersion(Version? previousVersion, BaselineOptions options)
