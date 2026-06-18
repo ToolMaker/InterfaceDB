@@ -35,6 +35,10 @@ public class PersonStorageBenchmark : IDisposable
 {
     private const int BenchmarkPersonCount = 100000;
     private const int FileSystemBenchmarkConcurrency = 16;
+    private const int FileSystemBenchmarkBulkBatchSize = 4096;
+    private const string MaxConcurrencyEnvironmentVariable = "INTERFACEDB_BENCH_MAX_CONCURRENCY";
+    private const string BulkBatchSizeEnvironmentVariable = "INTERFACEDB_BENCH_BULK_BATCH_SIZE";
+    private const string UseSingleWriteBufferEnvironmentVariable = "INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER";
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
 
     private ServiceProvider? _fileProvider;
@@ -364,6 +368,16 @@ public class PersonStorageBenchmark : IDisposable
 
     private static ServiceProvider BuildFileSystemProvider(string dataRoot)
     {
+        var maxConcurrency = ResolvePositiveInt(
+            MaxConcurrencyEnvironmentVariable,
+            FileSystemBenchmarkConcurrency);
+        var bulkBatchSize = ResolvePositiveInt(
+            BulkBatchSizeEnvironmentVariable,
+            FileSystemBenchmarkBulkBatchSize);
+        var useSingleWriteBuffer = ResolveBool(
+            UseSingleWriteBufferEnvironmentVariable,
+            defaultValue: true);
+
         var options = new PersonOptions
         {
             DataRoot = dataRoot,
@@ -378,11 +392,12 @@ public class PersonStorageBenchmark : IDisposable
             {
                 HydrateOnInitialize = false,
                 // Cap concurrency to avoid overwhelming disk while keeping the current fastest baseline.
-                MaxConcurrency = Math.Min(FileSystemBenchmarkConcurrency, Environment.ProcessorCount),
+                MaxConcurrency = Math.Min(maxConcurrency, Environment.ProcessorCount),
+                BulkWriteBatchSize = bulkBatchSize,
                 FileWriteBufferSize = 16 * 1024,
                 RaiseNotifications = false,
                 KeepObjectInstanceInCacheOnWrite = false,
-                UseSingleWriteBuffer = true,
+                UseSingleWriteBuffer = useSingleWriteBuffer,
                 UseWriterSemaphore = false
             }
         };
@@ -391,6 +406,27 @@ public class PersonStorageBenchmark : IDisposable
         services.AddRepository<ContractPerson.IPerson>(options);
 
         return services.BuildServiceProvider();
+    }
+
+    private static int ResolvePositiveInt(string name, int defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(value, out var parsed) && parsed > 0
+            ? parsed
+            : defaultValue;
+    }
+
+    private static bool ResolveBool(string name, bool defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static IConfiguration EnsureConfigurationInitialized()

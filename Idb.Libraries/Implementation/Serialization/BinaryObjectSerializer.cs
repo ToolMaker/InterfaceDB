@@ -3,6 +3,8 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 using MessagePack;
 using MessagePack.Resolvers;
 using MessagePack.Formatters;
+using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text;
 
 namespace Idb.Libraries.Implementation.Serialization;
@@ -14,8 +16,27 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     where TContract : class, IStoredContract<TContract>
 {
     private const string DefaultExtension = ".mpk";
+    private static readonly ConcurrentDictionary<Type, TypeSerializationInfo> TypeSerializationCache = new();
+    private static readonly ConcurrentDictionary<string, Type?> TypeResolutionCache = new(StringComparer.Ordinal);
     private readonly MessagePackSerializerOptions _options;
     private readonly MessagePackSerializerOptions _fastOptions;
+
+    private delegate void SerializeTypedDelegate(
+        Stream destination,
+        object instance,
+        MessagePackSerializerOptions options,
+        CancellationToken cancellationToken);
+
+    private delegate Task SerializeTypedAsyncDelegate(
+        Stream destination,
+        object instance,
+        MessagePackSerializerOptions options,
+        CancellationToken cancellationToken);
+
+    private sealed record TypeSerializationInfo(
+        string TypeName,
+        SerializeTypedDelegate Serialize,
+        SerializeTypedAsyncDelegate SerializeAsync);
 
     public BinaryObjectSerializer(MessagePackSerializerOptions? options = null)
     {
@@ -56,13 +77,12 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         var version = obj.VersionTag ?? string.Empty;
         var cacheKey = obj.EnvelopeCacheKey ?? string.Empty;
         var instance = obj.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
-        var type = instance.GetType();
-        var typeName = type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
+        var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
 
         MessagePackSerializer.Serialize(ms, version, _fastOptions);
         MessagePackSerializer.Serialize(ms, cacheKey, _fastOptions);
-        MessagePackSerializer.Serialize(ms, typeName, _fastOptions);
-        MessagePackSerializer.Serialize(type, ms, instance, _fastOptions);
+        MessagePackSerializer.Serialize(ms, typeInfo.TypeName, _fastOptions);
+        typeInfo.Serialize(ms, instance, _fastOptions, CancellationToken.None);
         return ms.ToArray();
     }
 
@@ -204,8 +224,41 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     private static Type? ResolveType(string? typeName)
     {
         if (string.IsNullOrWhiteSpace(typeName)) return null;
-        return Type.GetType(typeName, throwOnError: false);
+        return TypeResolutionCache.GetOrAdd(typeName, static key => Type.GetType(key, throwOnError: false));
     }
+
+    private static TypeSerializationInfo CreateTypeSerializationInfo(Type runtimeType)
+    {
+        var typeName = runtimeType.AssemblyQualifiedName ?? runtimeType.FullName ?? runtimeType.Name;
+        var serialize = (SerializeTypedDelegate)Delegate.CreateDelegate(
+            typeof(SerializeTypedDelegate),
+            typeof(BinaryObjectSerializer<TContract>)
+                .GetMethod(nameof(SerializeTyped), BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(runtimeType));
+        var serializeAsync = (SerializeTypedAsyncDelegate)Delegate.CreateDelegate(
+            typeof(SerializeTypedAsyncDelegate),
+            typeof(BinaryObjectSerializer<TContract>)
+                .GetMethod(nameof(SerializeTypedAsync), BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(runtimeType));
+
+        return new TypeSerializationInfo(typeName, serialize, serializeAsync);
+    }
+
+    private static void SerializeTyped<TRuntime>(
+        Stream destination,
+        object instance,
+        MessagePackSerializerOptions options,
+        CancellationToken cancellationToken)
+    {
+        MessagePackSerializer.Serialize(destination, (TRuntime)instance, options, cancellationToken);
+    }
+
+    private static Task SerializeTypedAsync<TRuntime>(
+        Stream destination,
+        object instance,
+        MessagePackSerializerOptions options,
+        CancellationToken cancellationToken)
+        => MessagePackSerializer.SerializeAsync(destination, (TRuntime)instance, options, cancellationToken);
 
     private async Task SerializeCoreAsync(
         IObjectEnvelope<TContract> envelope,
@@ -216,13 +269,12 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         var version = envelope.VersionTag ?? string.Empty;
         var cacheKey = envelope.EnvelopeCacheKey ?? string.Empty;
         var instance = envelope.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
-        var type = instance.GetType();
-        var typeName = type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
+        var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
 
         await MessagePackSerializer.SerializeAsync(destination, version, _fastOptions, cancellationToken).ConfigureAwait(false);
         await MessagePackSerializer.SerializeAsync(destination, cacheKey, _fastOptions, cancellationToken).ConfigureAwait(false);
-        await MessagePackSerializer.SerializeAsync(destination, typeName, _fastOptions, cancellationToken).ConfigureAwait(false);
-        await MessagePackSerializer.SerializeAsync(type, destination, instance, _fastOptions, cancellationToken).ConfigureAwait(false);
+        await MessagePackSerializer.SerializeAsync(destination, typeInfo.TypeName, _fastOptions, cancellationToken).ConfigureAwait(false);
+        await typeInfo.SerializeAsync(destination, instance, _fastOptions, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<IObjectEnvelope<TContract>> DeserializeCoreAsync(

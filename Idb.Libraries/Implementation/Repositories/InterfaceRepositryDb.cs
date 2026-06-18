@@ -8,7 +8,6 @@ using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
-using System.Threading.Channels;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -75,61 +74,7 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
             return Array.Empty<TContract>();
         }
 
-        var results = new TContract[materialized.Count];
-        var concurrency = Math.Min(_storagePolicy.NormalizedConcurrency, materialized.Count);
-        if (concurrency <= 1)
-        {
-            for (var index = 0; index < materialized.Count; index++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results[index] = await SaveAsync(materialized[index], cancellationToken).ConfigureAwait(false);
-            }
-
-            return results;
-        }
-
-        var channel = Channel.CreateBounded<(int Index, TContract Entity)>(
-            new BoundedChannelOptions(Math.Max(concurrency * 16, 256))
-            {
-                FullMode = BoundedChannelFullMode.Wait,
-                SingleReader = false,
-                SingleWriter = true
-            });
-
-        var workers = new Task[concurrency];
-        for (var worker = 0; worker < workers.Length; worker++)
-        {
-            workers[worker] = Task.Run(async () =>
-            {
-                var reader = channel.Reader;
-                while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    while (reader.TryRead(out var workItem))
-                    {
-                        results[workItem.Index] = await SaveAsync(workItem.Entity, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-            }, cancellationToken);
-        }
-
-        try
-        {
-            var writer = channel.Writer;
-            for (var index = 0; index < materialized.Count; index++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await writer.WriteAsync((index, materialized[index]), cancellationToken).ConfigureAwait(false);
-            }
-
-            writer.TryComplete();
-            await Task.WhenAll(workers).ConfigureAwait(false);
-            return results;
-        }
-        catch (Exception ex)
-        {
-            channel.Writer.TryComplete(ex);
-            throw;
-        }
+        return await _indexManager.SaveManyAsync(materialized, cancellationToken).ConfigureAwait(false);
     }
 
     public ValueTask<bool> DeleteAsync(

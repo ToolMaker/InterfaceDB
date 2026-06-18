@@ -3,6 +3,7 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace Idb.Libraries.Implementation.Indexes;
@@ -24,7 +25,7 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
         _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
     }
 
-    public async ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
+    public ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
     {
         if (entity is null)
         {
@@ -47,7 +48,7 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
         wrappedEnvelope.ObjectInstance = entity;
         _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
         
-        return wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider.");
+        return ValueTask.FromResult(wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."));
     }
 
     public TContract Unwrap(IObjectEnvelope<TContract> envelope)
@@ -116,7 +117,20 @@ internal static class StoredContractEnvelopeAccessor<TContract>
                 "Use 'public IObjectEnvelope<TContract>? Envelope { get; private set; }' or an equivalent non-public setter.");
         }
 
-        return (instance, value) => propertyInfo.SetValue(instance, value);
+        var setter = propertyInfo.GetSetMethod(nonPublic: true)
+            ?? throw new InvalidOperationException(
+                $"Type '{runtimeType.FullName}' must expose a setter for '{propertyInfo.Name}'.");
+
+        var instanceParameter = Expression.Parameter(typeof(object), "instance");
+        var valueParameter = Expression.Parameter(envelopeType, "value");
+        var call = Expression.Call(
+            Expression.Convert(instanceParameter, runtimeType),
+            setter,
+            valueParameter);
+
+        return Expression
+            .Lambda<Action<object, IObjectEnvelope<TContract>?>>(call, instanceParameter, valueParameter)
+            .Compile();
     }
 }
 

@@ -52,6 +52,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("repository query cardinality methods enforce result bounds", RepositoryQueryCardinalityMethodsAsync),
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
     ("repository bulk save persists canonical objects in input order", RepositoryBulkSavePersistsInInputOrderAsync),
+    ("repository bulk save reports partial failures", RepositoryBulkSaveReportsPartialFailuresAsync),
     ("repository registration storage policy overrides config policy", RepositoryRegistrationStoragePolicyOverridesConfigAsync),
     ("repository registration storage identity factory controls file identity", RepositoryRegistrationStorageIdentityFactoryControlsFileIdentityAsync),
     ("default identity factory uses guid v7 file keys", DefaultIdentityFactoryUsesGuidV7KeysAsync),
@@ -518,6 +519,52 @@ static async Task RepositoryBulkSavePersistsInInputOrderAsync()
     }
 }
 
+static async Task RepositoryBulkSaveReportsPartialFailuresAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        await using var provider = BuildSingleProvider(testRoot);
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var records = new[]
+        {
+            new LockTestRecord { Id = "bulk-duplicate", Value = "winner" },
+            new LockTestRecord { Id = "bulk-duplicate", Value = "duplicate" }
+        };
+
+        StorageBulkOperationException? bulkException = null;
+        try
+        {
+            await repository.SaveManyAsync(records).ConfigureAwait(false);
+        }
+        catch (StorageBulkOperationException ex)
+        {
+            bulkException = ex;
+        }
+
+        bulkException = AssertNotNull(
+            bulkException,
+            "Bulk duplicate save should report an aggregate storage failure.");
+        Assert(bulkException.Failures.Count == 1, "Exactly one duplicate write should fail.");
+        Assert(bulkException.SucceededIndexes.Count == 1, "Exactly one duplicate write should succeed.");
+
+        var queried = new List<ILockTestRecord>();
+        await foreach (var record in repository.QueryManyAsync(x => x.Id == "bulk-duplicate"))
+        {
+            queried.Add(record);
+        }
+
+        Assert(queried.Count == 1, "A partial bulk failure should leave the successful write committed.");
+        AssertNoSidecarArtifacts(testRoot);
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
 static async Task RepositoryRegistrationStoragePolicyOverridesConfigAsync()
 {
     var testRoot = CreateTestRoot();
@@ -861,7 +908,7 @@ static async Task KeyedDependencyInjectionIsolatesDatabasesAsync()
     {
         var localRoot = Path.Combine(testRoot, "local");
         var secureRoot = Path.Combine(testRoot, "secure");
-        var localOptions = new NamedLockTestOptions("LocalPeople", localRoot);
+        var localOptions = new NamedLockTestOptions("SharedPeopleOptions", localRoot);
         var secureOptions = new NamedLockTestOptions("SecurePeople", secureRoot);
 
         var services = new ServiceCollection();
@@ -869,11 +916,11 @@ static async Task KeyedDependencyInjectionIsolatesDatabasesAsync()
             "SecurePeople",
             new FixedTestKeyProvider(),
             new AesGcmEncryptorOptions());
-        services.AddRepository<ILockTestRecord>(localOptions);
+        services.AddRepository<ILockTestRecord>(localOptions, "LocalPeople");
         services.AddRepository<ILockTestRecord>(secureOptions);
 
         await using var provider = services.BuildServiceProvider();
-        var local = provider.GetRequiredKeyedService<IRepository<ILockTestRecord>>("LocalPeople");
+        var local = provider.GetInterfaceDbRepository<ILockTestRecord>("LocalPeople");
         var secure = provider.GetRequiredKeyedService<IRepository<ILockTestRecord>>("SecurePeople");
         var unkeyed = provider.GetRequiredService<IRepository<ILockTestRecord>>();
 

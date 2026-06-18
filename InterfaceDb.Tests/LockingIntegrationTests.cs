@@ -52,6 +52,7 @@ public sealed class LockingIntegrationTests
         StringAssert.Contains(standardOutput, "PASS repository query cardinality methods enforce result bounds");
         StringAssert.Contains(standardOutput, "PASS repository operations honor their public contracts");
         StringAssert.Contains(standardOutput, "PASS repository bulk save persists canonical objects in input order");
+        StringAssert.Contains(standardOutput, "PASS repository bulk save reports partial failures");
         StringAssert.Contains(standardOutput, "PASS repository registration storage policy overrides config policy");
         StringAssert.Contains(standardOutput, "PASS repository registration storage identity factory controls file identity");
         StringAssert.Contains(standardOutput, "PASS default identity factory uses guid v7 file keys");

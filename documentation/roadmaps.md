@@ -150,7 +150,7 @@ The watcher suppresses local event echoes, maintains a payload snapshot, rescans
 
 ### Factory-Based Identity and Cardinality
 
-Storage identity remains delegated to `IEnvelopeKeyAndLocationFactory<TContract>` and does not require an ID property or attribute.
+Storage identity remains delegated to `IEnvelopeStorageIdentityFactory<TContract>` and does not require an ID property or attribute.
 
 `StorageObjectCardinality.Single` rejects detached duplicate creation at an existing factory-resolved path while allowing envelope-aware updates. `Multiple` assigns a unique physical identity to each new object. Single creation is enforced under the out-of-process payload lock.
 

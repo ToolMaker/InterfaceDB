@@ -45,6 +45,28 @@ public interface IEnvelopeRepository<TContract> :
             TContract contractInstance,
             CancellationToken cancellationToken = default);
 
+    async ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+            IEnumerable<TContract> contractInstances,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contractInstances);
+
+        var materialized = contractInstances as IReadOnlyList<TContract> ?? contractInstances.ToArray();
+        if (materialized.Count == 0)
+        {
+            return Array.Empty<TContract>();
+        }
+
+        var results = new TContract[materialized.Count];
+        for (var index = 0; index < materialized.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            results[index] = await WriteAsync(materialized[index], cancellationToken).ConfigureAwait(false);
+        }
+
+        return results;
+    }
+
     ValueTask<bool> DeleteAsync(
             TContract contractInstance,
             CancellationToken cancellationToken = default);

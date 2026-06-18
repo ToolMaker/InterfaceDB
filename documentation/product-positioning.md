@@ -85,16 +85,30 @@ The exception model is also provider-neutral, so file, SQL, document, event, and
 
 ## Current Performance Baseline
 
-Latest benchmark provided on 2026-06-17:
+Latest full stack benchmark provided on 2026-06-17:
 
 | Method                                                    | Mean       | Error     | StdDev    | Gen0       | Gen1      | Gen2      | Allocated |
 |---------------------------------------------------------- |-----------:|----------:|----------:|-----------:|----------:|----------:|----------:|
-| Interface DB - 100 predicate scans over 50k persons       | 2,082.8 ms |  38.02 ms |  35.56 ms |  2000.0000 | 2000.0000 | 2000.0000 |  76.37 MB |
-| SQL Server - 100 indexed count queries over 50k persons   |   111.0 ms |   0.71 ms |   0.66 ms |          - |         - |         - |   0.34 MB |
-| Interface DB transaction baseline - store 50k persons     | 5,482.1 ms | 104.35 ms | 115.98 ms |  5000.0000 | 1000.0000 |         - | 175.91 MB |
-| SQL Server transaction - store 50k persons                | 3,476.2 ms |  69.16 ms | 164.36 ms | 16000.0000 |         - |         - | 159.84 MB |
-| Dapper transaction - store 50k persons                    | 3,668.0 ms |  73.17 ms | 131.94 ms | 47000.0000 |         - |         - | 404.74 MB |
-| SQL Server SqlBulkCopy - store 50k persons                |   181.5 ms |   2.42 ms |   2.27 ms |          - |         - |         - |  23.11 MB |
+| Interface DB - 100 predicate scans over 50k persons       |   787.8 ms |  37.97 ms | 110.76 ms |  1000.0000 | 1000.0000 | 1000.0000 |  38.20 MB |
+| SQL Server - 100 indexed count queries over 50k persons   |   108.5 ms |   2.12 ms |   2.35 ms |          - |         - |         - |   0.34 MB |
+| Interface DB transaction baseline - store 50k persons     | 5,408.4 ms | 102.60 ms | 114.04 ms |  4000.0000 |         - |         - | 160.87 MB |
+| SQL Server transaction - store 50k persons                | 3,658.6 ms |  72.77 ms | 148.65 ms | 16000.0000 |         - |         - | 159.84 MB |
+| Dapper transaction - store 50k persons                    | 3,731.9 ms |  73.57 ms | 126.90 ms | 47000.0000 |         - |         - | 404.74 MB |
+| SQL Server SqlBulkCopy - store 50k persons                |   178.9 ms |   1.35 ms |   1.12 ms |          - |         - |         - |  23.11 MB |
+
+Best current InterfaceDB store-only run after tuning:
+
+| Method                                                | Mean  | Allocated |
+|------------------------------------------------------ |------:|----------:|
+| Interface DB transaction baseline - store 50k persons | 5.261 s | 160.82 MB |
+
+Settings:
+
+```text
+INTERFACEDB_BENCH_MAX_CONCURRENCY=16
+INTERFACEDB_BENCH_BULK_BATCH_SIZE=16384
+INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER=true
+```
 
 This result is encouraging because InterfaceDB is doing more than scalar row insertion:
 
