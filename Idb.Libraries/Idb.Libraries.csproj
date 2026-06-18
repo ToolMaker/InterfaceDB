@@ -57,6 +57,7 @@
     <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
     <Compile Include="Implementation\Serialization\CoalescingFileWriteCoordinator.cs" />
     <Compile Include="Implementation\Serialization\EncryptingObjectSerializer.cs" />
+    <Compile Include="Implementation\Serialization\EnvelopeCacheKey.cs" />
     <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeHandler.cs" />
     <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeSource.cs" />
     <Compile Include="Implementation\Serialization\FileObjectEnvelope.cs" />

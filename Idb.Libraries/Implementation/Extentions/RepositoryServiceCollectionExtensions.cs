@@ -169,7 +169,7 @@ namespace Idb.Libraries.Implementation.Extentions
             ArgumentNullException.ThrowIfNull(services);
             ArgumentNullException.ThrowIfNull(contractConfig);
             ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.FileSystem);
-            return AddRepositoryCore(
+            return AddFileRepositoryCore(
                 services,
                 contractConfig,
                 strategyType,
@@ -207,7 +207,7 @@ namespace Idb.Libraries.Implementation.Extentions
                 NormalizeDatabaseKey(databaseKey));
         }
 
-        private static IServiceCollection AddRepositoryCore<TContract>(
+        private static IServiceCollection AddFileRepositoryCore<TContract>(
             IServiceCollection services,
             IDbContractConfigDto<TContract> contractConfig,
             MigrationStrategyType strategyType,
@@ -216,6 +216,8 @@ namespace Idb.Libraries.Implementation.Extentions
             StorageDurabilityMode? durabilityMode)
             where TContract : class, IStoredContract<TContract>
         {
+            ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.FileSystem);
+
             var databaseKey = ResolveDatabaseKey(contractConfig);
             var internalKey = new InternalDatabaseServiceKey(databaseKey, typeof(TContract));
             var configuredStoragePolicy = storagePolicy ?? contractConfig.StoragePolicy ?? StoragePolicy.Default;
@@ -282,13 +284,16 @@ namespace Idb.Libraries.Implementation.Extentions
                 new EnvelopeLifecycle<TContract>(
                     () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
-            services.TryAddKeyedSingleton<IFileWriteLock>(
+
+            // File-provider write locking. Future providers should register their own IStorageWriteLock
+            // implementation from their provider-specific registration path.
+            services.TryAddKeyedSingleton<IStorageWriteLock>(
                 internalKey,
                 (sp, _) => new SidecarFileWriteLock<TContract>(
                     sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
             services.TryAddKeyedSingleton<IFileWriteCoordinator>(internalKey, (sp, _) =>
                 new CoalescingFileWriteCoordinator<TContract>(
-                    sp.GetRequiredKeyedService<IFileWriteLock>(internalKey),
+                    sp.GetRequiredKeyedService<IStorageWriteLock>(internalKey),
                     contractConfig,
                     sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
             services.TryAddKeyedSingleton<IEncryptionRotationOperation<TContract>>(
@@ -432,8 +437,8 @@ namespace Idb.Libraries.Implementation.Extentions
                 sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(databaseKey));
             services.TryAddSingleton<IEnvelopeLifecycle<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(databaseKey));
-            services.TryAddSingleton<IFileWriteLock>(sp =>
-                sp.GetRequiredKeyedService<IFileWriteLock>(internalKey));
+            services.TryAddSingleton<IStorageWriteLock>(sp =>
+                sp.GetRequiredKeyedService<IStorageWriteLock>(internalKey));
             services.TryAddSingleton<IFileWriteCoordinator>(sp =>
                 sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey));
             services.TryAddSingleton<IEncryptionRotationOperation<TContract>>(sp =>

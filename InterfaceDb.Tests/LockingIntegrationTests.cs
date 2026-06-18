@@ -49,6 +49,7 @@ public sealed class LockingIntegrationTests
         StringAssert.Contains(standardOutput, "PASS single cardinality rejects detached duplicates and permits loaded updates");
         StringAssert.Contains(standardOutput, "PASS single cardinality is atomic across repository instances");
         StringAssert.Contains(standardOutput, "PASS multiple cardinality creates distinct physical objects");
+        StringAssert.Contains(standardOutput, "PASS multiple cardinality allocates incremented cache keys");
         StringAssert.Contains(standardOutput, "PASS repository query cardinality methods enforce result bounds");
         StringAssert.Contains(standardOutput, "PASS repository operations honor their public contracts");
         StringAssert.Contains(standardOutput, "PASS repository bulk save persists canonical objects in input order");

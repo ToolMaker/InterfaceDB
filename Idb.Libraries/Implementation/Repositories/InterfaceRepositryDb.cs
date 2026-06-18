@@ -98,11 +98,35 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return _indexManager.QueryAsync(filterFunction, cancellationToken);
     }
 
+    public IAsyncEnumerable<TContract> QueryManyByStorageKeyAsync(
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(storageKey))
+        {
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
+        }
+
+        return _indexManager.QueryByStorageKeyAsync(storageKey, cancellationToken);
+    }
+
     public async ValueTask<TContract?> QueryFirstAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default)
     {
         await foreach (var match in QueryManyAsync(filterFunction, cancellationToken).ConfigureAwait(false))
+        {
+            return match;
+        }
+
+        return null;
+    }
+
+    public async ValueTask<TContract?> QueryFirstByStorageKeyAsync(
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        await foreach (var match in QueryManyByStorageKeyAsync(storageKey, cancellationToken).ConfigureAwait(false))
         {
             return match;
         }

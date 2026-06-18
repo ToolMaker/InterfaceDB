@@ -15,6 +15,7 @@ namespace Idb.Libraries.Implementation.Serialization
         where TContract : class, IStoredContract<TContract>
     {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _ensuredDirs = new();
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _identitySemaphores = new(StringComparer.OrdinalIgnoreCase);
         private IObjectSerializer<TContract> _serializer;
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
         private readonly SemaphoreSlim? _writeSemaphore;
@@ -66,6 +67,9 @@ namespace Idb.Libraries.Implementation.Serialization
             .WrapAsync(objectInstance)
             .ConfigureAwait(false);
 
+            var identitySemaphore = isNewStorageObject
+                ? await AcquireIdentitySemaphoreAsync(envelope, cancellationToken).ConfigureAwait(false)
+                : null;
             var semaphore = _writeSemaphore;
             if (semaphore is not null)
             {
@@ -74,6 +78,11 @@ namespace Idb.Libraries.Implementation.Serialization
 
             try
             {
+                if (isNewStorageObject)
+                {
+                    ResolveNewStorageIdentity(envelope);
+                }
+
                 // Ensure directory exists once per target path (reduce repeated OS calls)
                 var path = envelope.Location;
                 if (string.IsNullOrWhiteSpace(path))
@@ -92,8 +101,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     await WritePerformanceAsync(
                         envelope,
                         path,
-                        isNewStorageObject
-                            && _storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single,
+                        isNewStorageObject,
                         cancellationToken).ConfigureAwait(false);
 
                     UpdateEnvelopeCache(envelope);
@@ -103,8 +111,7 @@ namespace Idb.Libraries.Implementation.Serialization
 
                 var proposalIsCanonical = await _fileWriteCoordinator.PublishAndCommitAsync(
                     path,
-                    requireNewPayload: isNewStorageObject
-                        && _storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single,
+                    requireNewPayload: isNewStorageObject,
                     async (proposalPath, token) =>
                     {
                         if (_storagePolicy.UseSingleWriteBuffer)
@@ -156,6 +163,7 @@ namespace Idb.Libraries.Implementation.Serialization
             finally
             {
                 semaphore?.Release();
+                identitySemaphore?.Release();
             }
 
         }
@@ -291,6 +299,58 @@ namespace Idb.Libraries.Implementation.Serialization
                 exception);
         }
 
+        private async ValueTask<SemaphoreSlim?> AcquireIdentitySemaphoreAsync(
+            IObjectEnvelope<TContract> envelope,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+            {
+                return null;
+            }
+
+            var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
+            var semaphoreKey = typeof(TContract).FullName + "|" + logicalKey;
+            var semaphore = _identitySemaphores.GetOrAdd(semaphoreKey, static _ => new SemaphoreSlim(1, 1));
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return semaphore;
+        }
+
+        private void ResolveNewStorageIdentity(IObjectEnvelope<TContract> envelope)
+        {
+            if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
+            {
+                return;
+            }
+
+            var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
+            var existingCount = _envelopes.GetGroupCount(logicalKey);
+            if (_storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single)
+            {
+                if (existingCount > 0)
+                {
+                    throw new StorageObjectAlreadyExistsException(envelope.Location ?? envelope.EnvelopeCacheKey);
+                }
+
+                return;
+            }
+
+            var physicalKey = EnvelopeCacheKey.ToPhysicalKey(logicalKey, existingCount);
+            if (string.Equals(physicalKey, envelope.EnvelopeCacheKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            envelope.EnvelopeCacheKey = physicalKey;
+            if (!string.IsNullOrWhiteSpace(envelope.Location))
+            {
+                var directory = Path.GetDirectoryName(envelope.Location);
+                var extension = Path.GetExtension(envelope.Location);
+                envelope.Location = string.IsNullOrWhiteSpace(directory)
+                    ? physicalKey + extension
+                    : Path.Combine(directory, physicalKey + extension);
+            }
+        }
+
         private async ValueTask WritePerformanceAsync(
             IObjectEnvelope<TContract> envelope,
             string path,
@@ -338,7 +398,10 @@ namespace Idb.Libraries.Implementation.Serialization
 
             if (_storagePolicy.KeepObjectInstanceInCacheOnWrite)
             {
-                _envelopes[envelope.EnvelopeCacheKey] = envelope;
+                _envelopes.AddOrUpdate(
+                    envelope.EnvelopeCacheKey,
+                    EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                    envelope);
                 return;
             }
 
@@ -359,7 +422,10 @@ namespace Idb.Libraries.Implementation.Serialization
                 ObjectInstance = null,
                 State = envelope.State
             };
-            _envelopes[envelope.EnvelopeCacheKey] = skeleton;
+            _envelopes.AddOrUpdate(
+                envelope.EnvelopeCacheKey,
+                EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                skeleton);
         }
 
         private async ValueTask<IObjectEnvelope<TContract>> ReadCanonicalEnvelopeAsync(

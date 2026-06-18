@@ -84,6 +84,14 @@ The main application entry point is `IRepository<TContract>`:
 
 The current `IIndexManager<TContract>` implementation is `PassthroughIndexManager<TContract>`. It does not provide full secondary indexing yet. Secondary indexing is tracked as roadmap work.
 
+The intended query routing boundary is:
+
+- equality against the storage identity/logical envelope key goes directly to the envelope cache;
+- range predicates belong to secondary indexes;
+- the envelope cache must not become a range-query engine.
+
+For `StorageObjectCardinality.Multiple`, one logical key can resolve to multiple physical envelopes. Equality lookup is therefore constant-time to the logical group plus the cost of returning the matching group members. Range lookup is planned through per-field indexes.
+
 ## Dependency Injection
 
 Repositories are registered with:
@@ -305,9 +313,46 @@ The cache is currently an in-memory concurrent dictionary abstraction:
 IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>
 ```
 
+Conceptually, it is the primary equality catalog for envelopes. The logical storage identity is the lookup key, and the result can contain one or more physical envelopes depending on `StorageObjectCardinality`.
+
+```text
+logical key -> physical key -> envelope
+```
+
+For single cardinality, the logical group contains one physical envelope. For multiple cardinality, the logical group contains zero-based physical identities such as:
+
+```text
+john-smith -> john-smith-0
+john-smith -> john-smith-1
+```
+
+Repository equality queries that can be reduced to the logical storage key should use this cache directly. That gives `O(1 + k)` behavior, where `k` is the number of physical envelopes in the matching logical group.
+
+The envelope cache is intentionally equality-only. It should not evaluate `>`, `>=`, `<`, `<=`, between, prefix, full-text, vector, or other range/similarity predicates. Those belong to the index layer.
+
 During initialization, the file repository scans the data root and stores skeleton envelopes. Hydration is optional and controlled by `StoragePolicy.HydrateOnInitialize`.
 
 If hydration is disabled, envelopes can remain lightweight until query/read time.
+
+## Query And Index Routing
+
+The current runtime query path is still pass-through unless a caller uses APIs that can already resolve a storage identity directly. A structured query planner is planned so repository queries can choose the right lookup path instead of treating every predicate as an in-memory scan.
+
+The first planned indexed path is a single range condition over one field:
+
+```csharp
+person => person.Age >= 18 && person.Age <= 30
+```
+
+That should route to the B-tree-style index registered for `Age`. Each indexed field owns its own sorted index. The index returns matching logical envelope keys, then the repository resolves those keys through the envelope cache and flattens any multiple-cardinality groups.
+
+Equality and range should use different mechanisms:
+
+- `Name == "John Smith"` on the storage identity key: envelope cache.
+- `Age >= 18`: `Age` field index.
+- `CreatedAt < cutoff`: `CreatedAt` field index.
+
+Multiple range conditions are a separate design step. The first implementation should solve one indexed range field cleanly before adding intersection, ordering, or planner-cost rules.
 
 ## Write Path
 
@@ -329,7 +374,7 @@ Current write flow:
 
 ## Sidecar Write Locks
 
-The write lock is implemented by `SidecarFileWriteLock<TContract>`.
+Storage write locking is abstracted behind `IStorageWriteLock`. The file-system provider implements it with `SidecarFileWriteLock<TContract>`.
 
 For payload:
 

@@ -19,9 +19,19 @@ The application-facing contract should remain `IRepository<TContract>` and envel
 
 Full secondary indexing is planned future work. The current `IIndexManager<TContract>` implementation is a pass-through manager that scans envelopes and delegates persistence to the envelope repository.
 
+The first indexing milestone should keep the boundary simple:
+
+- equality on the storage identity/logical envelope key routes to the envelope cache;
+- range predicates route to a secondary index;
+- every indexed field owns its own B-tree-style sorted index;
+- the index returns logical envelope keys, and the repository resolves those through the envelope cache;
+- multiple-cardinality groups are flattened by the repository after lookup.
+
 Planned indexing work should include:
 
 - A clearer index contract for registering indexed fields or expressions.
+- Structured query interpretation so equality and range predicates can be routed deliberately.
+- A single-field range path before multi-range planning.
 - Index update behavior for save, delete, and migration flows.
 - Rebuild behavior on repository initialization.
 - Query planner behavior for deciding when an index can satisfy a predicate.

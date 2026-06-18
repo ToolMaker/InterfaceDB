@@ -125,7 +125,10 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
             _envelopeLifecycle.Unwrap(envelope);
         }
 
-        _envelopes[envelope.EnvelopeCacheKey] = envelope;
+        _envelopes.AddOrUpdate(
+            envelope.EnvelopeCacheKey,
+            EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+            envelope);
         return new EnvelopeStorageChangeResult<TContract>(changeType, null, envelope);
     }
 

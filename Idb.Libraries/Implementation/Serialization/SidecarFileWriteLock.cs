@@ -6,9 +6,9 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 namespace Idb.Libraries.Implementation.Serialization;
 
 /// <summary>
-/// Uses an adjacent .lock file to coordinate writes to a payload file across repository instances.
+/// Uses an adjacent .lock file to coordinate writes to a file payload across repository instances.
 /// </summary>
-public sealed class SidecarFileWriteLock<TContract> : IFileWriteLock
+public sealed class SidecarFileWriteLock<TContract> : IStorageWriteLock
     where TContract : class, IStoredContract<TContract>
 {
     private static readonly string ProcessOwnerId = Guid.NewGuid().ToString("N");
@@ -20,12 +20,12 @@ public sealed class SidecarFileWriteLock<TContract> : IFileWriteLock
     }
 
     public async ValueTask<IAsyncDisposable> AcquireAsync(
-        string payloadPath,
+        string providerLocator,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(payloadPath))
+        if (string.IsNullOrWhiteSpace(providerLocator))
         {
-            throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
+            throw new ArgumentException("Provider locator cannot be null or whitespace.", nameof(providerLocator));
         }
 
         if (!_storagePolicy.UseSidecarWriteLocks)
@@ -33,7 +33,7 @@ public sealed class SidecarFileWriteLock<TContract> : IFileWriteLock
             return NoopWriteLock.Instance;
         }
 
-        var lockPath = payloadPath + ".lock";
+        var lockPath = providerLocator + ".lock";
         var timeout = _storagePolicy.NormalizedWriteLockTimeout;
         var retryDelay = _storagePolicy.NormalizedWriteLockRetryDelay;
         var deadline = DateTimeOffset.UtcNow + timeout;

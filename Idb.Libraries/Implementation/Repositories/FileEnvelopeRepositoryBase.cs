@@ -8,6 +8,7 @@ using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Serialization;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
@@ -73,26 +74,26 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
 
-    public bool ContainsEnvelope(string cacheKey)
+    public bool Exists(string storageKey)
     {
-        if (string.IsNullOrWhiteSpace(cacheKey))
+        if (string.IsNullOrWhiteSpace(storageKey))
         {
-            throw new ArgumentException("Cache key cannot be null or whitespace.", nameof(cacheKey));
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        return _envelopes.ContainsKey(cacheKey);
+        var logicalKey = EnvelopeCacheKey.ToLogicalKey(storageKey);
+        return _envelopes.GetGroupCount(logicalKey) > 0;
     }
 
-    public bool TryGetEnvelope(string cacheKey, out TContract envelope)
+    public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
     {
-        if (string.IsNullOrWhiteSpace(cacheKey))
+        if (string.IsNullOrWhiteSpace(storageKey))
         {
-            throw new ArgumentException("Cache key cannot be null or whitespace.", nameof(cacheKey));
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        var found = _envelopes.TryGetValue(cacheKey, out var existing) && existing is not null && existing.ObjectInstance is not null;
-        envelope = found ? existing!.ObjectInstance! : null!;
-        return found;
+        var logicalKey = EnvelopeCacheKey.ToLogicalKey(storageKey);
+        return _envelopes.TryGetGroup(logicalKey, out envelopes);
     }
 
     public async ValueTask<TContract> WriteAsync(
@@ -354,62 +355,87 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         return true;
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract>> QueryAsync(
-        Func<TContract, bool> filterFunction,
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> GetAsync(
+        string storageKey,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (filterFunction is null)
+        if (string.IsNullOrWhiteSpace(storageKey))
         {
-            throw new ArgumentNullException(nameof(filterFunction));
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        foreach (var envelope in _envelopes.Values)
+        if (!TryGet(storageKey, out var envelopes))
+        {
+            yield break;
+        }
+
+        foreach (var envelope in envelopes)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (envelope is null)
-            {
-                continue;
-            }
-
-            var currentEnvelope = envelope;
-            var instance = currentEnvelope.ObjectInstance;
-            if (instance is null
-                && _migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
-                && !string.Equals(
-                    currentEnvelope.VersionTag,
-                    _contractConfig.ActiveVersion,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                instance = await _migrationStrategy
-                    .MigrateAsync(currentEnvelope, cancellationToken)
-                    .ConfigureAwait(false);
-                if (instance?.Envelope is not null)
-                {
-                    currentEnvelope = instance.Envelope;
-                }
-            }
-
-            if (instance is null && !string.IsNullOrWhiteSpace(currentEnvelope.Location))
-            {
-                var file = new FileInfo(currentEnvelope.Location);
-                var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
-                instance = hydrated;
-                currentEnvelope.ObjectInstance = hydrated;
-            }
-
-            if (instance is null)
-            {
-                continue;
-            }
-
-            if (!filterFunction(instance))
+            var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
+            if (currentEnvelope?.ObjectInstance is null)
             {
                 continue;
             }
 
             yield return currentEnvelope;
         }
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var envelope in _envelopes.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
+            if (currentEnvelope?.ObjectInstance is null)
+            {
+                continue;
+            }
+
+            yield return currentEnvelope;
+        }
+    }
+
+    private async ValueTask<IObjectEnvelope<TContract>?> MaterializeEnvelopeAsync(
+        IObjectEnvelope<TContract>? envelope,
+        CancellationToken cancellationToken)
+    {
+        if (envelope is null)
+        {
+            return null;
+        }
+
+        var currentEnvelope = envelope;
+        var instance = currentEnvelope.ObjectInstance;
+        if (instance is null
+            && _migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
+            && !string.Equals(
+                currentEnvelope.VersionTag,
+                _contractConfig.ActiveVersion,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            instance = await _migrationStrategy
+                .MigrateAsync(currentEnvelope, cancellationToken)
+                .ConfigureAwait(false);
+            if (instance?.Envelope is not null)
+            {
+                currentEnvelope = instance.Envelope;
+            }
+        }
+
+        if (instance is null && !string.IsNullOrWhiteSpace(currentEnvelope.Location))
+        {
+            var file = new FileInfo(currentEnvelope.Location);
+            var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
+            instance = hydrated;
+            currentEnvelope.ObjectInstance = hydrated;
+        }
+
+        return instance is null ? null : currentEnvelope;
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -431,7 +457,10 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                     cancellationToken.ThrowIfCancellationRequested();
                     if (migrated is not null && migrated.Envelope is not null)
                     {
-                        _envelopes[migrated.Envelope.EnvelopeCacheKey] = migrated.Envelope;
+                        _envelopes.AddOrUpdate(
+                            migrated.Envelope.EnvelopeCacheKey,
+                            EnvelopeCacheKey.ToLogicalKey(migrated.Envelope.EnvelopeCacheKey),
+                            migrated.Envelope);
                     }
                 }
             }
@@ -460,7 +489,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         await StartStorageChangeSourceAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
+    private async IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
         string rootLocationOfContract,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -476,7 +505,10 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 continue;
             }
 
-            _envelopes[envelope.EnvelopeCacheKey] = envelope;
+            _envelopes.AddOrUpdate(
+                envelope.EnvelopeCacheKey,
+                EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                envelope);
             yield return envelope;
         }
     }
