@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
@@ -59,15 +58,17 @@ public interface IIndexManager<TContract>
     IAsyncEnumerable<TContract> QueryAsync(Func<TContract, bool> predicate, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Retrieves contracts by logical storage identity through the envelope cache.
+    /// This path is equality-only and should not evaluate range predicates.
+    /// </summary>
+    IAsyncEnumerable<TContract> QueryByStorageKeyAsync(
+        string storageKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Checks whether an equivalent contract instance already exists.
     /// </summary>
     ValueTask<bool> ExistsAsync(TContract entity, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Attempts to retrieve a matching contract instance without materializing a new envelope.
-    /// Implementations should rely on the envelope repository cache and perform unwrap operations before returning.
-    /// </summary>
-    bool TryGetExisting(TContract entity, out TContract? existing);
 
     /// <summary>
     /// Performs one-time initialization for indexes and underlying storage.

@@ -73,10 +73,26 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Streams entities whose logical storage key equals the supplied value.
+    /// This is an envelope-cache equality lookup, not a predicate scan.
+    /// </summary>
+    IAsyncEnumerable<TContract> QueryManyByStorageKeyAsync(
+        string storageKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the first matching entity, or <c>null</c> when no entity matches.
     /// </summary>
     ValueTask<TContract?> QueryFirstAsync(
         Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the first entity whose logical storage key equals the supplied value, or <c>null</c>.
+    /// This is an envelope-cache equality lookup, not a predicate scan.
+    /// </summary>
+    ValueTask<TContract?> QueryFirstByStorageKeyAsync(
+        string storageKey,
         CancellationToken cancellationToken = default);
 
     /// <summary>

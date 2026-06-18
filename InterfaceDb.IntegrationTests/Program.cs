@@ -49,6 +49,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("single cardinality rejects detached duplicates and permits loaded updates", SingleCardinalityRejectsDetachedDuplicatesAsync),
     ("single cardinality is atomic across repository instances", SingleCardinalityIsAtomicAcrossRepositoriesAsync),
     ("multiple cardinality creates distinct physical objects", MultipleCardinalityCreatesDistinctObjectsAsync),
+    ("multiple cardinality allocates incremented cache keys", MultipleCardinalityAllocatesIncrementedCacheKeysAsync),
+    ("repository storage-key equality queries use envelope groups", RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync),
     ("repository query cardinality methods enforce result bounds", RepositoryQueryCardinalityMethodsAsync),
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
     ("repository bulk save persists canonical objects in input order", RepositoryBulkSavePersistsInInputOrderAsync),
@@ -303,6 +305,91 @@ static async Task MultipleCardinalityCreatesDistinctObjectsAsync()
         var payloadFiles = Directory.GetFiles(testRoot, "*.mpk", SearchOption.AllDirectories);
         Assert(payloadFiles.Length == 2, $"Multiple cardinality should create two payloads, found {payloadFiles.Length}.");
         AssertNoSidecarArtifacts(testRoot);
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task MultipleCardinalityAllocatesIncrementedCacheKeysAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        var options = new LockTestOptions(testRoot);
+        var services = new ServiceCollection();
+        services.AddRepository<ILockTestRecord>(
+            options,
+            storageIdentityFactory: new PrefixStorageIdentityFactory(options, "person"));
+
+        await using var provider = services.BuildServiceProvider();
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var first = await repository.SaveAsync(
+            new LockTestRecord { Id = "john-smith", Value = "first" }).ConfigureAwait(false);
+        var second = await repository.SaveAsync(
+            new LockTestRecord { Id = "john-smith", Value = "second" }).ConfigureAwait(false);
+
+        Assert(first.Envelope?.EnvelopeCacheKey == "person-john-smith-0",
+            $"Expected first cache key 'person-john-smith-0', found '{first.Envelope?.EnvelopeCacheKey}'.");
+        Assert(second.Envelope?.EnvelopeCacheKey == "person-john-smith-1",
+            $"Expected second cache key 'person-john-smith-1', found '{second.Envelope?.EnvelopeCacheKey}'.");
+        Assert(File.Exists(first.Envelope!.Location), "First physical payload should exist.");
+        Assert(File.Exists(second.Envelope!.Location), "Second physical payload should exist.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        var options = new LockTestOptions(testRoot);
+        var services = new ServiceCollection();
+        services.AddRepository<ILockTestRecord>(
+            options,
+            storageIdentityFactory: new PrefixStorageIdentityFactory(options, "person"));
+
+        await using var provider = services.BuildServiceProvider();
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        await repository.SaveAsync(new LockTestRecord { Id = "john-smith", Value = "first" }).ConfigureAwait(false);
+        await repository.SaveAsync(new LockTestRecord { Id = "john-smith", Value = "second" }).ConfigureAwait(false);
+        await repository.SaveAsync(new LockTestRecord { Id = "jane-smith", Value = "other" }).ConfigureAwait(false);
+
+        var matches = new List<ILockTestRecord>();
+        await foreach (var record in repository.QueryManyByStorageKeyAsync("person-john-smith"))
+        {
+            matches.Add(record);
+        }
+
+        Assert(matches.Count == 2, $"Expected two records in the john-smith storage-key group, found {matches.Count}.");
+        Assert(matches.All(x => x.Id == "john-smith"), "Storage-key equality lookup should only return the requested logical group.");
+
+        var firstFromLogicalKey = await repository
+            .QueryFirstByStorageKeyAsync("person-john-smith")
+            .ConfigureAwait(false);
+        firstFromLogicalKey = AssertNotNull(firstFromLogicalKey, "Storage-key equality lookup should return the first group member.");
+        Assert(firstFromLogicalKey.Envelope?.EnvelopeCacheKey == "person-john-smith-0",
+            $"Expected first physical key 'person-john-smith-0', found '{firstFromLogicalKey.Envelope?.EnvelopeCacheKey}'.");
+
+        var fromPhysicalKey = await repository
+            .QueryFirstByStorageKeyAsync("person-john-smith-1")
+            .ConfigureAwait(false);
+        fromPhysicalKey = AssertNotNull(fromPhysicalKey, "Physical key input should resolve to the logical equality group.");
+        Assert(fromPhysicalKey.Id == "john-smith", "Physical key normalization should still resolve the logical group.");
+
+        var missing = await repository
+            .QueryFirstByStorageKeyAsync("person-missing")
+            .ConfigureAwait(false);
+        Assert(missing is null, "Missing storage-key equality lookup should return null.");
     }
     finally
     {
@@ -635,7 +722,7 @@ static async Task RepositoryRegistrationStorageIdentityFactoryControlsFileIdenti
             AssertNotNull(saved.Envelope?.Location, "Saved object should have a provider locator."));
 
         Assert(
-            fileName == "repository-factory",
+            fileName == "repository-factory-0",
             $"Repository-level storage identity factory should control file identity, found '{fileName}'.");
         AssertNoSidecarArtifacts(testRoot);
     }
@@ -660,10 +747,14 @@ static async Task DefaultIdentityFactoryUsesGuidV7KeysAsync()
             AssertNotNull(saved.Envelope?.Location, "Saved object should have a provider locator."));
 
         Assert(
-            fileName.Length == 32,
-            $"Default key should be a 32-character GUID N-format value, found '{fileName}'.");
+            fileName.EndsWith("-0", StringComparison.Ordinal),
+            $"Default multiple-cardinality key should use zero-based suffix, found '{fileName}'.");
+        var guidPart = fileName[..^2];
         Assert(
-            fileName[12] == '7',
+            guidPart.Length == 32,
+            $"Default key should contain a 32-character GUID N-format value, found '{fileName}'.");
+        Assert(
+            guidPart[12] == '7',
             $"Default key should be a GUID v7 value, found '{fileName}'.");
         AssertNoSidecarArtifacts(testRoot);
     }
@@ -696,10 +787,10 @@ static async Task SequentialIdentityFactoriesCreateFilenameKeysAsync()
             new LockTestRecord { Id = "int-2", Value = "stored" }).ConfigureAwait(false);
 
         Assert(
-            Path.GetFileNameWithoutExtension(first.Envelope?.Location) == "1",
+            Path.GetFileNameWithoutExtension(first.Envelope?.Location) == "1-0",
             "Sequential int key factory should start at 1.");
         Assert(
-            Path.GetFileNameWithoutExtension(second.Envelope?.Location) == "2",
+            Path.GetFileNameWithoutExtension(second.Envelope?.Location) == "2-0",
             "Sequential int key factory should increment per new object.");
         AssertNoSidecarArtifacts(intRoot);
     }
@@ -727,7 +818,7 @@ static async Task SequentialIdentityFactoriesCreateFilenameKeysAsync()
             new LockTestRecord { Id = "big-int", Value = "stored" }).ConfigureAwait(false);
 
         Assert(
-            Path.GetFileNameWithoutExtension(saved.Envelope?.Location) == "1",
+            Path.GetFileNameWithoutExtension(saved.Envelope?.Location) == "1-0",
             "Sequential BigInteger key factory should produce file-name-safe numeric keys.");
         AssertNoSidecarArtifacts(bigIntegerRoot);
     }

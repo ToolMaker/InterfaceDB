@@ -9,21 +9,22 @@ namespace Idb.Libraries.Abstractions.Services.Serialization;
 /// Concrete implementations can add concerns like hashing or caching internally without exposing them upstream.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented in the repository.</typeparam>
-/// <typeparam name="TLocationType">Type describing the storage location tracked by the envelopes.</typeparam>
 public interface IEnvelopeRepository<TContract> :
     IContractPubSubService<TContract>
         where TContract : class, IStoredContract<TContract>
 {
     IReaderAndWriter<TContract> ReaderAndWriter { get; }
-    /// <summary>
-    /// Checks whether an envelope with the supplied cache key already exists in the repository.
-    /// </summary>
-    bool ContainsEnvelope(string cacheKey);
 
     /// <summary>
-    /// Attempts to retrieve an envelope by cache key from the repository.
+    /// Checks whether an envelope group with the supplied logical or physical storage key exists.
     /// </summary>
-    bool TryGetEnvelope(string cacheKey, out TContract objectInstance);
+    bool Exists(string storageKey);
+
+    /// <summary>
+    /// Attempts to read the cached envelope group for the supplied logical or physical storage key.
+    /// Returned envelopes may still be lightweight skeletons until materialized by <see cref="GetAsync"/>.
+    /// </summary>
+    bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes);
 
     /// <summary>
     /// Performs one-time initialization for the repository (e.g., ensuring data directories exist).
@@ -31,15 +32,17 @@ public interface IEnvelopeRepository<TContract> :
     ValueTask InitializeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Streams envelopes that satisfy the supplied filter.
+    /// Streams materialized envelopes from the logical storage-key group.
     /// </summary>
-    IAsyncEnumerable<IObjectEnvelope<TContract>> QueryAsync(
-        Func<TContract, bool> filterFunction,
+    IAsyncEnumerable<IObjectEnvelope<TContract>> GetAsync(
+        string storageKey,
         CancellationToken cancellationToken = default);
 
-    IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
-            string rootLocationOfContract,
-            CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Streams all materialized envelopes known to the repository.
+    /// </summary>
+    IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
+        CancellationToken cancellationToken = default);
 
     ValueTask<TContract> WriteAsync(
             TContract contractInstance,

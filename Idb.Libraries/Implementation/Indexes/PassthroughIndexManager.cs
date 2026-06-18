@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +19,6 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
-    
 
     public PassthroughIndexManager(IEnvelopeRepository<TContract> envelopeRepository)
     {
@@ -40,31 +38,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
             return new ValueTask<bool>(false);
         }
 
-        return new ValueTask<bool>(_envelopeRepository.ContainsEnvelope(envelope.EnvelopeCacheKey));
-    }
-
-    public bool TryGetExisting(TContract entity, out TContract? existing)
-    {
-        if (entity is null)
-        {
-            throw new ArgumentNullException(nameof(entity));
-        }
-
-        existing = null;
-        var envelope = entity.Envelope;
-        if (envelope is null)
-        {
-            return false;
-        }
-
-        if (!_envelopeRepository.TryGetEnvelope(envelope.EnvelopeCacheKey, out var cachedEnvelope) ||
-            cachedEnvelope is null)
-        {
-            return false;
-        }
-
-        //existing = _envelopeLifecycle.Unwrap(cachedEnvelope);
-        return true;
+        return new ValueTask<bool>(_envelopeRepository.Exists(envelope.EnvelopeCacheKey));
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -90,12 +64,41 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return QueryInternalAsync(predicate, cancellationToken);
     }
 
+    public IAsyncEnumerable<TContract> QueryByStorageKeyAsync(
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(storageKey))
+        {
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
+        }
+
+        return QueryByStorageKeyInternalAsync(storageKey, cancellationToken);
+    }
 
     private async IAsyncEnumerable<TContract> QueryInternalAsync(
         Func<TContract, bool> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var envelope in _envelopeRepository.QueryAsync(predicate, cancellationToken).ConfigureAwait(false))
+        await foreach (var envelope in _envelopeRepository.EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var entity = envelope.ObjectInstance
+                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!predicate(entity))
+            {
+                continue;
+            }
+
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
+            yield return entity;
+        }
+    }
+
+    private async IAsyncEnumerable<TContract> QueryByStorageKeyInternalAsync(
+        string storageKey,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var envelope in _envelopeRepository.GetAsync(storageKey, cancellationToken).ConfigureAwait(false))
         {
             var entity = envelope.ObjectInstance
                 ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
@@ -124,10 +127,3 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return await _envelopeRepository.WriteAsync(entity, cancellationToken).ConfigureAwait(false);
     }
 }
-
-
-
-
-
-
-

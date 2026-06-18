@@ -16,17 +16,17 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
     private const string WritingSuffix = ".writing";
     private const string ReadySuffix = ".ready";
     private const string DeleteReadySuffix = ".delete.ready";
-    private readonly IFileWriteLock _fileWriteLock;
+    private readonly IStorageWriteLock _storageWriteLock;
     private readonly StoragePolicy _storagePolicy;
     private readonly string _storageRoot;
     private int _localMigrationScopeActive;
 
     public CoalescingFileWriteCoordinator(
-        IFileWriteLock fileWriteLock,
+        IStorageWriteLock storageWriteLock,
         IDbContractConfigDto<TContract> contractConfig,
         StoragePolicy storagePolicy)
     {
-        _fileWriteLock = fileWriteLock ?? throw new ArgumentNullException(nameof(fileWriteLock));
+        _storageWriteLock = storageWriteLock ?? throw new ArgumentNullException(nameof(storageWriteLock));
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
             ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
@@ -181,7 +181,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         await using var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
             ? NoopLease.Instance
             : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
-        await using var writeLock = await _fileWriteLock
+        await using var writeLock = await _storageWriteLock
             .AcquireAsync(payloadPath, cancellationToken)
             .ConfigureAwait(false);
 
@@ -223,7 +223,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         Func<string, CancellationToken, ValueTask> writeProposalAsync,
         CancellationToken cancellationToken)
     {
-        await using var writeLock = await _fileWriteLock
+        await using var writeLock = await _storageWriteLock
             .AcquireAsync(payloadPath, cancellationToken)
             .ConfigureAwait(false);
 
@@ -296,7 +296,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
         }
 
-        await using var writeLock = await _fileWriteLock
+        await using var writeLock = await _storageWriteLock
             .AcquireAsync(payloadPath, cancellationToken)
             .ConfigureAwait(false);
 

@@ -1,14 +1,14 @@
 namespace Idb.Libraries.Abstractions.Services.Serialization;
 
 /// <summary>
-/// Coordinates exclusive writes to a payload path.
+/// Provider-neutral lease abstraction for protecting storage writes.
 /// </summary>
-public interface IFileWriteLock
+public interface IStorageWriteLock
 {
     /// <summary>
-    /// Acquires an exclusive write lock for the supplied payload path.
+    /// Acquires an exclusive write lock for the supplied provider locator.
     /// </summary>
     ValueTask<IAsyncDisposable> AcquireAsync(
-        string payloadPath,
+        string providerLocator,
         CancellationToken cancellationToken = default);
 }
