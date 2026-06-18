@@ -7,6 +7,7 @@ using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
+using System.Collections.Concurrent;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
@@ -159,6 +160,137 @@ namespace Idb.Libraries.Implementation.Serialization
 
         }
 
+        public async ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+            IEnumerable<TContract> objectInstances,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(objectInstances);
+
+            var materialized = objectInstances as IReadOnlyList<TContract> ?? objectInstances.ToArray();
+            if (materialized.Count == 0)
+            {
+                return Array.Empty<TContract>();
+            }
+
+            var results = new TContract?[materialized.Count];
+            var failures = new ConcurrentBag<StorageBulkOperationFailure>();
+            var batchSize = Math.Min(_storagePolicy.NormalizedBulkWriteBatchSize, materialized.Count);
+            var concurrency = Math.Min(_storagePolicy.NormalizedConcurrency, batchSize);
+
+            for (var batchStart = 0; batchStart < materialized.Count; batchStart += batchSize)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var batchEnd = Math.Min(batchStart + batchSize, materialized.Count);
+                await WriteBatchWindowAsync(
+                    materialized,
+                    results,
+                    failures,
+                    batchStart,
+                    batchEnd,
+                    Math.Min(concurrency, batchEnd - batchStart),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!failures.IsEmpty)
+            {
+                var orderedFailures = failures
+                    .OrderBy(static failure => failure.Index)
+                    .ToArray();
+                var succeededIndexes = results
+                    .Select((item, index) => item is null ? -1 : index)
+                    .Where(static index => index >= 0)
+                    .ToArray();
+
+                throw new StorageBulkOperationException(
+                    StorageOperation.Write,
+                    succeededIndexes,
+                    orderedFailures);
+            }
+
+            var completed = new TContract[materialized.Count];
+            for (var index = 0; index < results.Length; index++)
+            {
+                completed[index] = results[index]!;
+            }
+
+            return completed;
+        }
+
+        private async ValueTask WriteBatchWindowAsync(
+            IReadOnlyList<TContract> materialized,
+            TContract?[] results,
+            ConcurrentBag<StorageBulkOperationFailure> failures,
+            int batchStart,
+            int batchEnd,
+            int concurrency,
+            CancellationToken cancellationToken)
+        {
+            if (concurrency <= 1)
+            {
+                for (var index = batchStart; index < batchEnd; index++)
+                {
+                    await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                return;
+            }
+
+            var workers = new Task[concurrency];
+            var chunkSize = ((batchEnd - batchStart) + concurrency - 1) / concurrency;
+            for (var worker = 0; worker < workers.Length; worker++)
+            {
+                var start = batchStart + (worker * chunkSize);
+                var end = Math.Min(start + chunkSize, batchEnd);
+                workers[worker] = Task.Run(async () =>
+                {
+                    for (var index = start; index < end; index++)
+                    {
+                        await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }, cancellationToken);
+            }
+
+            await Task.WhenAll(workers).ConfigureAwait(false);
+        }
+
+        private async ValueTask TryWriteBatchItemAsync(
+            IReadOnlyList<TContract> materialized,
+            TContract?[] results,
+            ConcurrentBag<StorageBulkOperationFailure> failures,
+            int index,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var instance = materialized[index];
+            try
+            {
+                results[index] = await WriteAsync(instance, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failures.Add(CreateFailure(index, instance, ex));
+            }
+        }
+
+        private static StorageBulkOperationFailure CreateFailure(
+            int index,
+            TContract instance,
+            Exception exception)
+        {
+            var envelope = instance.Envelope;
+            return new StorageBulkOperationFailure(
+                index,
+                envelope?.EnvelopeCacheKey,
+                envelope?.Location,
+                exception);
+        }
+
         private async ValueTask WritePerformanceAsync(
             IObjectEnvelope<TContract> envelope,
             string path,
@@ -210,12 +342,22 @@ namespace Idb.Libraries.Implementation.Serialization
                 return;
             }
 
+            if (_envelopes.TryGetValue(envelope.EnvelopeCacheKey, out var cached) && cached is not null)
+            {
+                cached.VersionTag = envelope.VersionTag;
+                cached.Location = envelope.Location;
+                cached.State = envelope.State;
+                cached.ObjectInstance = null;
+                return;
+            }
+
             var skeleton = new FileObjectEnvelope<TContract>(_contractConfig)
             {
                 EnvelopeCacheKey = envelope.EnvelopeCacheKey,
                 VersionTag = envelope.VersionTag,
                 Location = envelope.Location,
-                ObjectInstance = null
+                ObjectInstance = null,
+                State = envelope.State
             };
             _envelopes[envelope.EnvelopeCacheKey] = skeleton;
         }

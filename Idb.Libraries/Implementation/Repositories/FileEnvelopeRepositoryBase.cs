@@ -125,6 +125,48 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         return objectInstance;
     }
 
+    public async ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+        IEnumerable<TContract> objectInstances,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(objectInstances);
+
+        var materialized = objectInstances as IReadOnlyList<TContract> ?? objectInstances.ToArray();
+        if (materialized.Count == 0)
+        {
+            return Array.Empty<TContract>();
+        }
+
+        var isNew = new bool[materialized.Count];
+        for (var index = 0; index < materialized.Count; index++)
+        {
+            var instance = materialized[index] ?? throw new ArgumentNullException(nameof(objectInstances));
+            isNew[index] = instance.Envelope is null;
+
+            var existingLocator = instance.Envelope?.Location;
+            if (!string.IsNullOrWhiteSpace(existingLocator))
+            {
+                _storageChangeSource?.AcknowledgeLocalChange(existingLocator);
+            }
+        }
+
+        try
+        {
+            var saved = await ReaderAndWriter.Writer
+                .WriteManyAsync(materialized, cancellationToken)
+                .ConfigureAwait(false);
+
+            await PublishBatchNotificationsAsync(saved, isNew, cancellationToken).ConfigureAwait(false);
+            return saved;
+        }
+        catch (StorageBulkOperationException ex)
+        {
+            await PublishBatchNotificationsForPartialSuccessAsync(materialized, isNew, ex, cancellationToken)
+                .ConfigureAwait(false);
+            throw;
+        }
+    }
+
     public async ValueTask<bool> DeleteAsync(
         TContract objectInstance,
         CancellationToken cancellationToken = default)
@@ -195,6 +237,68 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         return removedActiveStorage;
     }
 
+    private async ValueTask PublishBatchNotificationsAsync(
+        IReadOnlyList<TContract> saved,
+        IReadOnlyList<bool> isNew,
+        CancellationToken cancellationToken)
+    {
+        if (!_storagePolicy.RaiseNotifications)
+        {
+            return;
+        }
+
+        for (var index = 0; index < saved.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var envelope = saved[index].Envelope;
+            if (envelope is null)
+            {
+                continue;
+            }
+
+            _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
+            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            if (isNew[index])
+            {
+                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async ValueTask PublishBatchNotificationsForPartialSuccessAsync(
+        IReadOnlyList<TContract> attempted,
+        IReadOnlyList<bool> isNew,
+        StorageBulkOperationException exception,
+        CancellationToken cancellationToken)
+    {
+        if (!_storagePolicy.RaiseNotifications || exception.SucceededIndexes.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var index in exception.SucceededIndexes.OrderBy(static item => item))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (index < 0 || index >= attempted.Count)
+            {
+                continue;
+            }
+
+            var envelope = attempted[index].Envelope;
+            if (envelope is null)
+            {
+                continue;
+            }
+
+            _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
+            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            if (isNew[index])
+            {
+                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private void ValidateEnvelopeForDelete(IObjectEnvelope<TContract> envelope)
     {
         if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
@@ -259,9 +363,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             throw new ArgumentNullException(nameof(filterFunction));
         }
 
-        var snapshot = _envelopes.Values.ToArray();
-
-        foreach (var envelope in snapshot)
+        foreach (var envelope in _envelopes.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -307,7 +409,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             }
 
             yield return currentEnvelope;
-            await Task.Yield();
         }
     }
 

@@ -109,6 +109,14 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return SaveInternalAsync(entity, cancellationToken);
     }
 
+    public ValueTask<IReadOnlyList<TContract>> SaveManyAsync(
+        IEnumerable<TContract> entities,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+        return _envelopeRepository.WriteManyAsync(entities, cancellationToken);
+    }
+
     private async ValueTask<TContract> SaveInternalAsync(
         TContract entity,
         CancellationToken cancellationToken)

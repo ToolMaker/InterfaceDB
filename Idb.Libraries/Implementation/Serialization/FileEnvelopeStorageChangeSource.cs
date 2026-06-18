@@ -124,7 +124,7 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
 
     public void AcknowledgeLocalChange(string providerLocator)
     {
-        if (string.IsNullOrWhiteSpace(providerLocator))
+        if (!_storagePolicy.WatchStorageChanges || string.IsNullOrWhiteSpace(providerLocator))
         {
             return;
         }

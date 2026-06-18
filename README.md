@@ -70,7 +70,7 @@ This flat layout is the only active filesystem layout. Higher-throughput storage
 
 File watching synchronizes independent repository instances for committed create, update, rename, and delete operations. Local operations acknowledge their provider locator so watcher echoes do not duplicate notifications. The watcher maintains a payload snapshot and rescans after watcher errors or buffer overflow; `IEnvelopeStorageChangeSource<T>.RescanAsync` also supports explicit reconciliation.
 
-Storage identity is factory-driven. `StorageObjectCardinality.Single` allows one object per factory-resolved path and rejects detached duplicate creation, while `Multiple` gives every new envelope-less object a unique physical key. Custom `IEnvelopeKeyAndLocationFactory<TContract>` implementations can derive keys from object state without requiring a prescribed ID property.
+Storage identity is factory-driven. `StorageObjectCardinality.Single` allows one object per factory-resolved path and rejects detached duplicate creation, while `Multiple` gives every new envelope-less object a unique physical key. Custom `IEnvelopeStorageIdentityFactory<TContract>` implementations can derive keys from object state without requiring a prescribed ID property.
 
 Repository registrations are keyed by `EnvelopeDICacheKey`, falling back to `ContractName`. Multiple databases can use the same contract:
 
@@ -78,8 +78,16 @@ Repository registrations are keyed by `EnvelopeDICacheKey`, falling back to `Con
 services.AddRepository<IPerson>(localOptions);
 services.AddRepository<IPerson>(secureOptions);
 
-var local = provider.GetRequiredKeyedService<IRepository<IPerson>>("LocalPeople");
-var secure = provider.GetRequiredKeyedService<IRepository<IPerson>>("SecurePeople");
+var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
+var secure = provider.GetInterfaceDbRepository<IPerson>("SecurePeople");
+```
+
+The registration key can also be supplied at registration time when the options object should stay shared:
+
+```csharp
+services.AddRepository<IPerson>(personOptions, "LocalPeople");
+
+var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
 ```
 
 Per-database encryption and filename factories can be registered with the same key before `AddRepository`. Unkeyed resolution remains available and points to the first registered database for backward compatibility.
@@ -296,8 +304,51 @@ dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release
 dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release
 ```
 
+The current best measured InterfaceDB store-only benchmark for 50k `Person` objects is:
+
+```text
+Mean: 5.261 s
+Allocated: 160.82 MB
+Settings:
+  INTERFACEDB_BENCH_MAX_CONCURRENCY=16
+  INTERFACEDB_BENCH_BULK_BATCH_SIZE=16384
+  INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER=true
+```
+
+Run just the InterfaceDB transaction benchmark with:
+
+```powershell
+$env:INTERFACEDB_BENCH_MAX_CONCURRENCY = "16"
+$env:INTERFACEDB_BENCH_BULK_BATCH_SIZE = "16384"
+$env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER = "true"
+
+dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem_StoreTransaction*
+```
+
+The query benchmark is intentionally still a predicate scan over the envelope cache. Secondary indexing is the next major performance feature.
+
+## Tests
+
+The solution has a dedicated MSTest project plus a console integration harness:
+
+```powershell
+dotnet test InterfaceDB.sln
+dotnet run --project InterfaceDb.IntegrationTests/InterfaceDb.IntegrationTests.csproj
+```
+
+The integration harness covers:
+
+- single and bulk save behavior, including partial failures;
+- delete semantics and stale-object protection;
+- sidecar write locking and process interruption recovery;
+- keyed DI isolation and registration behavior;
+- storage identity factories and cardinality;
+- file watcher synchronization and rescan recovery;
+- eager and lazy migration chains;
+- encryption, historical key reads, lazy key rotation, forced rotation, and encrypted migration.
+
 ## Current state
 
 - The solution builds cleanly with `dotnet build InterfaceDB.sln`.
-- The repository currently has no dedicated test project in the solution.
+- `InterfaceDb.Tests` wraps the integration harness so `dotnet test` exercises the current product scenarios.
 - Some sample namespaces still use the `MigrationTool.Contracts.*` naming pattern even when the files live under `IdbDemoStorage/`. Follow the actual project paths when navigating the repo.

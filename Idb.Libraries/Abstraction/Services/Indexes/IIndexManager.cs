@@ -23,6 +23,31 @@ public interface IIndexManager<TContract>
     ValueTask<TContract> SaveAsync(TContract entity, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Persists multiple entities using the implementation's bulk persistence path.
+    /// </summary>
+    async ValueTask<IReadOnlyList<TContract>> SaveManyAsync(
+        IEnumerable<TContract> entities,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+
+        var materialized = entities as IReadOnlyList<TContract> ?? entities.ToArray();
+        if (materialized.Count == 0)
+        {
+            return Array.Empty<TContract>();
+        }
+
+        var results = new TContract[materialized.Count];
+        for (var index = 0; index < materialized.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            results[index] = await SaveAsync(materialized[index], cancellationToken).ConfigureAwait(false);
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Deletes the persisted object identified by the entity's envelope.
     /// </summary>
     ValueTask<bool> DeleteAsync(TContract entity, CancellationToken cancellationToken = default);

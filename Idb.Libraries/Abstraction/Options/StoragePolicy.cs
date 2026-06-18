@@ -43,9 +43,15 @@ public sealed record StoragePolicy
 
     /// <summary>
     /// When true and MaxConcurrency > 1, the file writer uses an internal semaphore to limit its own concurrency.
-    /// Disable when bulk orchestration already bounds concurrency (e.g., SaveMany channel pipeline).
+    /// Disable when bulk orchestration already bounds concurrency.
     /// </summary>
     public bool UseWriterSemaphore { get; init; } = true;
+
+    /// <summary>
+    /// Maximum number of objects a bulk writer should process in one bounded window.
+    /// Lower values reduce peak memory pressure; higher values can improve throughput on fast storage.
+    /// </summary>
+    public int BulkWriteBatchSize { get; init; } = 4096;
 
     /// <summary>
     /// When true, file writes acquire a sidecar lock file before committing payload bytes.
@@ -115,6 +121,15 @@ public sealed record StoragePolicy
         {
             var candidate = MaxConcurrency;
             return candidate < 1 ? 1 : candidate;
+        }
+    }
+
+    internal int NormalizedBulkWriteBatchSize
+    {
+        get
+        {
+            var candidate = BulkWriteBatchSize;
+            return candidate < 1 ? 4096 : candidate;
         }
     }
 

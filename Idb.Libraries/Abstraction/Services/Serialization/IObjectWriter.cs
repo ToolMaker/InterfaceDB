@@ -21,6 +21,31 @@ namespace Idb.Libraries.Abstractions.Services.Serialization
         ValueTask<TContract> WriteAsync(
             TContract envalope,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Persists multiple contract instances using the writer's bulk path.
+        /// </summary>
+        async ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+            IEnumerable<TContract> envalopes,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(envalopes);
+
+            var materialized = envalopes as IReadOnlyList<TContract> ?? envalopes.ToArray();
+            if (materialized.Count == 0)
+            {
+                return Array.Empty<TContract>();
+            }
+
+            var results = new TContract[materialized.Count];
+            for (var index = 0; index < materialized.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                results[index] = await WriteAsync(materialized[index], cancellationToken).ConfigureAwait(false);
+            }
+
+            return results;
+        }
     }
 }
 

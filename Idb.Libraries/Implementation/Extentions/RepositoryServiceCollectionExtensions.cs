@@ -138,6 +138,25 @@ namespace Idb.Libraries.Implementation.Extentions
             };
         }
 
+        public static IServiceCollection AddRepository<TContract>(
+            this IServiceCollection services,
+            IDbContractConfigDto<TContract> contractConfig,
+            string databaseKey,
+            MigrationStrategyType strategyType = MigrationStrategyType.None,
+            StoragePolicy? storagePolicy = null,
+            IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
+            StorageDurabilityMode? durabilityMode = null)
+            where TContract : class, IStoredContract<TContract>
+        {
+            ArgumentNullException.ThrowIfNull(contractConfig);
+            return services.AddRepository(
+                WithDatabaseKey(contractConfig, databaseKey),
+                strategyType,
+                storagePolicy,
+                storageIdentityFactory,
+                durabilityMode);
+        }
+
         public static IServiceCollection AddFileRepository<TContract>(
             this IServiceCollection services,
             IDbContractConfigDto<TContract> contractConfig,
@@ -157,6 +176,35 @@ namespace Idb.Libraries.Implementation.Extentions
                 storagePolicy,
                 storageIdentityFactory,
                 durabilityMode);
+        }
+
+        public static IServiceCollection AddFileRepository<TContract>(
+            this IServiceCollection services,
+            IDbContractConfigDto<TContract> contractConfig,
+            string databaseKey,
+            MigrationStrategyType strategyType = MigrationStrategyType.None,
+            StoragePolicy? storagePolicy = null,
+            IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
+            StorageDurabilityMode? durabilityMode = null)
+            where TContract : class, IStoredContract<TContract>
+        {
+            ArgumentNullException.ThrowIfNull(contractConfig);
+            return services.AddFileRepository(
+                WithDatabaseKey(contractConfig, databaseKey),
+                strategyType,
+                storagePolicy,
+                storageIdentityFactory,
+                durabilityMode);
+        }
+
+        public static IRepository<TContract> GetInterfaceDbRepository<TContract>(
+            this IServiceProvider serviceProvider,
+            string databaseKey)
+            where TContract : class, IStoredContract<TContract>
+        {
+            ArgumentNullException.ThrowIfNull(serviceProvider);
+            return serviceProvider.GetRequiredKeyedService<IRepository<TContract>>(
+                NormalizeDatabaseKey(databaseKey));
         }
 
         private static IServiceCollection AddRepositoryCore<TContract>(
@@ -464,6 +512,14 @@ namespace Idb.Libraries.Implementation.Extentions
             return databaseName.Trim();
         }
 
+        private static IDbContractConfigDto<TContract> WithDatabaseKey<TContract>(
+            IDbContractConfigDto<TContract> contractConfig,
+            string databaseKey)
+            where TContract : class, IStoredContract<TContract>
+            => new DatabaseKeyContractConfig<TContract>(
+                contractConfig,
+                NormalizeDatabaseKey(databaseKey));
+
         private static void ValidateRepositoryType(
             ContractRepositoryType configuredType,
             ContractRepositoryType expectedType)
@@ -483,6 +539,46 @@ namespace Idb.Libraries.Implementation.Extentions
             where TContract : class, IStoredContract<TContract>;
 
         private sealed record InternalDatabaseServiceKey(string DatabaseKey, Type ContractType);
+
+        private sealed class DatabaseKeyContractConfig<TContract> : IDbContractConfigDto<TContract>
+            where TContract : class, IStoredContract<TContract>
+        {
+            private readonly IDbContractConfigDto<TContract> _inner;
+
+            public DatabaseKeyContractConfig(
+                IDbContractConfigDto<TContract> inner,
+                string databaseKey)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                EnvelopeDICacheKey = databaseKey;
+            }
+
+            public string EnvelopeDICacheKey { get; }
+
+            public string ContractName => _inner.ContractName;
+
+            public string FileExtension => _inner.FileExtension;
+
+            public string? ImplementationsPath => _inner.ImplementationsPath;
+
+            public string? ContractPath => _inner.ContractPath;
+
+            public string? MigrationsPath => _inner.MigrationsPath;
+
+            public string? DataRoot => _inner.DataRoot;
+
+            public string? ActiveVersion => _inner.ActiveVersion;
+
+            public IIndex<TContract>[]? Indexes => _inner.Indexes;
+
+            public IndexProvisioningModeType IndexProvisioningMode => _inner.IndexProvisioningMode;
+
+            public ContractRepositoryType RepositoryType => _inner.RepositoryType;
+
+            public StorageObjectCardinality ObjectCardinality => _inner.ObjectCardinality;
+
+            public StoragePolicy? StoragePolicy => _inner.StoragePolicy;
+        }
 
     }
 }

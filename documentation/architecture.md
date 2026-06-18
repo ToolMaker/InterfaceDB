@@ -253,7 +253,7 @@ If the envelope already has a location, the factory leaves it alone.
 
 For `Single`, the default flat factory uses the contract name as its key. Custom factories can derive a key from `Envelope.ObjectInstance` without requiring a prescribed ID property.
 
-Single-object creation is checked while holding the payload lock, so concurrent processes cannot both create the same path. `IEnvelopeKeyAndLocationFactory<TContract>.ObjectCardinality` exposes the setting to naming and persistence.
+Single-object creation is checked while holding the payload lock, so concurrent processes cannot both create the same path. `IEnvelopeStorageIdentityFactory<TContract>.ObjectCardinality` exposes the setting to naming and persistence.
 
 Repository registration preserves a factory registered by the consumer before `AddRepository`.
 
@@ -272,18 +272,25 @@ Two databases can use the same contract type with different roots and behavior:
 services.AddRepository<IPerson>(localOptions);
 services.AddRepository<IPerson>(archiveOptions);
 
-var local = provider.GetRequiredKeyedService<IRepository<IPerson>>("LocalPeople");
-var archive = provider.GetRequiredKeyedService<IRepository<IPerson>>("ArchivePeople");
+var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
+var archive = provider.GetInterfaceDbRepository<IPerson>("ArchivePeople");
+```
+
+The key can also be supplied at registration time when the options object should remain shared or environment-neutral:
+
+```csharp
+services.AddRepository<IPerson>(personOptions, "LocalPeople");
 ```
 
 The keyed graph isolates configuration, repository, cache, serializer, envelope lifecycle, reader/writer, change watcher, migration strategy, and write coordination.
 
-Database-specific encryption and filename factories can be registered before the repository:
+Database-specific encryption can be registered before the repository, and storage identity factories can be passed into repository registration:
 
 ```csharp
 services.AddInterfaceDbAesGcmEncryption("SecurePeople", keyProvider);
-services.AddInterfaceDbKeyAndLocationFactory<IPerson>("SecurePeople", factory);
-services.AddRepository<IPerson>(secureOptions);
+services.AddRepository<IPerson>(
+    secureOptions,
+    storageIdentityFactory: secureIdentityFactory);
 ```
 
 Repeated registration of the same contract, key, and configuration instance is idempotent. Registering the same contract/key with a different configuration instance throws a clear configuration error.
