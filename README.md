@@ -2,7 +2,7 @@
 
 InterfaceDB is an interface-first object storage stack. The current baseline is a flat file-backed repository for desktop/mobile style local storage, plus a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
 
-For product positioning, tradeoffs, and current performance notes, see [Why InterfaceDB Exists](documentation/product-positioning.md).
+For product positioning, tradeoffs, and current performance notes, see [Why InterfaceDB Exists](documentation/product-positioning.md). For trace-based performance investigation, see [InterfaceDB Performance Profiling](documentation/performance-profiling.md).
 
 ## Positioning
 
@@ -370,6 +370,14 @@ $env:INTERFACEDB_BENCH_BULK_BATCH_SIZE = "16384"
 $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER = "true"
 
 dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem_StoreTransaction*
+```
+
+Run a direct profiling workload for `dotnet-trace`:
+
+```powershell
+dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store
+dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-indexed-store
+dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-selective-indexed-query
 ```
 
 The benchmark project includes both the existing predicate-scan query and the indexed search query:

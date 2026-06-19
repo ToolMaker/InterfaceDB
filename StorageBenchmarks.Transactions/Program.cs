@@ -32,6 +32,12 @@ try
         return;
     }
 
+    if (TransactionBenchmarks.TryGetProfileTarget(args, out var profileTarget))
+    {
+        TransactionBenchmarks.RunProfileTarget(profileTarget);
+        return;
+    }
+
     if (args.Length == 0)
     {
         Console.WriteLine("InterfaceDB transaction benchmark runner");
@@ -44,6 +50,9 @@ try
         Console.WriteLine();
         Console.WriteLine("Pass BenchmarkDotNet arguments after --, for example:");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*");
+        Console.WriteLine();
+        Console.WriteLine("Run a direct profiling workload for dotnet-trace:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store");
         return;
     }
 
@@ -100,6 +109,95 @@ public class TransactionBenchmarks : IDisposable
         if (reader.Read())
         {
             Console.WriteLine($"Connected to SQL Server '{reader.GetString(0)}', database '{reader.GetString(1)}'.");
+        }
+    }
+
+    public static bool TryGetProfileTarget(string[] args, out string target)
+    {
+        for (var index = 0; index < args.Length; index++)
+        {
+            var argument = args[index];
+            if (argument.StartsWith("--profile=", StringComparison.OrdinalIgnoreCase))
+            {
+                target = argument["--profile=".Length..];
+                return !string.IsNullOrWhiteSpace(target);
+            }
+
+            if (string.Equals(argument, "--profile", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length
+                && !string.IsNullOrWhiteSpace(args[index + 1]))
+            {
+                target = args[index + 1];
+                return true;
+            }
+        }
+
+        target = string.Empty;
+        return false;
+    }
+
+    public static void RunProfileTarget(string target)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(target);
+
+        using var benchmark = new TransactionBenchmarks();
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        Console.WriteLine($"Running InterfaceDB profiling target '{target}'.");
+        try
+        {
+            switch (target.Trim().ToLowerInvariant())
+            {
+                case "filesystem-store":
+                case "file-store":
+                    benchmark.SetupFileSystemAsync();
+                    benchmark.PrepareFileSystemIterationAsync();
+                    benchmark.FileSystem_StoreTransaction().GetAwaiter().GetResult();
+                    break;
+                case "filesystem-indexed-store":
+                case "file-indexed-store":
+                    benchmark.SetupIndexedFileSystemAsync();
+                    benchmark.PrepareIndexedFileSystemIterationAsync();
+                    benchmark.FileSystem_IndexedStoreTransaction().GetAwaiter().GetResult();
+                    break;
+                case "filesystem-indexed-query":
+                case "file-indexed-query":
+                    benchmark.SetupIndexedFileSystemQuery();
+                    _ = benchmark.FileSystem_SearchIndexQueryBatch().GetAwaiter().GetResult();
+                    break;
+                case "filesystem-indexed-query-hot":
+                case "file-indexed-query-hot":
+                    benchmark.SetupIndexedFileSystemQuery();
+                    for (var iteration = 0; iteration < 100; iteration++)
+                    {
+                        _ = benchmark.FileSystem_SearchIndexQueryBatch().GetAwaiter().GetResult();
+                    }
+
+                    break;
+                case "filesystem-selective-indexed-query":
+                case "file-selective-indexed-query":
+                    benchmark.SetupIndexedFileSystemQuery();
+                    _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch().GetAwaiter().GetResult();
+                    break;
+                case "filesystem-selective-indexed-query-hot":
+                case "file-selective-indexed-query-hot":
+                    benchmark.SetupIndexedFileSystemQuery();
+                    for (var iteration = 0; iteration < 100; iteration++)
+                    {
+                        _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch().GetAwaiter().GetResult();
+                    }
+
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown profile target '{target}'. Supported targets: filesystem-store, filesystem-indexed-store, filesystem-indexed-query, filesystem-indexed-query-hot, filesystem-selective-indexed-query, filesystem-selective-indexed-query-hot.");
+            }
+
+            stopwatch.Stop();
+            Console.WriteLine($"Completed profiling target '{target}' in {stopwatch.Elapsed}.");
+        }
+        finally
+        {
+            benchmark.Cleanup();
         }
     }
 
