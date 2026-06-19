@@ -414,6 +414,42 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         }
     }
 
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateByImplementationTypeAsync<TImplementation>(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        if (typeof(TImplementation) == typeof(TContract))
+        {
+            await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
+            {
+                yield return envelope;
+            }
+
+            yield break;
+        }
+
+        var expectedTypeName = GetImplementationTypeName(typeof(TImplementation));
+        foreach (var envelope in _envelopes.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!string.IsNullOrWhiteSpace(envelope.ImplementationTypeName)
+                && !string.Equals(envelope.ImplementationTypeName, expectedTypeName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
+            if (currentEnvelope?.ObjectInstance is not TImplementation)
+            {
+                continue;
+            }
+
+            currentEnvelope.ImplementationTypeName ??= expectedTypeName;
+            yield return currentEnvelope;
+        }
+    }
+
     private async ValueTask<IObjectEnvelope<TContract>?> MaterializeEnvelopeAsync(
         IObjectEnvelope<TContract>? envelope,
         CancellationToken cancellationToken)
@@ -446,11 +482,39 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             var file = new FileInfo(currentEnvelope.Location);
             var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
             instance = hydrated;
-            currentEnvelope.ObjectInstance = hydrated;
+            var hydratedEnvelope = hydrated.Envelope;
+            if (hydratedEnvelope is not null)
+            {
+                currentEnvelope.ImplementationTypeName = hydratedEnvelope.ImplementationTypeName;
+                currentEnvelope.EncryptedFields = hydratedEnvelope.EncryptedFields;
+                currentEnvelope.CacheObjectInstance |= hydratedEnvelope.CacheObjectInstance;
+                if (!ReferenceEquals(hydratedEnvelope, currentEnvelope))
+                {
+                    currentEnvelope = hydratedEnvelope;
+                }
+            }
+
+            if (StorageObjectCachePolicy.ShouldRetainObjectInstance(hydrated, _storagePolicy))
+            {
+                envelope.ObjectInstance = hydrated;
+                envelope.ImplementationTypeName = hydrated.Envelope?.ImplementationTypeName;
+                envelope.EncryptedFields = hydrated.Envelope?.EncryptedFields
+                    ?? envelope.EncryptedFields;
+                envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
+                currentEnvelope = envelope;
+            }
+        }
+
+        if (instance is not null && string.IsNullOrWhiteSpace(currentEnvelope.ImplementationTypeName))
+        {
+            currentEnvelope.ImplementationTypeName = GetImplementationTypeName(instance.GetType());
         }
 
         return instance is null ? null : currentEnvelope;
     }
+
+    private static string GetImplementationTypeName(Type type)
+        => type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -590,6 +654,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             env.Location = file.FullName;
             env.VersionTag = string.IsNullOrWhiteSpace(version) ? (_contractConfig.ActiveVersion ?? "1.0.0") : version!;
             env.ObjectInstance = null;
+            env.ImplementationTypeName = null;
+            env.EncryptedFields = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
             return env;
         }
 

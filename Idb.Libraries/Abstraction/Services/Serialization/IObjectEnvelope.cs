@@ -30,6 +30,24 @@ public interface IObjectEnvelope<TContract>
         TContract? ObjectInstance { get; set; }
 
         /// <summary>
+        /// Concrete implementation type stored in this envelope.
+        /// Used by polymorphic queries over a contract repository.
+        /// </summary>
+        string? ImplementationTypeName { get; set; }
+
+        /// <summary>
+        /// Overrides the repository object-cache policy for this specific envelope.
+        /// When true, the materialized object instance may be retained in the envelope cache.
+        /// </summary>
+        bool CacheObjectInstance { get; set; }
+
+        /// <summary>
+        /// Encrypted per-field values keyed by contract property path.
+        /// Values remain encrypted until accessed through the InterfaceDB contract proxy.
+        /// </summary>
+        IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
+
+        /// <summary>
     /// Location descriptor where the serialized payload resides (e.g., file, blob, queue message).
         /// </summary>
         string? Location { get; set; }

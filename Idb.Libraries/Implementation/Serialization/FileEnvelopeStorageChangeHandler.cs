@@ -125,10 +125,26 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
             _envelopeLifecycle.Unwrap(envelope);
         }
 
+        var cachedEnvelope = envelope;
+        if (!StorageObjectCachePolicy.ShouldRetainObjectInstance(envelope, _storagePolicy))
+        {
+            cachedEnvelope = new FileObjectEnvelope<TContract>(_contractConfig)
+            {
+                EnvelopeCacheKey = envelope.EnvelopeCacheKey,
+                VersionTag = envelope.VersionTag,
+                Location = envelope.Location,
+                ImplementationTypeName = envelope.ImplementationTypeName,
+                CacheObjectInstance = envelope.CacheObjectInstance,
+                EncryptedFields = envelope.EncryptedFields,
+                ObjectInstance = null,
+                State = envelope.State
+            };
+        }
+
         _envelopes.AddOrUpdate(
-            envelope.EnvelopeCacheKey,
-            EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
-            envelope);
+            cachedEnvelope.EnvelopeCacheKey,
+            EnvelopeCacheKey.ToLogicalKey(cachedEnvelope.EnvelopeCacheKey),
+            cachedEnvelope);
         return new EnvelopeStorageChangeResult<TContract>(changeType, null, envelope);
     }
 

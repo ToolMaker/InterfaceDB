@@ -48,7 +48,7 @@ InterfaceDB keeps an in-memory envelope catalog. This avoids normal query flows 
 
 The file payload is durable storage. The envelope cache is the repository's known-object catalog. Secondary indexes can later sit beside this catalog, but the envelope cache is the minimum object index.
 
-Write behavior now always caches the envelope metadata. The only memory tuning switch is whether to retain the full object instance after write or keep a lightweight envelope skeleton.
+Write behavior now always caches the envelope metadata. Full object instance retention is selective: the default keeps lightweight envelope skeletons, `[StorageCached]` opts in a concrete storage type, and `IObjectEnvelope<TContract>.CacheObjectInstance` opts in a specific stored object.
 
 ### Storage Lifecycle Notifications
 

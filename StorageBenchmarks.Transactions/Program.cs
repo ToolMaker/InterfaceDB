@@ -40,20 +40,15 @@ try
 
     if (args.Length == 0)
     {
-        Console.WriteLine("InterfaceDB transaction benchmark runner");
-        Console.WriteLine();
-        Console.WriteLine("Run from a terminal so BenchmarkDotNet can report failures clearly:");
-        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions");
-        Console.WriteLine();
-        Console.WriteLine("Quick SQL configuration check:");
-        Console.WriteLine("  dotnet run --project StorageBenchmarks.Transactions -- --smoke-sql");
-        Console.WriteLine();
-        Console.WriteLine("Pass BenchmarkDotNet arguments after --, for example:");
-        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*");
-        Console.WriteLine();
-        Console.WriteLine("Run a direct profiling workload for dotnet-trace:");
-        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store");
+        TransactionBenchmarks.PrintUsage();
         return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--run-all", StringComparison.OrdinalIgnoreCase)))
+    {
+        args = args
+            .Where(argument => !string.Equals(argument, "--run-all", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
     }
 
     BenchmarkRunner.Run<TransactionBenchmarks>(args: args);
@@ -68,15 +63,19 @@ catch (Exception ex)
 [MemoryDiagnoser]
 public class TransactionBenchmarks : IDisposable
 {
-    private const int BenchmarkPersonCount = 50_000;
+    private const int DefaultBenchmarkPersonCount = 25_000;
     private const int QueryRepeatCount = 100;
     private const int FileSystemBenchmarkConcurrency = 16;
     private const int FileSystemBenchmarkBulkBatchSize = 4096;
+    private const string PersonCountEnvironmentVariable = "INTERFACEDB_BENCH_PERSON_COUNT";
     private const string MaxConcurrencyEnvironmentVariable = "INTERFACEDB_BENCH_MAX_CONCURRENCY";
     private const string BulkBatchSizeEnvironmentVariable = "INTERFACEDB_BENCH_BULK_BATCH_SIZE";
     private const string UseSingleWriteBufferEnvironmentVariable = "INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER";
-    private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
-    private readonly List<IIndexedBenchmarkPerson> _seedIndexedPersons = CreateIndexedPersons(BenchmarkPersonCount);
+    private readonly int _benchmarkPersonCount = ResolvePositiveInt(
+        PersonCountEnvironmentVariable,
+        DefaultBenchmarkPersonCount);
+    private readonly List<ContractPerson.IPerson> _seedPersons;
+    private readonly List<IIndexedBenchmarkPerson> _seedIndexedPersons;
     private static readonly string[] QueryRoles = { "Student", "Employee" };
 
     private ServiceProvider? _fileProvider;
@@ -99,6 +98,35 @@ public class TransactionBenchmarks : IDisposable
     private IRepository<IIndexedBenchmarkPerson>? _indexedQueryRepository;
 
     internal static IConfiguration? Configuration { get; set; }
+
+    public TransactionBenchmarks()
+    {
+        _seedPersons = PersonDataFactory.CreatePersons(_benchmarkPersonCount);
+        _seedIndexedPersons = CreateIndexedPersons(_benchmarkPersonCount);
+    }
+
+    public static void PrintUsage()
+    {
+        Console.WriteLine("InterfaceDB transaction benchmark runner");
+        Console.WriteLine();
+        Console.WriteLine("Run a filtered benchmark:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*");
+        Console.WriteLine();
+        Console.WriteLine("Run the full benchmark suite explicitly:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --run-all");
+        Console.WriteLine();
+        Console.WriteLine("Current workload defaults:");
+        Console.WriteLine("  INTERFACEDB_BENCH_PERSON_COUNT=25000");
+        Console.WriteLine("  INTERFACEDB_BENCH_MAX_CONCURRENCY=16");
+        Console.WriteLine("  INTERFACEDB_BENCH_BULK_BATCH_SIZE=16384");
+        Console.WriteLine("  INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER=true");
+        Console.WriteLine();
+        Console.WriteLine("Quick SQL configuration check:");
+        Console.WriteLine("  dotnet run --project StorageBenchmarks.Transactions -- --smoke-sql");
+        Console.WriteLine();
+        Console.WriteLine("Run a direct profiling workload for dotnet-trace:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store");
+    }
 
     public static void SmokeTestSqlConnection()
     {
@@ -204,7 +232,7 @@ public class TransactionBenchmarks : IDisposable
     [GlobalSetup(Target = nameof(FileSystem_StoreTransaction))]
     public void SetupFileSystemAsync()
     {
-        _fileDataRoot = Path.Combine(@"G:\PerformanceTest", "interface-db-transactions", Guid.NewGuid().ToString("N"));
+        _fileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-transactions", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_fileDataRoot);
         _fileProvider = BuildFileSystemProvider(_fileDataRoot);
         var repository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
@@ -235,7 +263,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - store 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - store configured persons")]
     public async Task FileSystem_StoreTransaction()
     {
         if (_fileProvider is null)
@@ -284,7 +312,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationIndexedPersons = CloneIndexedPersons(_seedIndexedPersons);
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - store 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - store configured persons")]
     public async Task FileSystem_IndexedStoreTransaction()
     {
         if (_indexedFileProvider is null)
@@ -318,7 +346,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "SQL Server (object transaction) - store 50k persons")]
+    [Benchmark(Description = "SQL Server (object transaction) - store configured persons")]
     public void SqlServer_StoreTransaction()
     {
         if (_sqlConnection is null)
@@ -373,7 +401,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "SQL Server (indexed object transaction) - store 50k persons")]
+    [Benchmark(Description = "SQL Server (indexed object transaction) - store configured persons")]
     public void SqlServer_IndexedStoreTransaction()
     {
         if (_sqlIndexedConnection is null)
@@ -426,7 +454,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Dapper (object transaction) - store 50k persons")]
+    [Benchmark(Description = "Dapper (object transaction) - store configured persons")]
     public void Dapper_StoreTransaction()
     {
         if (_dapperConnection is null)
@@ -475,7 +503,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Dapper (indexed object transaction) - store 50k persons")]
+    [Benchmark(Description = "Dapper (indexed object transaction) - store configured persons")]
     public void Dapper_IndexedStoreTransaction()
     {
         if (_dapperIndexedConnection is null)
@@ -519,7 +547,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Entity Framework Core SQL Server - store 50k persons")]
+    [Benchmark(Description = "Entity Framework Core SQL Server - store configured persons")]
     public void EfCore_StoreTransaction()
     {
         var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
@@ -558,7 +586,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - store 50k persons")]
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - store configured persons")]
     public void EfCore_IndexedStoreTransaction()
     {
         var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
@@ -598,7 +626,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "SQL Server (SqlBulkCopy) - store 50k persons")]
+    [Benchmark(Description = "SQL Server (SqlBulkCopy) - store configured persons")]
     public void SqlServer_BulkCopy()
     {
         if (_sqlBulkConnection is null)
@@ -631,7 +659,7 @@ public class TransactionBenchmarks : IDisposable
     {
         _fileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-query", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_fileDataRoot);
-        _fileProvider = BuildFileSystemProvider(_fileDataRoot, keepObjectsOnWrite: true);
+        _fileProvider = BuildFileSystemProvider(_fileDataRoot, keepObjectsOnWrite: false);
         _queryRepository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
         _queryRepository.InitializeAsync().GetAwaiter().GetResult();
         _queryRepository.SaveManyAsync(PersonDataFactory.ClonePersons(_seedPersons)).GetAwaiter().GetResult();
@@ -649,7 +677,7 @@ public class TransactionBenchmarks : IDisposable
     {
         _indexedFileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-indexed-query", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_indexedFileDataRoot);
-        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot, keepObjectsOnWrite: true);
+        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot, keepObjectsOnWrite: false);
         _indexedQueryRepository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
         _indexedQueryRepository.InitializeAsync().GetAwaiter().GetResult();
         _indexedQueryRepository.SaveManyAsync(CloneIndexedPersons(_seedIndexedPersons)).GetAwaiter().GetResult();
@@ -749,7 +777,7 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - 100 predicate scans over 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - 100 predicate scans over configured persons")]
     public async Task<int> FileSystem_QueryBatch()
     {
         var repository = _queryRepository ?? throw new InvalidOperationException("File-system query repository not initialized.");
@@ -768,7 +796,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 materialized queries over 50k persons")]
+    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 materialized queries over configured persons")]
     public int SqlServer_QueryBatch()
     {
         if (_sqlQueryConnection is null)
@@ -787,7 +815,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 materialized queries over 50k persons")]
+    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 materialized queries over configured persons")]
     public int Dapper_QueryBatch()
     {
         if (_dapperQueryConnection is null)
@@ -806,7 +834,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 materialized queries over 50k persons")]
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 materialized queries over configured persons")]
     public int EfCore_QueryBatch()
     {
         var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");
@@ -821,7 +849,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 indexed searches over 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 indexed searches over configured persons")]
     public async Task<int> FileSystem_SearchIndexQueryBatch()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
@@ -840,7 +868,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 selective indexed searches over 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 selective indexed searches over configured persons")]
     public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
@@ -869,7 +897,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 selective materialized queries over 50k persons")]
+    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 selective materialized queries over configured persons")]
     public int SqlServer_SelectiveQueryBatch()
     {
         if (_sqlQueryConnection is null)
@@ -895,7 +923,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 selective materialized queries over 50k persons")]
+    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 selective materialized queries over configured persons")]
     public int Dapper_SelectiveQueryBatch()
     {
         if (_dapperQueryConnection is null)
@@ -921,7 +949,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 selective materialized queries over 50k persons")]
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 selective materialized queries over configured persons")]
     public int EfCore_SelectiveQueryBatch()
     {
         var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");

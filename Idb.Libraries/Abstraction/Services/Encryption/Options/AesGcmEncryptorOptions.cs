@@ -9,7 +9,7 @@ public sealed class AesGcmEncryptorOptions
     public int NonceSize { get; init; } = 12;
 
     /// <summary>
-    /// Allows existing plaintext IDB2 payloads to be read during an encryption rollout.
+    /// Allows existing plaintext envelope payloads to be read during an encryption rollout.
     /// New writes are always encrypted.
     /// </summary>
     public bool AllowUnencryptedPayloads { get; init; }

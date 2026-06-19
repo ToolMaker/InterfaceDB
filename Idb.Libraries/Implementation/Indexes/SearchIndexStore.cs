@@ -6,7 +6,7 @@ using Idb.Libraries.Abstractions.Enums;
 namespace Idb.Libraries.Implementation.Indexes;
 
 internal sealed class SearchIndexStore<TContract>
-    where TContract : class, IStoredContract<TContract>
+    where TContract : class
 {
     private readonly IReadOnlyList<SearchIndexDefinition> _definitions;
     private readonly Dictionary<string, PropertySearchIndex> _indexes;

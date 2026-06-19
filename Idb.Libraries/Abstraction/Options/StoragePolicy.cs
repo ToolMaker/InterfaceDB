@@ -30,10 +30,11 @@ public sealed record StoragePolicy
     public bool RaiseNotifications { get; init; } = true;
 
     /// <summary>
-    /// Controls whether the cached envelope's ObjectInstance should be retained after writes.
-    /// Set to false to store a lightweight skeleton (ObjectInstance = null).
+    /// Controls whether every cached envelope's ObjectInstance should be retained after writes.
+    /// The default keeps only envelope metadata; use StorageCachedAttribute or IObjectEnvelope.CacheObjectInstance
+    /// for selective object retention.
     /// </summary>
-    public bool KeepObjectInstanceInCacheOnWrite { get; init; } = true;
+    public bool KeepObjectInstanceInCacheOnWrite { get; init; } = false;
 
     /// <summary>
     /// When true, writer pre-serializes the payload to a single byte[] and writes it in one operation

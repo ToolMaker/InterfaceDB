@@ -51,6 +51,13 @@ public interface IEnvelopeRepository<TContract> :
     IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Streams materialized envelopes whose concrete implementation type matches the requested type.
+    /// </summary>
+    IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateByImplementationTypeAsync<TImplementation>(
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
+
     ValueTask<TContract> WriteAsync(
             TContract contractInstance,
             CancellationToken cancellationToken = default);

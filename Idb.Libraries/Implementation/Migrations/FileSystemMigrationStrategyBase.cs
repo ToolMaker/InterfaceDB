@@ -393,16 +393,27 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             || payload[0] != (byte)'I'
             || payload[1] != (byte)'D'
             || payload[2] != (byte)'B'
-            || payload[3] != (byte)'2')
+            || (payload[3] != (byte)'2' && payload[3] != (byte)'3' && payload[3] != (byte)'4'))
         {
             return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload);
         }
 
+        var hasCacheFlag = payload[3] == (byte)'3' || payload[3] == (byte)'4';
+        var hasEncryptedFields = payload[3] == (byte)'4';
         using var stream = new MemoryStream(payload, writable: false);
         stream.Position = 4;
         _ = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
         var cacheKey = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
         _ = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
+        if (hasCacheFlag)
+        {
+            _ = MessagePackSerializer.Deserialize<bool>(stream, ContractSerializerOptions);
+        }
+
+        if (hasEncryptedFields)
+        {
+            _ = MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(stream, ContractSerializerOptions);
+        }
 
         var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
         stream.ReadExactly(objectPayload);

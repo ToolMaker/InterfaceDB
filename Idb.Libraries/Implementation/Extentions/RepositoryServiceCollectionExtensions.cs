@@ -283,7 +283,8 @@ namespace Idb.Libraries.Implementation.Extentions
             services.TryAddKeyedSingleton<IEnvelopeLifecycle<TContract>>(databaseKey, (sp, key) =>
                 new EnvelopeLifecycle<TContract>(
                     () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
-                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
+                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key),
+                    sp.GetRequiredKeyedService<IEncryptor>(key)));
 
             // File-provider write locking. Future providers should register their own IStorageWriteLock
             // implementation from their provider-specific registration path.
@@ -323,6 +324,7 @@ namespace Idb.Libraries.Implementation.Extentions
                     sp.GetRequiredKeyedService<
                         IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(key),
                     contractConfig,
+                    sp.GetRequiredKeyedService<StoragePolicy>(key),
                     sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeSource<TContract>>(key)));
             services.TryAddKeyedTransient<IObjectWriter<TContract>>(databaseKey, (sp, key) =>

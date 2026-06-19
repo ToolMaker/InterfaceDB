@@ -16,6 +16,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     where TContract : class, IStoredContract<TContract>
 {
     private const string DefaultExtension = ".mpk";
+    private const string CurrentMagic = "IDB4";
     private static readonly ConcurrentDictionary<Type, TypeSerializationInfo> TypeSerializationCache = new();
     private static readonly ConcurrentDictionary<string, Type?> TypeResolutionCache = new(StringComparer.Ordinal);
     private readonly MessagePackSerializerOptions _options;
@@ -71,17 +72,20 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             throw new ArgumentNullException(nameof(obj));
         }
 
-        // Write magic + simple header (version, cacheKey, typeName) + typed object payload
+        // Write magic + simple header (version, cacheKey, typeName, cache flag, encrypted fields) + typed object payload
         using var ms = new MemoryStream();
         WriteMagic(ms);
         var version = obj.VersionTag ?? string.Empty;
         var cacheKey = obj.EnvelopeCacheKey ?? string.Empty;
         var instance = obj.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
         var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
+        obj.ImplementationTypeName = typeInfo.TypeName;
 
         MessagePackSerializer.Serialize(ms, version, _fastOptions);
         MessagePackSerializer.Serialize(ms, cacheKey, _fastOptions);
         MessagePackSerializer.Serialize(ms, typeInfo.TypeName, _fastOptions);
+        MessagePackSerializer.Serialize(ms, obj.CacheObjectInstance, _fastOptions);
+        MessagePackSerializer.Serialize(ms, obj.EncryptedFields, _fastOptions);
         typeInfo.Serialize(ms, instance, _fastOptions, CancellationToken.None);
         return ms.ToArray();
     }
@@ -102,10 +106,15 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         if (HasMagic(data))
         {
             var ms = new MemoryStream(data, writable: false);
-            SkipMagic(ms);
+            var magic = ReadMagic(ms);
             var version = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
             var cacheKey = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
             var typeName = MessagePackSerializer.Deserialize<string>(ms, _fastOptions);
+            var cacheObjectInstance = HasCacheFlag(magic)
+                && MessagePackSerializer.Deserialize<bool>(ms, _fastOptions);
+            var encryptedFields = HasEncryptedFields(magic)
+                ? MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(ms, _fastOptions)
+                : new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
             var type = ResolveType(typeName)
                 ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
             var instance = MessagePackSerializer.Deserialize(type, ms, _fastOptions);
@@ -118,6 +127,9 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             {
                 VersionTag = version,
                 EnvelopeCacheKey = cacheKey,
+                ImplementationTypeName = typeName,
+                CacheObjectInstance = cacheObjectInstance,
+                EncryptedFields = encryptedFields,
                 ObjectInstance = contractInstance,
                 Location = default!
             };
@@ -159,13 +171,17 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
 
     private static void WriteMagic(Stream stream)
     {
-        var magic = Encoding.ASCII.GetBytes("IDB2");
+        var magic = Encoding.ASCII.GetBytes(CurrentMagic);
         stream.Write(magic, 0, magic.Length);
     }
 
     private static bool HasMagic(byte[] data)
     {
-        return data.Length >= 4 && data[0] == (byte)'I' && data[1] == (byte)'D' && data[2] == (byte)'B' && data[3] == (byte)'2';
+        return data.Length >= 4
+            && data[0] == (byte)'I'
+            && data[1] == (byte)'D'
+            && data[2] == (byte)'B'
+            && (data[3] == (byte)'2' || data[3] == (byte)'3' || data[3] == (byte)'4');
     }
 
     private sealed class EnvelopeNullResolver : IFormatterResolver
@@ -211,7 +227,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         }
     }
 
-    private static void SkipMagic(Stream stream)
+    private static string ReadMagic(Stream stream)
     {
         var buffer = new byte[4];
         var read = stream.Read(buffer, 0, 4);
@@ -219,7 +235,19 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         {
             throw new InvalidOperationException("Invalid envelope header.");
         }
+
+        return Encoding.ASCII.GetString(buffer);
     }
+
+    private static bool IsCurrentMagic(string magic)
+        => string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
+
+    private static bool HasCacheFlag(string magic)
+        => string.Equals(magic, "IDB3", StringComparison.Ordinal)
+            || string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
+
+    private static bool HasEncryptedFields(string magic)
+        => string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
 
     private static Type? ResolveType(string? typeName)
     {
@@ -270,10 +298,13 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         var cacheKey = envelope.EnvelopeCacheKey ?? string.Empty;
         var instance = envelope.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
         var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
+        envelope.ImplementationTypeName = typeInfo.TypeName;
 
         await MessagePackSerializer.SerializeAsync(destination, version, _fastOptions, cancellationToken).ConfigureAwait(false);
         await MessagePackSerializer.SerializeAsync(destination, cacheKey, _fastOptions, cancellationToken).ConfigureAwait(false);
         await MessagePackSerializer.SerializeAsync(destination, typeInfo.TypeName, _fastOptions, cancellationToken).ConfigureAwait(false);
+        await MessagePackSerializer.SerializeAsync(destination, envelope.CacheObjectInstance, _fastOptions, cancellationToken).ConfigureAwait(false);
+        await MessagePackSerializer.SerializeAsync(destination, envelope.EncryptedFields, _fastOptions, cancellationToken).ConfigureAwait(false);
         await typeInfo.SerializeAsync(destination, instance, _fastOptions, cancellationToken).ConfigureAwait(false);
     }
 
@@ -289,12 +320,21 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             throw new InvalidOperationException("Unexpected end of stream.");
         }
 
-        if (prefix[0] == (byte)'I' && prefix[1] == (byte)'D' && prefix[2] == (byte)'B' && prefix[3] == (byte)'2')
+        if (prefix[0] == (byte)'I'
+            && prefix[1] == (byte)'D'
+            && prefix[2] == (byte)'B'
+            && (prefix[3] == (byte)'2' || prefix[3] == (byte)'3' || prefix[3] == (byte)'4'))
         {
             // New format
+            var magic = Encoding.ASCII.GetString(prefix);
             var version = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var cacheKey = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var typeName = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
+            var cacheObjectInstance = HasCacheFlag(magic)
+                && await MessagePackSerializer.DeserializeAsync<bool>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
+            var encryptedFields = HasEncryptedFields(magic)
+                ? await MessagePackSerializer.DeserializeAsync<Dictionary<string, EncryptedFieldValue>>(source, _fastOptions, cancellationToken).ConfigureAwait(false)
+                : new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
             var type = ResolveType(typeName)
                 ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
             var instanceObj = await MessagePackSerializer.DeserializeAsync(type, source, _fastOptions, cancellationToken).ConfigureAwait(false);
@@ -307,6 +347,9 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             {
                 VersionTag = version,
                 EnvelopeCacheKey = cacheKey,
+                ImplementationTypeName = typeName,
+                CacheObjectInstance = cacheObjectInstance,
+                EncryptedFields = encryptedFields,
                 ObjectInstance = contractInstance,
                 Location = default!
             };
@@ -338,6 +381,10 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         public string EnvelopeCacheKey { get; set; } = string.Empty;
         public string VersionTag { get; set; } = string.Empty;
         public TContract? ObjectInstance { get; set; }
+        public string? ImplementationTypeName { get; set; }
+        public bool CacheObjectInstance { get; set; }
+        public IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
+            = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
         public string? Location { get; set; }
         public Idb.Libraries.Abstractions.Enums.StorageObjectState State { get; set; }
     }

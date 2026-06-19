@@ -35,6 +35,8 @@
     <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
     <Compile Include="Implementation\DefaultFileNameFactory.cs" />
     <Compile Include="Implementation\Encryption\AesGcmEncryptor.cs" />
+    <Compile Include="Implementation\Encryption\EncryptedStorageDispatchProxy.cs" />
+    <Compile Include="Implementation\Encryption\EncryptedStorageFieldProcessor.cs" />
     <Compile Include="Implementation\Encryption\EncryptionNone.cs" />
     <Compile Include="Implementation\Encryption\FileSystemEncryptionRotationOperation.cs" />
     <Compile Include="Implementation\Encryption\WindowsCredentialEncryptionKeyStore.cs" />
@@ -69,6 +71,7 @@
     <Compile Include="Implementation\Serialization\FileObjectWriter.cs" />
     <Compile Include="Implementation\Serialization\ObjectReaderAndWriter.cs" />
     <Compile Include="Implementation\Serialization\SidecarFileWriteLock.cs" />
+    <Compile Include="Implementation\Serialization\StorageObjectCachePolicy.cs" />
   </ItemGroup>
 
 </Project>
