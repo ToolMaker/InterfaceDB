@@ -1,5 +1,6 @@
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using System.Linq.Expressions;
 namespace Idb.Libraries.Abstractions.Services.Repository;
 
 /// <summary>
@@ -73,6 +74,13 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Streams every entity matching the supplied expression, using search indexes when possible.
+    /// </summary>
+    IAsyncEnumerable<TContract> SearchManyAsync(
+        Expression<Func<TContract, bool>> filterExpression,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Streams entities whose logical storage key equals the supplied value.
     /// This is an envelope-cache equality lookup, not a predicate scan.
     /// </summary>
@@ -85,6 +93,13 @@ public interface IRepository<TContract>
     /// </summary>
     ValueTask<TContract?> QueryFirstAsync(
         Func<TContract, bool> filterFunction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the first matching entity using search indexes when possible, or <c>null</c>.
+    /// </summary>
+    ValueTask<TContract?> SearchFirstAsync(
+        Expression<Func<TContract, bool>> filterExpression,
         CancellationToken cancellationToken = default);
 
     /// <summary>

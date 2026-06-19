@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using Dapper;
+using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
@@ -65,16 +66,24 @@ public class TransactionBenchmarks : IDisposable
     private const string BulkBatchSizeEnvironmentVariable = "INTERFACEDB_BENCH_BULK_BATCH_SIZE";
     private const string UseSingleWriteBufferEnvironmentVariable = "INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER";
     private readonly List<ContractPerson.IPerson> _seedPersons = PersonDataFactory.CreatePersons(BenchmarkPersonCount);
+    private readonly List<IIndexedBenchmarkPerson> _seedIndexedPersons = CreateIndexedPersons(BenchmarkPersonCount);
     private static readonly string[] QueryRoles = { "Student", "Employee" };
 
     private ServiceProvider? _fileProvider;
+    private ServiceProvider? _indexedFileProvider;
     private string? _fileDataRoot;
+    private string? _indexedFileDataRoot;
     private SqlConnection? _sqlConnection;
+    private SqlConnection? _sqlIndexedConnection;
     private SqlConnection? _sqlBulkConnection;
     private SqlConnection? _sqlQueryConnection;
     private SqlConnection? _dapperConnection;
+    private SqlConnection? _dapperIndexedConnection;
+    private SqlConnection? _dapperQueryConnection;
     private List<ContractPerson.IPerson>? _iterationPersons;
+    private List<IIndexedBenchmarkPerson>? _iterationIndexedPersons;
     private IRepository<ContractPerson.IPerson>? _queryRepository;
+    private IRepository<IIndexedBenchmarkPerson>? _indexedQueryRepository;
 
     internal static IConfiguration? Configuration { get; set; }
 
@@ -139,6 +148,55 @@ public class TransactionBenchmarks : IDisposable
         await repository.SaveManyAsync(persons).ConfigureAwait(false);
     }
 
+    [GlobalSetup(Target = nameof(FileSystem_IndexedStoreTransaction))]
+    public void SetupIndexedFileSystemAsync()
+    {
+        _indexedFileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-indexed-transactions", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_indexedFileDataRoot);
+        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot);
+        var repository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
+        repository.InitializeAsync().GetAwaiter().GetResult();
+    }
+
+    [IterationSetup(Target = nameof(FileSystem_IndexedStoreTransaction))]
+    public void PrepareIndexedFileSystemIterationAsync()
+    {
+        if (_indexedFileDataRoot is null)
+        {
+            return;
+        }
+
+        if (Directory.Exists(_indexedFileDataRoot))
+        {
+            Directory.Delete(_indexedFileDataRoot, recursive: true);
+        }
+
+        Directory.CreateDirectory(_indexedFileDataRoot);
+
+        _indexedFileProvider?.Dispose();
+        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot);
+        var repository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
+        repository.InitializeAsync().GetAwaiter().GetResult();
+        var warmupPerson = CloneIndexedPersons(new[] { _seedIndexedPersons[0] })[0];
+        repository.SaveAsync(warmupPerson).GetAwaiter().GetResult();
+        _iterationIndexedPersons = CloneIndexedPersons(_seedIndexedPersons);
+    }
+
+    [Benchmark(Description = "Interface DB (indexed transaction) - store 50k persons")]
+    public async Task FileSystem_IndexedStoreTransaction()
+    {
+        if (_indexedFileProvider is null)
+        {
+            throw new InvalidOperationException("Indexed file-system provider not initialized.");
+        }
+
+        var persons = _iterationIndexedPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationIndexedPersons = null;
+
+        var repository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
+        await repository.SaveManyAsync(persons).ConfigureAwait(false);
+    }
+
     [GlobalSetup(Target = nameof(SqlServer_StoreTransaction))]
     public void SetupSqlServer()
     {
@@ -158,7 +216,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "SQL Server (transaction) - store 50k persons")]
+    [Benchmark(Description = "SQL Server (object transaction) - store 50k persons")]
     public void SqlServer_StoreTransaction()
     {
         if (_sqlConnection is null)
@@ -171,6 +229,61 @@ public class TransactionBenchmarks : IDisposable
 
         using var transaction = _sqlConnection.BeginTransaction();
         using var insert = _sqlConnection.CreateCommand();
+        insert.Transaction = transaction;
+        insert.CommandText = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@id, @name, @age, @role, @surname)";
+        insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier);
+        insert.Parameters.Add("@name", SqlDbType.NVarChar, 200);
+        insert.Parameters.Add("@age", SqlDbType.Int);
+        insert.Parameters.Add("@role", SqlDbType.NVarChar, 100);
+        insert.Parameters.Add("@surname", SqlDbType.NVarChar, 100);
+
+        foreach (var person in persons)
+        {
+            insert.Parameters["@id"].Value = person.Id;
+            insert.Parameters["@name"].Value = person.Name;
+            insert.Parameters["@age"].Value = person.Age;
+            insert.Parameters["@role"].Value = person.Role;
+            insert.Parameters["@surname"].Value = string.Empty;
+            insert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    [GlobalSetup(Target = nameof(SqlServer_IndexedStoreTransaction))]
+    public void SetupIndexedSqlServer()
+    {
+        _sqlIndexedConnection = CreateOpenConnection();
+        EnsureSqlSchema(_sqlIndexedConnection);
+        CreateSqlQueryIndexes(_sqlIndexedConnection);
+    }
+
+    [IterationSetup(Target = nameof(SqlServer_IndexedStoreTransaction))]
+    public void PrepareIndexedSqlServerIteration()
+    {
+        if (_sqlIndexedConnection is null)
+        {
+            throw new InvalidOperationException("Indexed SQL Server connection not initialized.");
+        }
+
+        EnsureSqlSchema(_sqlIndexedConnection);
+        CreateSqlQueryIndexes(_sqlIndexedConnection);
+        _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+    }
+
+    [Benchmark(Description = "SQL Server (indexed object transaction) - store 50k persons")]
+    public void SqlServer_IndexedStoreTransaction()
+    {
+        if (_sqlIndexedConnection is null)
+        {
+            throw new InvalidOperationException("Indexed SQL Server connection not initialized.");
+        }
+
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        using var transaction = _sqlIndexedConnection.BeginTransaction();
+        using var insert = _sqlIndexedConnection.CreateCommand();
         insert.Transaction = transaction;
         insert.CommandText = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@id, @name, @age, @role, @surname)";
         insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier);
@@ -211,7 +324,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Dapper (transaction) - store 50k persons")]
+    [Benchmark(Description = "Dapper (object transaction) - store 50k persons")]
     public void Dapper_StoreTransaction()
     {
         if (_dapperConnection is null)
@@ -234,6 +347,55 @@ public class TransactionBenchmarks : IDisposable
             envelope.Role = person.Role;
             envelope.Surname = string.Empty;
             _dapperConnection.Execute(insertSql, envelope, transaction);
+        }
+
+        transaction.Commit();
+    }
+
+    [GlobalSetup(Target = nameof(Dapper_IndexedStoreTransaction))]
+    public void SetupIndexedDapper()
+    {
+        _dapperIndexedConnection = CreateOpenConnection();
+        EnsureSqlSchema(_dapperIndexedConnection);
+        CreateSqlQueryIndexes(_dapperIndexedConnection);
+    }
+
+    [IterationSetup(Target = nameof(Dapper_IndexedStoreTransaction))]
+    public void PrepareIndexedDapperIteration()
+    {
+        if (_dapperIndexedConnection is null)
+        {
+            throw new InvalidOperationException("Indexed Dapper connection not initialized.");
+        }
+
+        EnsureSqlSchema(_dapperIndexedConnection);
+        CreateSqlQueryIndexes(_dapperIndexedConnection);
+        _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+    }
+
+    [Benchmark(Description = "Dapper (indexed object transaction) - store 50k persons")]
+    public void Dapper_IndexedStoreTransaction()
+    {
+        if (_dapperIndexedConnection is null)
+        {
+            throw new InvalidOperationException("Indexed Dapper connection not initialized.");
+        }
+
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        const string insertSql = "INSERT INTO dbo.Persons(Id, Name, Age, Role, Surname) VALUES (@Id, @Name, @Age, @Role, @Surname)";
+        using var transaction = _dapperIndexedConnection.BeginTransaction();
+        var envelope = new DapperPersonEnvelope();
+
+        foreach (var person in persons)
+        {
+            envelope.Id = person.Id;
+            envelope.Name = person.Name;
+            envelope.Age = person.Age;
+            envelope.Role = person.Role;
+            envelope.Surname = string.Empty;
+            _dapperIndexedConnection.Execute(insertSql, envelope, transaction);
         }
 
         transaction.Commit();
@@ -304,6 +466,24 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
+    [GlobalSetup(Targets = new[] { nameof(FileSystem_SearchIndexQueryBatch), nameof(FileSystem_SearchIndexSelectiveQueryBatch) })]
+    public void SetupIndexedFileSystemQuery()
+    {
+        _indexedFileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-indexed-query", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_indexedFileDataRoot);
+        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot, keepObjectsOnWrite: true);
+        _indexedQueryRepository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
+        _indexedQueryRepository.InitializeAsync().GetAwaiter().GetResult();
+        _indexedQueryRepository.SaveManyAsync(CloneIndexedPersons(_seedIndexedPersons)).GetAwaiter().GetResult();
+        var validationCount = CountIndexedInterfaceDbMatchesAsync(_indexedQueryRepository, "Student", 20)
+            .GetAwaiter()
+            .GetResult();
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("Indexed InterfaceDB query benchmark setup produced no queryable records.");
+        }
+    }
+
     [Benchmark(Description = "Interface DB - 100 predicate scans over 50k persons")]
     public async Task<int> FileSystem_QueryBatch()
     {
@@ -323,7 +503,55 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [GlobalSetup(Target = nameof(SqlServer_QueryBatch))]
+    [Benchmark(Description = "Interface DB - 100 indexed searches over 50k persons")]
+    public async Task<int> FileSystem_SearchIndexQueryBatch()
+    {
+        var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
+        var total = 0;
+
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= minimumAge))
+            {
+                total++;
+            }
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "Interface DB - 100 selective indexed searches over 50k persons")]
+    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch()
+    {
+        var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
+        var total = 0;
+
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                var id = _seedIndexedPersons[i % _seedIndexedPersons.Count].Id;
+                await foreach (var _ in repository.SearchManyAsync(person => person.Id == id))
+                {
+                    total++;
+                }
+            }
+            else
+            {
+                var role = QueryRoles[i % QueryRoles.Length];
+                await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= 58))
+                {
+                    total++;
+                }
+            }
+        }
+
+        return total;
+    }
+
+    [GlobalSetup(Targets = new[] { nameof(SqlServer_QueryBatch), nameof(SqlServer_SelectiveQueryBatch) })]
     public void SetupSqlServerQuery()
     {
         _sqlQueryConnection = CreateOpenConnection();
@@ -344,16 +572,14 @@ public class TransactionBenchmarks : IDisposable
         bulkCopy.ColumnMappings.Add("Surname", "Surname");
         bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
         CreateSqlQueryIndexes(_sqlQueryConnection);
-        using var command = _sqlQueryConnection.CreateCommand();
-        command.CommandText = "SELECT COUNT_BIG(*) FROM dbo.Persons WHERE Role = N'Student' AND Age >= 20";
-        var validationCount = Convert.ToInt64(command.ExecuteScalar());
+        var validationCount = MaterializeSqlPersons(_sqlQueryConnection, "Student", 20).Count;
         if (validationCount <= 0)
         {
             throw new InvalidOperationException("SQL Server query benchmark setup produced no queryable records.");
         }
     }
 
-    [Benchmark(Description = "SQL Server - 100 indexed count queries over 50k persons")]
+    [Benchmark(Description = "SQL Server - 100 indexed materialized queries over 50k persons")]
     public int SqlServer_QueryBatch()
     {
         if (_sqlQueryConnection is null)
@@ -362,16 +588,111 @@ public class TransactionBenchmarks : IDisposable
         }
 
         var total = 0;
-        using var command = _sqlQueryConnection.CreateCommand();
-        command.CommandText = "SELECT COUNT_BIG(*) FROM dbo.Persons WHERE Role = @role AND Age >= @minimumAge";
-        command.Parameters.Add("@role", SqlDbType.NVarChar, 100);
-        command.Parameters.Add("@minimumAge", SqlDbType.Int);
-
         for (var i = 0; i < QueryRepeatCount; i++)
         {
-            command.Parameters["@role"].Value = QueryRoles[i % QueryRoles.Length];
-            command.Parameters["@minimumAge"].Value = 20 + (i % 30);
-            total += Convert.ToInt32(command.ExecuteScalar());
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            total += MaterializeSqlPersons(_sqlQueryConnection, role, minimumAge).Count;
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "SQL Server - 100 selective indexed materialized queries over 50k persons")]
+    public int SqlServer_SelectiveQueryBatch()
+    {
+        if (_sqlQueryConnection is null)
+        {
+            throw new InvalidOperationException("SQL Server query connection not initialized.");
+        }
+
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                var id = _seedPersons[i % _seedPersons.Count].Id;
+                total += MaterializeSqlPersonById(_sqlQueryConnection, id).Count;
+            }
+            else
+            {
+                var role = QueryRoles[i % QueryRoles.Length];
+                total += MaterializeSqlPersons(_sqlQueryConnection, role, 58).Count;
+            }
+        }
+
+        return total;
+    }
+
+    [GlobalSetup(Targets = new[] { nameof(Dapper_QueryBatch), nameof(Dapper_SelectiveQueryBatch) })]
+    public void SetupDapperQuery()
+    {
+        _dapperQueryConnection = CreateOpenConnection();
+        EnsureSqlSchema(_dapperQueryConnection);
+        using var bulkCopy = new SqlBulkCopy(
+            _dapperQueryConnection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
+        CreateSqlQueryIndexes(_dapperQueryConnection);
+
+        var validationCount = QueryDapperPersons(_dapperQueryConnection, "Student", 20).Count;
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("Dapper query benchmark setup produced no queryable records.");
+        }
+    }
+
+    [Benchmark(Description = "Dapper - 100 indexed materialized queries over 50k persons")]
+    public int Dapper_QueryBatch()
+    {
+        if (_dapperQueryConnection is null)
+        {
+            throw new InvalidOperationException("Dapper query connection not initialized.");
+        }
+
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            total += QueryDapperPersons(_dapperQueryConnection, role, minimumAge).Count;
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "Dapper - 100 selective indexed materialized queries over 50k persons")]
+    public int Dapper_SelectiveQueryBatch()
+    {
+        if (_dapperQueryConnection is null)
+        {
+            throw new InvalidOperationException("Dapper query connection not initialized.");
+        }
+
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                var id = _seedPersons[i % _seedPersons.Count].Id;
+                total += QueryDapperPersonById(_dapperQueryConnection, id).Count;
+            }
+            else
+            {
+                var role = QueryRoles[i % QueryRoles.Length];
+                total += QueryDapperPersons(_dapperQueryConnection, role, 58).Count;
+            }
         }
 
         return total;
@@ -385,13 +706,24 @@ public class TransactionBenchmarks : IDisposable
         _fileProvider?.Dispose();
         _fileProvider = null;
 
+        _indexedFileProvider?.Dispose();
+        _indexedFileProvider = null;
+
         if (_fileDataRoot is not null && Directory.Exists(_fileDataRoot))
         {
             Directory.Delete(_fileDataRoot, recursive: true);
         }
 
+        if (_indexedFileDataRoot is not null && Directory.Exists(_indexedFileDataRoot))
+        {
+            Directory.Delete(_indexedFileDataRoot, recursive: true);
+        }
+
         _sqlConnection?.Dispose();
         _sqlConnection = null;
+
+        _sqlIndexedConnection?.Dispose();
+        _sqlIndexedConnection = null;
 
         _sqlBulkConnection?.Dispose();
         _sqlBulkConnection = null;
@@ -402,8 +734,16 @@ public class TransactionBenchmarks : IDisposable
         _dapperConnection?.Dispose();
         _dapperConnection = null;
 
+        _dapperIndexedConnection?.Dispose();
+        _dapperIndexedConnection = null;
+
+        _dapperQueryConnection?.Dispose();
+        _dapperQueryConnection = null;
+
         _iterationPersons = null;
+        _iterationIndexedPersons = null;
         _queryRepository = null;
+        _indexedQueryRepository = null;
     }
 
     private static ServiceProvider BuildFileSystemProvider(
@@ -446,6 +786,47 @@ public class TransactionBenchmarks : IDisposable
 
         var services = new ServiceCollection();
         services.AddRepository<ContractPerson.IPerson>(options);
+
+        return services.BuildServiceProvider();
+    }
+
+    private static ServiceProvider BuildIndexedFileSystemProvider(
+        string dataRoot,
+        bool keepObjectsOnWrite = false)
+    {
+        var maxConcurrency = ResolvePositiveInt(
+            MaxConcurrencyEnvironmentVariable,
+            FileSystemBenchmarkConcurrency);
+        var bulkBatchSize = ResolvePositiveInt(
+            BulkBatchSizeEnvironmentVariable,
+            FileSystemBenchmarkBulkBatchSize);
+        var useSingleWriteBuffer = ResolveBool(
+            UseSingleWriteBufferEnvironmentVariable,
+            defaultValue: true);
+
+        var options = new IndexedBenchmarkPersonOptions
+        {
+            DataRoot = dataRoot,
+            ActiveVersion = "1.0.0",
+            Indexes = Array.Empty<IIndex<IIndexedBenchmarkPerson>>(),
+            IndexProvisioningMode = IndexProvisioningModeType.None,
+            RepositoryType = ContractRepositoryType.FileSystem,
+            StoragePolicy = StoragePolicy.Default with
+            {
+                HydrateOnInitialize = false,
+                MaxConcurrency = Math.Min(maxConcurrency, Environment.ProcessorCount),
+                BulkWriteBatchSize = bulkBatchSize,
+                FileWriteBufferSize = 16 * 1024,
+                RaiseNotifications = false,
+                KeepObjectInstanceInCacheOnWrite = keepObjectsOnWrite,
+                UseSingleWriteBuffer = useSingleWriteBuffer,
+                UseWriterSemaphore = false,
+                WatchStorageChanges = false
+            }
+        };
+
+        var services = new ServiceCollection();
+        services.AddRepository<IIndexedBenchmarkPerson>(options);
 
         return services.BuildServiceProvider();
     }
@@ -563,6 +944,113 @@ public class TransactionBenchmarks : IDisposable
         return count;
     }
 
+    private static async Task<int> CountIndexedInterfaceDbMatchesAsync(
+        IRepository<IIndexedBenchmarkPerson> repository,
+        string role,
+        int minimumAge)
+    {
+        var count = 0;
+        await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= minimumAge))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static List<DapperPersonEnvelope> MaterializeSqlPersons(
+        SqlConnection connection,
+        string role,
+        int minimumAge)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT Id, Name, Age, Role, Surname
+            FROM dbo.Persons
+            WHERE Role = @role AND Age >= @minimumAge
+            """;
+        command.Parameters.Add("@role", SqlDbType.NVarChar, 100).Value = role;
+        command.Parameters.Add("@minimumAge", SqlDbType.Int).Value = minimumAge;
+
+        var results = new List<DapperPersonEnvelope>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new DapperPersonEnvelope
+            {
+                Id = reader.GetGuid(0),
+                Name = reader.GetString(1),
+                Age = reader.GetInt32(2),
+                Role = reader.GetString(3),
+                Surname = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+            });
+        }
+
+        return results;
+    }
+
+    private static List<DapperPersonEnvelope> MaterializeSqlPersonById(
+        SqlConnection connection,
+        Guid id)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT Id, Name, Age, Role, Surname
+            FROM dbo.Persons
+            WHERE Id = @id
+            """;
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
+
+        var results = new List<DapperPersonEnvelope>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new DapperPersonEnvelope
+            {
+                Id = reader.GetGuid(0),
+                Name = reader.GetString(1),
+                Age = reader.GetInt32(2),
+                Role = reader.GetString(3),
+                Surname = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+            });
+        }
+
+        return results;
+    }
+
+    private static List<DapperPersonEnvelope> QueryDapperPersons(
+        SqlConnection connection,
+        string role,
+        int minimumAge)
+    {
+        const string sql = """
+            SELECT Id, Name, Age, Role, Surname
+            FROM dbo.Persons
+            WHERE Role = @Role AND Age >= @MinimumAge
+            """;
+        return connection
+            .Query<DapperPersonEnvelope>(
+                sql,
+                new { Role = role, MinimumAge = minimumAge })
+            .AsList();
+    }
+
+    private static List<DapperPersonEnvelope> QueryDapperPersonById(
+        SqlConnection connection,
+        Guid id)
+    {
+        const string sql = """
+            SELECT Id, Name, Age, Role, Surname
+            FROM dbo.Persons
+            WHERE Id = @Id
+            """;
+        return connection
+            .Query<DapperPersonEnvelope>(
+                sql,
+                new { Id = id })
+            .AsList();
+    }
+
     private static DataTable CreatePersonDataTable(IEnumerable<ContractPerson.IPerson> persons)
     {
         var table = new DataTable();
@@ -580,6 +1068,30 @@ public class TransactionBenchmarks : IDisposable
         return table;
     }
 
+    private static List<IIndexedBenchmarkPerson> CreateIndexedPersons(int count)
+    {
+        var source = PersonDataFactory.CreatePersons(count);
+        return CloneIndexedPersons(source);
+    }
+
+    private static List<IIndexedBenchmarkPerson> CloneIndexedPersons(IEnumerable<ContractPerson.IPerson> source)
+    {
+        return source
+            .Select(person => person.Role == "Student"
+                ? (IIndexedBenchmarkPerson)new IndexedBenchmarkStudent(person.Id, person.Name, person.Age, person.Role)
+                : new IndexedBenchmarkEmployee(person.Id, person.Name, person.Age, person.Role))
+            .ToList();
+    }
+
+    private static List<IIndexedBenchmarkPerson> CloneIndexedPersons(IEnumerable<IIndexedBenchmarkPerson> source)
+    {
+        return source
+            .Select(person => person.Role == "Student"
+                ? (IIndexedBenchmarkPerson)new IndexedBenchmarkStudent(person.Id, person.Name, person.Age, person.Role)
+                : new IndexedBenchmarkEmployee(person.Id, person.Name, person.Age, person.Role))
+            .ToList();
+    }
+
     private sealed class DapperPersonEnvelope
     {
         public Guid Id { get; set; }
@@ -588,4 +1100,72 @@ public class TransactionBenchmarks : IDisposable
         public string Role { get; set; } = string.Empty;
         public string Surname { get; set; } = string.Empty;
     }
+}
+
+[StorageScope(VersionTag = "1.0.0")]
+[SearchIndex]
+public interface IIndexedBenchmarkPerson : IStoredContract<IIndexedBenchmarkPerson>
+{
+    Guid Id { get; }
+    string Name { get; }
+    int Age { get; }
+    string Role { get; }
+}
+
+[MessagePackObject(keyAsPropertyName: true, AllowPrivate = true)]
+public sealed class IndexedBenchmarkStudent : IIndexedBenchmarkPerson
+{
+    public IndexedBenchmarkStudent(Guid id, string name, int age, string role)
+    {
+        Id = id;
+        Name = name;
+        Age = age;
+        Role = role;
+    }
+
+    public Guid Id { get; }
+    public string Name { get; }
+    public int Age { get; }
+    public string Role { get; }
+
+    [IgnoreMember]
+    public IObjectEnvelope<IIndexedBenchmarkPerson>? Envelope { get; private set; }
+}
+
+[MessagePackObject(keyAsPropertyName: true, AllowPrivate = true)]
+public sealed class IndexedBenchmarkEmployee : IIndexedBenchmarkPerson
+{
+    public IndexedBenchmarkEmployee(Guid id, string name, int age, string role)
+    {
+        Id = id;
+        Name = name;
+        Age = age;
+        Role = role;
+    }
+
+    public Guid Id { get; }
+    public string Name { get; }
+    public int Age { get; }
+    public string Role { get; }
+
+    [IgnoreMember]
+    public IObjectEnvelope<IIndexedBenchmarkPerson>? Envelope { get; private set; }
+}
+
+public sealed class IndexedBenchmarkPersonOptions : IDbContractConfigDto<IIndexedBenchmarkPerson>
+{
+    public string EnvelopeDICacheKey { get; set; } = "IndexedBenchmarkPerson";
+    public string ContractName { get; set; } = "IndexedBenchmarkPerson";
+    public string? ImplementationsPath { get; set; } = null;
+    public string? ContractPath { get; set; } = null;
+    public string? MigrationsPath { get; set; } = null;
+    public string FileExtension { get; set; } = ".mpk";
+    public string? DataRoot { get; set; } = "Data";
+    public string? ActiveVersion { get; set; } = "1.0.0";
+    public IIndex<IIndexedBenchmarkPerson>[]? Indexes { get; set; } = Array.Empty<IIndex<IIndexedBenchmarkPerson>>();
+    public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;
+    public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;
+    public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;
+    public StoragePolicy? StoragePolicy { get; set; } =
+        StoragePolicy.Default with { MaxConcurrency = Environment.ProcessorCount };
 }

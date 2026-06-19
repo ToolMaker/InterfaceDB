@@ -51,6 +51,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("multiple cardinality creates distinct physical objects", MultipleCardinalityCreatesDistinctObjectsAsync),
     ("multiple cardinality allocates incremented cache keys", MultipleCardinalityAllocatesIncrementedCacheKeysAsync),
     ("repository storage-key equality queries use envelope groups", RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync),
+    ("repository search indexes support exact range prefix and maintenance", RepositorySearchIndexesSupportQueriesAsync),
     ("repository query cardinality methods enforce result bounds", RepositoryQueryCardinalityMethodsAsync),
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
     ("repository bulk save persists canonical objects in input order", RepositoryBulkSavePersistsInInputOrderAsync),
@@ -390,6 +391,67 @@ static async Task RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync()
             .QueryFirstByStorageKeyAsync("person-missing")
             .ConfigureAwait(false);
         Assert(missing is null, "Missing storage-key equality lookup should return null.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositorySearchIndexesSupportQueriesAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        var services = new ServiceCollection();
+        services.AddRepository<IIndexedTestRecord>(new IndexedTestOptions(testRoot));
+
+        await using var provider = services.BuildServiceProvider();
+        var repository = provider.GetRequiredService<IRepository<IIndexedTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var records = new IIndexedTestRecord[]
+        {
+            new IndexedTestRecord { Id = "a", Name = "Alice", Age = 81, Country = "ZA", Phone = "+27820000001", Address = new IndexedAddress { City = "Cape Town", Code = "8001" } },
+            new IndexedTestRecord { Id = "b", Name = "Bob", Age = 40, Country = "ZA", Phone = "+27830000002", Address = new IndexedAddress { City = "Durban", Code = "4001" } },
+            new IndexedTestRecord { Id = "c", Name = "Charlie", Age = 90, Country = "US", Phone = "+12020000003", Address = new IndexedAddress { City = "Austin", Code = "73301" } },
+            new IndexedTestRecord { Id = "d", Name = "Alicia", Age = 32, Country = "UK", Phone = "+447700000004", Address = new IndexedAddress { City = "London", Code = "SW1" } }
+        };
+
+        await repository.SaveManyAsync(records).ConfigureAwait(false);
+
+        var exact = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
+        Assert(exact.Count == 2, $"Exact index should return two ZA records, found {exact.Count}.");
+
+        var range = await CollectAsync(repository.SearchManyAsync(x => x.Age > 80)).ConfigureAwait(false);
+        Assert(range.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "c"]),
+            "Range index should return records older than 80.");
+
+        var prefix = await CollectAsync(repository.SearchManyAsync(x => x.Phone.StartsWith("+27", StringComparison.Ordinal))).ConfigureAwait(false);
+        Assert(prefix.Count == 2 && prefix.All(x => x.Country == "ZA"),
+            "Prefix index should return South African phone numbers.");
+
+        var nested = await CollectAsync(repository.SearchManyAsync(x => x.Address.City == "Cape Town")).ConfigureAwait(false);
+        Assert(nested.Count == 1 && nested[0].Id == "a",
+            "Nested indexed property should resolve Address.City.");
+
+        var andQuery = await CollectAsync(repository.SearchManyAsync(x => x.Age > 80 && x.Country == "ZA")).ConfigureAwait(false);
+        Assert(andQuery.Count == 1 && andQuery[0].Id == "a",
+            "AND query should intersect indexed results.");
+
+        var orQuery = await CollectAsync(repository.SearchManyAsync(x => x.Country == "UK" || x.Age > 85)).ConfigureAwait(false);
+        Assert(orQuery.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["c", "d"]),
+            "OR query should union indexed results.");
+
+        records[0].Country = "NL";
+        await repository.SaveAsync(records[0]).ConfigureAwait(false);
+        var afterUpdate = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
+        Assert(afterUpdate.Count == 1 && afterUpdate[0].Id == "b",
+            "Index update should remove old values when an existing object is saved.");
+
+        await repository.DeleteAsync(records[1]).ConfigureAwait(false);
+        var afterDelete = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
+        Assert(afterDelete.Count == 0, "Index delete should remove deleted objects.");
     }
     finally
     {
@@ -2240,6 +2302,17 @@ static void Assert(bool condition, string message)
     }
 }
 
+static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)
+{
+    var results = new List<T>();
+    await foreach (var item in source.ConfigureAwait(false))
+    {
+        results.Add(item);
+    }
+
+    return results;
+}
+
 static T AssertNotNull<T>(T? value, string message)
     where T : class
 {
@@ -2311,6 +2384,41 @@ public sealed class LockTestOptions : IDbContractConfigDto<ILockTestRecord>
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
     public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
+    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
+    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
+    public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
+    {
+        DurabilityMode = StorageDurabilityMode.Durable,
+        HydrateOnInitialize = true,
+        KeepObjectInstanceInCacheOnWrite = true,
+        MaxConcurrency = 4,
+        RaiseNotifications = true,
+        UseSidecarWriteLocks = true,
+        UseSingleWriteBuffer = true,
+        UseWriterSemaphore = false,
+        WatchStorageChanges = false,
+        WriteLockTimeout = TimeSpan.FromSeconds(15),
+        WriteLockRetryDelay = TimeSpan.FromMilliseconds(10),
+        StaleWriteLockTimeout = TimeSpan.FromSeconds(30)
+    };
+}
+
+public sealed class IndexedTestOptions : IDbContractConfigDto<IIndexedTestRecord>
+{
+    public IndexedTestOptions(string dataRoot)
+    {
+        DataRoot = dataRoot;
+    }
+
+    public string EnvelopeDICacheKey { get; } = "IndexedTest";
+    public string ContractName { get; } = "IndexedTest";
+    public string FileExtension { get; } = ".mpk";
+    public string? ImplementationsPath { get; } = null;
+    public string? ContractPath { get; } = null;
+    public string? MigrationsPath { get; } = null;
+    public string? DataRoot { get; }
+    public string? ActiveVersion { get; } = "1.0.0";
+    public IIndex<IIndexedTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<IIndexedTestRecord>>();
     public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
@@ -2526,6 +2634,41 @@ public sealed class LockTestRecord : ILockTestRecord
     public string Id { get; set; } = string.Empty;
     public string Value { get; set; } = string.Empty;
     public IObjectEnvelope<ILockTestRecord>? Envelope { get; private set; }
+}
+
+[StorageScope(VersionTag = "1.0.0")]
+[SearchIndex]
+public interface IIndexedTestRecord : IStoredContract<IIndexedTestRecord>
+{
+    string Id { get; set; }
+    string Name { get; set; }
+    int Age { get; set; }
+    string Country { get; set; }
+    string Phone { get; set; }
+
+    [SearchIndex]
+    IndexedAddress Address { get; set; }
+}
+
+[MessagePackObject(keyAsPropertyName: true, AllowPrivate = true)]
+public sealed class IndexedTestRecord : IIndexedTestRecord
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+    public string Country { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public IndexedAddress Address { get; set; } = new();
+
+    [IgnoreMember]
+    public IObjectEnvelope<IIndexedTestRecord>? Envelope { get; private set; }
+}
+
+[MessagePackObject(keyAsPropertyName: true)]
+public sealed class IndexedAddress
+{
+    public string City { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
 }
 
 [StorageScope(VersionTag = "2.0.0")]

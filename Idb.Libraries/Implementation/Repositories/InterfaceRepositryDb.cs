@@ -1,4 +1,5 @@
 using System;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Attributes;
@@ -98,6 +99,14 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return _indexManager.QueryAsync(filterFunction, cancellationToken);
     }
 
+    public IAsyncEnumerable<TContract> SearchManyAsync(
+        Expression<Func<TContract, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filterExpression);
+        return _indexManager.SearchAsync(filterExpression, cancellationToken);
+    }
+
     public IAsyncEnumerable<TContract> QueryManyByStorageKeyAsync(
         string storageKey,
         CancellationToken cancellationToken = default)
@@ -115,6 +124,18 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         CancellationToken cancellationToken = default)
     {
         await foreach (var match in QueryManyAsync(filterFunction, cancellationToken).ConfigureAwait(false))
+        {
+            return match;
+        }
+
+        return null;
+    }
+
+    public async ValueTask<TContract?> SearchFirstAsync(
+        Expression<Func<TContract, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+    {
+        await foreach (var match in SearchManyAsync(filterExpression, cancellationToken).ConfigureAwait(false))
         {
             return match;
         }

@@ -48,6 +48,9 @@
     <Compile Include="Implementation\InMemorySequentialLongEnvelopeKeyFactory.cs" />
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
     <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
+    <Compile Include="Implementation\Indexes\SearchIndexDefinition.cs" />
+    <Compile Include="Implementation\Indexes\SearchIndexDiscovery.cs" />
+    <Compile Include="Implementation\Indexes\SearchIndexStore.cs" />
     <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
     <Compile Include="Implementation\Migrations\FileSystemLazyMigrationStrategy.cs" />
     <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />

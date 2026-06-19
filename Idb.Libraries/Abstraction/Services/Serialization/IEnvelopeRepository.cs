@@ -39,6 +39,13 @@ public interface IEnvelopeRepository<TContract> :
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Materializes the exact physical envelope for an index result key.
+    /// </summary>
+    ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
+        string physicalStorageKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Streams all materialized envelopes known to the repository.
     /// </summary>
     IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
