@@ -2,7 +2,9 @@
 
 InterfaceDB is an interface-first object database for applications that want local object persistence without giving up polymorphism, version-aware storage, or storage lifecycle awareness.
 
-The current implementation is file-backed and intentionally simple. The goal is not to imitate SQL table storage. The goal is to store objects through their contract interface and recover the correct concrete object later.
+The current implementation is file-backed and intentionally simple. The goal of the file provider is not to imitate SQL table storage. The goal is to store objects through their contract interface and recover the correct concrete object later.
+
+This does not put SQL-level performance out of scope for InterfaceDB as a product. File storage is one storage pattern. Future memory-backed and single-file storage engines can use the same repository/envelope/index model while reducing file metadata overhead, using object/page pointers, and skipping reads for objects that are safely retained in memory.
 
 ## Core Advantages
 
