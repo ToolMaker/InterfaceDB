@@ -82,7 +82,12 @@ The main application entry point is `IRepository<TContract>`:
 
 `InterfaceRepositryDb<TContract>` validates that `TContract` is an interface and has `[StorageScope]`, then delegates work to `IIndexManager<TContract>`.
 
-The current `IIndexManager<TContract>` implementation is `PassthroughIndexManager<TContract>`. It does not provide full secondary indexing yet. Secondary indexing is tracked as roadmap work.
+The active `IIndexManager<TContract>` is selected per registered contract:
+
+- `PassthroughIndexManager<TContract>` is used when the contract has no searchable index metadata.
+- `SearchIndexManager<TContract>` is used when `[SearchIndex]` metadata is discovered.
+
+This keeps the no-index path small while allowing indexed contracts to maintain in-memory exact, range, and prefix search structures.
 
 The intended query routing boundary is:
 
@@ -129,6 +134,8 @@ The active version comes from contract config, usually `IDbContractConfigDto<TCo
 ## Serialization
 
 `BinaryObjectSerializer<TContract>` uses MessagePack and writes an `IDB2` payload format.
+
+Serialization is already behind `IObjectSerializer<TContract>`. The default registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so future serializer implementations can be registered below the repository without changing `IRepository<TContract>` or the file reader/writer contracts.
 
 The current format stores:
 

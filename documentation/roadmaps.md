@@ -52,11 +52,57 @@ The current boundary is:
 Remaining indexing work should include:
 
 - Cost/selectivity estimates so `AND` groups evaluate the smallest candidate set first.
+- Query compilation and validation optimization. The current indexed query path compiles the expression and validates candidates after index lookup. That is a useful correctness guard, but the hot trace shows it is one of the remaining visible query-side costs. Future work should cache compiled predicates per expression shape where possible, and consider skipping validation only when the query planner can prove that supported indexes fully satisfy the predicate.
+- Data-distribution-aware planning. The best index order depends on live data, not only the interface shape. The same contract can have very different selectivity in different applications or companies, so query planning should use per-index cardinality/selectivity estimates from the current repository data instead of hard-coded property order.
 - Dedicated public index contracts for custom index implementations.
 - Persistent or deterministic rebuild strategies for large stores.
 - Additional string modes such as contains/full-text.
 - Vector indexes.
 - Deeper tests for watcher-driven external updates and migration-driven index refresh.
+
+### Performance Profiling And Layer Polish
+
+Before another tuning pass, capture `dotnet-trace` CPU and allocation traces for the direct InterfaceDB profiling targets documented in `documentation/performance-profiling.md`.
+
+The profiling pass should answer where the write and indexed-query costs are concentrated:
+
+- physical file IO and metadata operations;
+- MessagePack serialization through `IObjectSerializer<TContract>`;
+- envelope lifecycle and cache updates;
+- sidecar write coordination;
+- search index update allocation;
+- expression planning and candidate set materialization;
+- notification and watcher reconciliation.
+
+Layer polish should keep the current boundaries explicit and swappable:
+
+- repository facade: `IRepository<TContract>`;
+- query/index orchestration: `IIndexManager<TContract>`;
+- envelope persistence: `IEnvelopeRepository<TContract>`;
+- physical reader/writer: `IReaderAndWriter<TContract>`, `IObjectReader<TContract>`, `IObjectWriter<TContract>`;
+- serialization: `IObjectSerializer<TContract>`;
+- encryption: `IEncryptor`;
+- write coordination: `IFileWriteCoordinator` and `IStorageWriteLock`;
+- storage identity: `IEnvelopeStorageIdentityFactory<TContract>`.
+
+The immediate optimization focus after tracing is search index allocation and query planning. The file storage model should stay simple until a separate storage-engine provider is designed.
+
+### Native Hot Path Provider Research
+
+The current direction is not to rewrite InterfaceDB in Rust or C++. The better option is to keep the public C# interface-first API and allow selected lower layers to be replaced when profiling proves a need.
+
+Potential native or low-level providers:
+
+- native in-memory index engine behind `IIndexManager<TContract>`;
+- memory-mapped catalog or object page provider behind the envelope repository boundary;
+- append-log or segment-file storage engine;
+- native compression/encryption implementation behind existing serializer/encryptor boundaries.
+
+Important constraints:
+
+- Native code should sit behind existing abstractions, not leak into consumer contracts.
+- The first implementation should remain C# unless a trace shows a specific hot path that justifies native complexity.
+- Interop overhead must be measured; native code is only useful for coarse-grained operations such as batch index updates, storage page writes, or search execution.
 
 ### Additional Encryption Key Stores
 
