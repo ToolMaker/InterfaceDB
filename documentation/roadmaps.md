@@ -15,6 +15,29 @@ The current file-system implementation is a simple local object database baselin
 
 The application-facing contract should remain `IRepository<TContract>` and envelope-aware storage contracts. Storage backends should plug in below that boundary.
 
+### Git-Backed Data Versioning
+
+A future file-system provider mode can allow each repository data root to also be a Git repository. This is not positioned as backup. The purpose is data versioning: creating explicit commit points for the stored object files so the database can be inspected, diffed, branched, or reverted to a prior data state.
+
+Possible flow:
+
+1. Repository runs normally against the file data root.
+2. A maintenance operation requests a data-version commit.
+3. The repository enters an exclusive storage scope for that data root.
+4. Writes are blocked and reads either pause or read from a stable snapshot while Git stages and commits the current files.
+5. The exclusive scope is released after Git completes or fails.
+
+Hard problems to design:
+
+- Whether reads must block during commit, or whether a stable read snapshot can be exposed.
+- How to handle long-running Git operations on large object stores.
+- How to coordinate commit/revert operations across multiple repository instances and processes.
+- How to prevent a revert from invalidating live envelope caches.
+- Whether this belongs in the core file provider, the maintenance tool, or an optional provider wrapper.
+- How to surface Git failures without corrupting the active storage root.
+
+The first design should be conservative: maintenance-tool driven, explicit, and protected by the same storage coordination model used for migrations and encryption rotation.
+
 ### Secondary Indexing
 
 The first in-memory search indexing layer is implemented. It supports opt-in `[SearchIndex]` / `[NotSearchIndexed]` metadata, exact equality, comparable ranges, string prefix lookup, expression parsing for `&&` and `||`, and fallback to predicate scans for unsupported expressions.

@@ -85,31 +85,35 @@ The exception model is also provider-neutral, so file, SQL, document, event, and
 
 ## Current Performance Baseline
 
-Latest full stack benchmark provided on 2026-06-19.
+Latest full stack benchmark imported from `TestResults/results.txt` on 2026-06-19.
 
-Read benchmarks use 100 queries over 50k persons and materialize matching objects for SQL Server and Dapper. InterfaceDB predicate scan is the non-indexed fallback path. InterfaceDB indexed search uses the opt-in in-memory search index layer.
+Read benchmarks use 100 queries over 50k persons and materialize matching objects for SQL Server, Dapper, and Entity Framework Core. InterfaceDB file storage is represented by `FileEnvelopeRepository<TContract>` with `FileObjectReader<TContract>` / `FileObjectWriter<TContract>` underneath. The index axis is explicit: `PassthroughIndexManager<TContract>` means no secondary index, while `SearchIndexManager<TContract>` means the opt-in in-memory search index layer is active.
 
-| Scenario | Technology | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
-|--------- |----------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
-| Broad predicate/materialized query | InterfaceDB predicate scan | 1,069.74 ms | 15.977 ms | 14.945 ms | - | - | - | 38.20 MB |
-| Broad predicate/materialized query | SQL Server indexed materialized | 912.15 ms | 11.702 ms | 10.946 ms | 4000.0000 | 3000.0000 | 2000.0000 | 265.33 MB |
-| Broad predicate/materialized query | Dapper indexed materialized | 1,016.84 ms | 19.263 ms | 18.019 ms | 4000.0000 | 3000.0000 | 2000.0000 | 349.28 MB |
-| Broad indexed search | InterfaceDB indexed search | 841.55 ms | 14.988 ms | 13.287 ms | 1000.0000 | - | - | 82.26 MB |
-| Selective indexed search | InterfaceDB indexed search | 63.19 ms | 1.167 ms | 1.433 ms | 1000.0000 | 428.5714 | - | 8.41 MB |
-| Selective indexed search | SQL Server indexed materialized | 163.48 ms | 2.017 ms | 1.887 ms | 1250.0000 | 250.0000 | - | 10.78 MB |
-| Selective indexed search | Dapper indexed materialized | 161.03 ms | 1.180 ms | 1.104 ms | 1750.0000 | 500.0000 | - | 14.14 MB |
+| Operation | Storage implementation | Index / access layer | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
+|---------- |----------------------- |---------------------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
+| Broad predicate scan | InterfaceDB `FileEnvelopeRepository<TContract>` | `PassthroughIndexManager<TContract>` | 1,320.54 ms | 46.084 ms | 135.880 ms | - | - | - | 38.20 MB |
+| Broad materialized query | SQL Server | ADO.NET with SQL indexes | 1,053.77 ms | 13.809 ms | 12.917 ms | 9000.0000 | 5000.0000 | 3000.0000 | 266.19 MB |
+| Broad materialized query | SQL Server | Dapper with SQL indexes | 1,173.13 ms | 20.863 ms | 28.558 ms | 10000.0000 | 5000.0000 | 3000.0000 | 349.81 MB |
+| Broad materialized query | SQL Server | Entity Framework Core with SQL indexes | 1,368.51 ms | 27.364 ms | 76.730 ms | 15000.0000 | 6000.0000 | 4000.0000 | 563.22 MB |
+| Broad indexed search | InterfaceDB `FileEnvelopeRepository<TContract>` | `SearchIndexManager<TContract>` | 880.51 ms | 16.956 ms | 34.253 ms | 1000.0000 | - | - | 84.18 MB |
+| Selective indexed search | InterfaceDB `FileEnvelopeRepository<TContract>` | `SearchIndexManager<TContract>` | 64.49 ms | 1.152 ms | 1.183 ms | 1000.0000 | 500.0000 | - | 8.41 MB |
+| Selective materialized query | SQL Server | ADO.NET with SQL indexes | 161.59 ms | 0.541 ms | 0.479 ms | 1250.0000 | 250.0000 | - | 10.63 MB |
+| Selective materialized query | SQL Server | Dapper with SQL indexes | 164.82 ms | 1.278 ms | 1.196 ms | 1666.6667 | 333.3333 | - | 13.84 MB |
+| Selective materialized query | SQL Server | Entity Framework Core with SQL indexes | 184.85 ms | 2.499 ms | 2.337 ms | 3333.3333 | 1000.0000 | - | 29.10 MB |
 
-Write benchmarks store 50k persons. SQL Server and Dapper use object-by-object insert loops in a transaction. `SqlBulkCopy` is included as an upper-bound bulk-ingest reference, not as the object-by-object comparison.
+Write benchmarks store 50k persons. SQL Server, Dapper, and Entity Framework Core use object-by-object insert loops in a transaction. `SqlBulkCopy` is included as an upper-bound bulk-ingest reference, not as the object-by-object comparison.
 
-| Scenario | Technology | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
-|--------- |----------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
-| Object transaction write | InterfaceDB baseline | 5,491.32 ms | 107.020 ms | 184.605 ms | 4000.0000 | - | - | 227.36 MB |
-| Object transaction write | InterfaceDB indexed | 5,812.01 ms | 116.152 ms | 180.835 ms | 7000.0000 | 2000.0000 | - | 343.21 MB |
-| Object transaction write | SQL Server | 3,728.50 ms | 73.705 ms | 169.350 ms | 16000.0000 | - | - | 159.84 MB |
-| Object transaction write | SQL Server indexed | 4,159.31 ms | 82.799 ms | 215.206 ms | 16000.0000 | - | - | 159.84 MB |
-| Object transaction write | Dapper | 3,912.45 ms | 95.593 ms | 281.857 ms | 47000.0000 | - | - | 404.74 MB |
-| Object transaction write | Dapper indexed | 4,377.70 ms | 86.729 ms | 118.715 ms | 47000.0000 | - | - | 404.74 MB |
-| Bulk ingest reference | SQL Server SqlBulkCopy | 177.05 ms | 0.704 ms | 0.588 ms | - | - | - | 23.11 MB |
+| Operation | Storage implementation | Index / access layer | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
+|---------- |----------------------- |---------------------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
+| Object transaction write | InterfaceDB `FileEnvelopeRepository<TContract>` | `PassthroughIndexManager<TContract>` | 5,240.45 ms | 103.265 ms | 141.351 ms | 5000.0000 | 1000.0000 | - | 230.43 MB |
+| Object transaction write | InterfaceDB `FileEnvelopeRepository<TContract>` | `SearchIndexManager<TContract>` | 5,533.27 ms | 110.223 ms | 97.710 ms | 6000.0000 | 1000.0000 | - | 325.46 MB |
+| Object transaction write | SQL Server | ADO.NET without extra SQL indexes | 3,796.24 ms | 75.517 ms | 165.762 ms | 16000.0000 | - | - | 159.84 MB |
+| Object transaction write | SQL Server | ADO.NET with SQL indexes | 4,183.05 ms | 83.078 ms | 105.067 ms | 16000.0000 | - | - | 159.84 MB |
+| Object transaction write | SQL Server | Dapper without extra SQL indexes | 3,980.96 ms | 77.546 ms | 116.067 ms | 47000.0000 | - | - | 404.74 MB |
+| Object transaction write | SQL Server | Dapper with SQL indexes | 4,409.31 ms | 85.179 ms | 204.084 ms | 47000.0000 | - | - | 404.74 MB |
+| Object transaction write | SQL Server | Entity Framework Core without extra SQL indexes | 1,682.89 ms | 33.551 ms | 47.034 ms | 6000.0000 | 2000.0000 | 1000.0000 | 355.90 MB |
+| Object transaction write | SQL Server | Entity Framework Core with SQL indexes | 1,896.17 ms | 22.350 ms | 19.813 ms | 6000.0000 | 2000.0000 | 1000.0000 | 355.90 MB |
+| Bulk ingest reference | SQL Server | `SqlBulkCopy` | 179.34 ms | 1.266 ms | 1.123 ms | - | - | - | 23.11 MB |
 
 Current file benchmark settings:
 
@@ -130,9 +134,11 @@ These results are encouraging because InterfaceDB is doing more than scalar row 
 
 Despite that richer storage model, write allocation is significantly lower than the current Dapper transaction benchmark.
 
-The query results show why indexing matters. The non-indexed InterfaceDB predicate scan is still slower than SQL Server for broad reads, but the indexed InterfaceDB path now beats the SQL Server and Dapper materialized-object benchmarks in both broad and selective indexed reads. The selective indexed case is the clearest win because the index can return a small candidate set before object filtering.
+The query results show why indexing matters. The non-indexed InterfaceDB predicate scan is slower than raw SQL Server and Dapper for broad reads, but the indexed InterfaceDB path beats the SQL Server, Dapper, and EF Core materialized-object benchmarks in both broad and selective indexed reads. The selective indexed case is the clearest win because the index can return a small candidate set before object filtering.
 
-The remaining performance gap is on writes. InterfaceDB indexed writes currently add about 321 ms and 116 MB over the non-indexed InterfaceDB write path for 50k objects. The next optimization work should focus on reducing index update allocation and file-write overhead.
+The remaining InterfaceDB performance gap is on writes. InterfaceDB indexed writes currently add about 293 ms over the non-indexed InterfaceDB write path for 50k objects in this run. That overhead is acceptable for maintaining the search index, but write allocation and serialization cost remain the next optimization targets.
+
+Entity Framework Core gives a useful high-level ORM comparison. On broad materialized reads it is behind raw SQL Server and Dapper, but ahead of the non-indexed InterfaceDB scan. On selective indexed reads it is close to SQL Server and Dapper, but still slower and higher allocation. On writes it is currently the fastest object-by-object SQL path in this benchmark, significantly ahead of raw ADO.NET and Dapper, although it still allocates more than raw SQL Server and less than Dapper.
 
 ## Benchmark Interpretation
 
@@ -140,7 +146,7 @@ SQL Server raw ADO.NET is a useful lower-level storage baseline, but it is not a
 
 Dapper is the closer mainstream comparison because it maps objects to database rows. Even then, the current Dapper benchmark uses a flat reusable object and scalar columns. It does not reproduce InterfaceDB's interface-level polymorphic storage unless additional discriminator and subtype mapping logic is added.
 
-Entity Framework is a valuable future benchmark because it brings a richer object model and change tracking. It should be added as a separate comparison, not as a replacement for the raw SQL and Dapper baselines.
+Entity Framework is a valuable benchmark because it brings a richer object model and change tracking. The current read results show the cost of that richer ORM layer: EF Core is easier to use than raw ADO.NET, but it allocated substantially more memory and ran slower than SQL Server and Dapper for these materialized query shapes.
 
 ## Practical Positioning
 

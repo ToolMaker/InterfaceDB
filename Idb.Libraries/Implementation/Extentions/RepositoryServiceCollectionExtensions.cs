@@ -390,8 +390,12 @@ namespace Idb.Libraries.Implementation.Extentions
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeSource<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeHandler<TContract>>(key)));
             services.TryAddKeyedSingleton<IIndexManager<TContract>>(databaseKey, (sp, key) =>
-                new PassthroughIndexManager<TContract>(
-                    sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key)));
+                SearchIndexDiscovery.Discover(typeof(TContract)).Count == 0
+                    ? new PassthroughIndexManager<TContract>(
+                        sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key))
+                    : new SearchIndexManager<TContract>(
+                        sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key),
+                        sp.GetRequiredKeyedService<StoragePolicy>(key)));
             services.TryAddKeyedSingleton<IRepository<TContract>>(databaseKey, (sp, key) =>
                 new InterfaceRepositryDb<TContract>(
                     sp.GetRequiredKeyedService<IIndexManager<TContract>>(key),
