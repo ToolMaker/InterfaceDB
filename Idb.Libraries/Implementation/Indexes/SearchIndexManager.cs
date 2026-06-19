@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
@@ -19,6 +20,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
     private readonly bool _writesPublishStoredNotifications;
     private readonly SearchIndexStore<TContract> _searchIndexes = new();
+    private readonly ConcurrentDictionary<Type, IRuntimeSearchIndexStore> _runtimeSearchIndexes = new();
     private IContractSubscription? _storedSubscription;
     private IContractSubscription? _deletedSubscription;
     private int _subscriptionsStarted;
@@ -61,6 +63,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         if (deleted && !string.IsNullOrWhiteSpace(physicalKey))
         {
             _searchIndexes.Remove(physicalKey);
+            RemoveRuntimeSearchIndexes(physicalKey);
         }
 
         return deleted;
@@ -74,9 +77,27 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         return QueryInternalAsync(predicate, cancellationToken);
     }
 
+    public IAsyncEnumerable<TImplementation> QueryAsync<TImplementation>(
+        Func<TImplementation, bool> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return QueryInternalAsync(predicate, cancellationToken);
+    }
+
     public IAsyncEnumerable<TContract> SearchAsync(
         Expression<Func<TContract, bool>> predicate,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return QueryExpressionInternalAsync(predicate, cancellationToken);
+    }
+
+    public IAsyncEnumerable<TImplementation> SearchAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
     {
         ArgumentNullException.ThrowIfNull(predicate);
         return QueryExpressionInternalAsync(predicate, cancellationToken);
@@ -125,6 +146,28 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         }
     }
 
+    private async IAsyncEnumerable<TImplementation> QueryInternalAsync<TImplementation>(
+        Func<TImplementation, bool> predicate,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+        where TImplementation : class, TContract
+    {
+        await foreach (var envelope in _envelopeRepository
+            .EnumerateByImplementationTypeAsync<TImplementation>(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            var entity = envelope.ObjectInstance
+                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            var implementation = (TImplementation)entity;
+            if (!predicate(implementation))
+            {
+                continue;
+            }
+
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(implementation, envelope);
+            yield return implementation;
+        }
+    }
+
     private async IAsyncEnumerable<TContract> QueryExpressionInternalAsync(
         Expression<Func<TContract, bool>> predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -153,6 +196,50 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
 
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
+        }
+    }
+
+    private async IAsyncEnumerable<TImplementation> QueryExpressionInternalAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> predicate,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+        where TImplementation : class, TContract
+    {
+        if (typeof(TImplementation) == typeof(TContract))
+        {
+            var contractPredicate = (Expression<Func<TContract, bool>>)(object)predicate;
+            await foreach (var entity in QueryExpressionInternalAsync(contractPredicate, cancellationToken).ConfigureAwait(false))
+            {
+                yield return (TImplementation)entity;
+            }
+
+            yield break;
+        }
+
+        var compiled = predicate.Compile();
+        var searchIndexes = GetRuntimeSearchIndexStore(typeof(TImplementation));
+        var keys = searchIndexes.TryEvaluate(predicate);
+        if (keys is null)
+        {
+            await foreach (var entity in QueryInternalAsync(compiled, cancellationToken).ConfigureAwait(false))
+            {
+                yield return entity;
+            }
+
+            yield break;
+        }
+
+        foreach (var key in keys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var envelope = await _envelopeRepository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
+            var entity = envelope?.ObjectInstance;
+            if (entity is not TImplementation implementation || !compiled(implementation))
+            {
+                continue;
+            }
+
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(implementation, envelope);
+            yield return implementation;
         }
     }
 
@@ -202,23 +289,24 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     private async ValueTask RebuildIndexesAsync(CancellationToken cancellationToken)
     {
         _searchIndexes.Clear();
+        _runtimeSearchIndexes.Clear();
         if (!_searchIndexes.HasIndexes)
         {
-            return;
+            // Runtime implementation types can still have their own index attributes.
         }
 
         await foreach (var envelope in _envelopeRepository.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
             if (envelope.ObjectInstance is not null)
             {
-                _searchIndexes.Upsert(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
+                UpdateIndexes(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
             }
         }
     }
 
     private void StartIndexSubscriptions()
     {
-        if (!_searchIndexes.HasIndexes || Interlocked.Exchange(ref _subscriptionsStarted, 1) != 0)
+        if (Interlocked.Exchange(ref _subscriptionsStarted, 1) != 0)
         {
             return;
         }
@@ -227,7 +315,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         {
             if (envelope.ObjectInstance is not null)
             {
-                _searchIndexes.Upsert(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
+                UpdateIndexes(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
             }
 
             return ValueTask.CompletedTask;
@@ -235,6 +323,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         _deletedSubscription = _envelopeRepository.SubscribeToDeleted(envelope =>
         {
             _searchIndexes.Remove(envelope.EnvelopeCacheKey);
+            RemoveRuntimeSearchIndexes(envelope.EnvelopeCacheKey);
             return ValueTask.CompletedTask;
         });
     }
@@ -244,7 +333,79 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         var envelope = entity.Envelope;
         if (envelope is not null)
         {
-            _searchIndexes.Upsert(envelope.EnvelopeCacheKey, entity);
+            UpdateIndexes(envelope.EnvelopeCacheKey, entity);
         }
+    }
+
+    private void UpdateIndexes(string physicalKey, TContract entity)
+    {
+        _searchIndexes.Upsert(physicalKey, entity);
+        var runtimeStore = GetRuntimeSearchIndexStore(entity.GetType());
+        if (runtimeStore.HasIndexes)
+        {
+            runtimeStore.Upsert(physicalKey, entity);
+        }
+    }
+
+    private IRuntimeSearchIndexStore GetRuntimeSearchIndexStore(Type runtimeType)
+        => _runtimeSearchIndexes.GetOrAdd(runtimeType, static type => new RuntimeSearchIndexStore(type));
+
+    private void RemoveRuntimeSearchIndexes(string physicalKey)
+    {
+        foreach (var store in _runtimeSearchIndexes.Values)
+        {
+            store.Remove(physicalKey);
+        }
+    }
+
+    private interface IRuntimeSearchIndexStore
+    {
+        bool HasIndexes { get; }
+
+        void Upsert(string physicalKey, object entity);
+
+        void Remove(string physicalKey);
+
+        HashSet<string>? TryEvaluate(LambdaExpression expression);
+    }
+
+    private sealed class RuntimeSearchIndexStore : IRuntimeSearchIndexStore
+    {
+        private readonly object _store;
+        private readonly Action<string, object> _upsert;
+        private readonly Action<string> _remove;
+        private readonly Func<LambdaExpression, HashSet<string>?> _tryEvaluate;
+
+        public bool HasIndexes { get; }
+
+        public RuntimeSearchIndexStore(Type runtimeType)
+        {
+            var storeType = typeof(SearchIndexStore<>).MakeGenericType(runtimeType);
+            _store = Activator.CreateInstance(storeType)
+                ?? throw new InvalidOperationException($"Unable to create search index store for '{runtimeType.FullName}'.");
+
+            var upsert = storeType.GetMethod(nameof(SearchIndexStore<TContract>.Upsert))
+                ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' does not expose Upsert.");
+            var remove = storeType.GetMethod(nameof(SearchIndexStore<TContract>.Remove))
+                ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' does not expose Remove.");
+            var tryEvaluate = storeType.GetMethod(nameof(SearchIndexStore<TContract>.TryEvaluate))
+                ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' does not expose TryEvaluate.");
+            var hasIndexes = storeType.GetProperty(nameof(SearchIndexStore<TContract>.HasIndexes))
+                ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' does not expose HasIndexes.");
+
+            HasIndexes = (bool)(hasIndexes.GetValue(_store) ?? false);
+            _upsert = (key, entity) => upsert.Invoke(_store, new[] { key, entity });
+            _remove = key => remove.Invoke(_store, new object[] { key });
+            _tryEvaluate = expression => (HashSet<string>?)tryEvaluate.Invoke(_store, new object[] { expression });
+        }
+
+        public void Upsert(string physicalKey, object entity)
+            => _upsert(physicalKey, entity);
+
+        public void Remove(string physicalKey)
+            => _remove(physicalKey);
+
+        public HashSet<string>? TryEvaluate(LambdaExpression expression)
+            => _tryEvaluate(expression);
     }
 }

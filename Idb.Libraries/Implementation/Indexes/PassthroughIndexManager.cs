@@ -52,9 +52,27 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return QueryInternalAsync(predicate, cancellationToken);
     }
 
+    public IAsyncEnumerable<TImplementation> QueryAsync<TImplementation>(
+        Func<TImplementation, bool> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return QueryInternalAsync(predicate, cancellationToken);
+    }
+
     public IAsyncEnumerable<TContract> SearchAsync(
         Expression<Func<TContract, bool>> predicate,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return QueryInternalAsync(predicate.Compile(), cancellationToken);
+    }
+
+    public IAsyncEnumerable<TImplementation> SearchAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
     {
         ArgumentNullException.ThrowIfNull(predicate);
         return QueryInternalAsync(predicate.Compile(), cancellationToken);
@@ -101,6 +119,28 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
 
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
+        }
+    }
+
+    private async IAsyncEnumerable<TImplementation> QueryInternalAsync<TImplementation>(
+        Func<TImplementation, bool> predicate,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+        where TImplementation : class, TContract
+    {
+        await foreach (var envelope in _envelopeRepository
+            .EnumerateByImplementationTypeAsync<TImplementation>(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            var entity = envelope.ObjectInstance
+                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            var implementation = (TImplementation)entity;
+            if (!predicate(implementation))
+            {
+                continue;
+            }
+
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(implementation, envelope);
+            yield return implementation;
         }
     }
 

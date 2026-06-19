@@ -1,6 +1,7 @@
 ﻿using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization
@@ -12,6 +13,7 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
         private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
+        private readonly StoragePolicy _storagePolicy;
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
         private readonly IEnvelopeStorageChangeSource<TContract> _storageChangeSource;
 
@@ -19,6 +21,7 @@ namespace Idb.Libraries.Implementation.Serialization
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
             IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
             IDbContractConfigDto<TContract> contractConfig,
+            StoragePolicy storagePolicy,
             IFileWriteCoordinator fileWriteCoordinator,
             IEnvelopeStorageChangeSource<TContract> storageChangeSource)
         {
@@ -26,6 +29,7 @@ namespace Idb.Libraries.Implementation.Serialization
             _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
             _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+            _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
             _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
             _storageChangeSource = storageChangeSource ?? throw new ArgumentNullException(nameof(storageChangeSource));
         }
@@ -43,10 +47,32 @@ namespace Idb.Libraries.Implementation.Serialization
                     return _envelopeLifecycle.Unwrap(cached);
                 }
 
-                // Hydrate the cached envelope's ObjectInstance from disk without replacing the envelope instance
+                // Hydrate from disk without retaining the object unless the cache policy allows it.
                 var deserialized = await ReadEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
-                cached.ObjectInstance = deserialized.ObjectInstance;
-                return _envelopeLifecycle.Unwrap(cached);
+                deserialized.Location = file.FullName;
+                if (string.IsNullOrWhiteSpace(deserialized.EnvelopeCacheKey))
+                {
+                    deserialized.EnvelopeCacheKey = candidateKey;
+                }
+
+                if (deserialized.CacheObjectInstance)
+                {
+                    cached.CacheObjectInstance = true;
+                }
+
+                if (StorageObjectCachePolicy.ShouldRetainObjectInstance(deserialized, _storagePolicy))
+                {
+                    cached.VersionTag = deserialized.VersionTag;
+                    cached.Location = deserialized.Location;
+                    cached.State = deserialized.State;
+                    cached.ImplementationTypeName = deserialized.ImplementationTypeName;
+                    cached.CacheObjectInstance = deserialized.CacheObjectInstance;
+                    cached.EncryptedFields = deserialized.EncryptedFields;
+                    cached.ObjectInstance = deserialized.ObjectInstance;
+                    return _envelopeLifecycle.Unwrap(cached);
+                }
+
+                return _envelopeLifecycle.Unwrap(deserialized);
             }
 
             // Fallback: no cache entry, hydrate directly

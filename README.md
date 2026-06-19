@@ -8,7 +8,7 @@ For product positioning, tradeoffs, and current performance notes, see [Why Inte
 
 InterfaceDB file storage is designed for local object persistence where the application wants interface contracts, polymorphic concrete types, version-aware envelopes, lifecycle notifications, file change awareness, optional encryption, and an in-memory envelope catalog.
 
-The file-backed provider is not trying to behave like a relational SQL engine. It stores object envelopes as individual payloads and keeps object identity and search metadata in memory. That makes the current file provider strongest for desktop, mobile, embedded, and local-first application storage where object-native behavior matters more than relational joins or server-side query planning.
+The file-backed provider is not trying to behave like a relational SQL engine. It stores object envelopes as individual payloads and keeps object identity and search metadata in memory. Full object instances are not cached by default; they are read from storage unless a concrete type or specific envelope opts into object retention. That makes the current file provider strongest for desktop, mobile, embedded, and local-first application storage where object-native behavior matters more than relational joins or server-side query planning.
 
 The fairest current database comparison is the indexed read path: InterfaceDB's `SearchIndexManager<TContract>` versus SQL-backed indexed materialized queries. Raw write throughput comparisons are useful signals, but they are not pure apples-to-apples because InterfaceDB is doing envelope creation, interface/concrete type metadata, serialization, file writes, cache updates, optional index updates, and storage lifecycle behavior while SQL Server, Dapper, and EF Core are writing rows into a mature relational storage engine.
 
@@ -76,7 +76,7 @@ Data/
     <key>.mpk
 ```
 
-This flat layout is the only active filesystem layout. Higher-throughput storage backends, such as SQL/document/object database envelope stores, are future roadmap work. `StoragePolicy` controls write concurrency, cache hydration, notifications, sidecar write locks, and file change watching.
+This flat layout is the only active filesystem layout. Higher-throughput storage backends, such as SQL/document/object database envelope stores, are future roadmap work. `StoragePolicy` controls write concurrency, envelope hydration, notifications, sidecar write locks, and file change watching.
 
 File watching synchronizes independent repository instances for committed create, update, rename, and delete operations. Local operations acknowledge their provider locator so watcher echoes do not duplicate notifications. The watcher maintains a payload snapshot and rescans after watcher errors or buffer overflow; `IEnvelopeStorageChangeSource<T>.RescanAsync` also supports explicit reconciliation.
 
@@ -113,12 +113,17 @@ await foreach (var person in repository.SearchManyAsync(x => x.Role == "Student"
 {
 }
 
+await foreach (var employee in repository.SearchManyAsync<Employee>(x => x.Age >= 30))
+{
+}
+
 await foreach (var person in repository.QueryManyByStorageKeyAsync("person-john-smith"))
 {
 }
 
 var first = await repository.QueryFirstAsync(x => x.Role == "Student");
 var firstIndexed = await repository.SearchFirstAsync(x => x.Role == "Student" && x.Age >= 20);
+var firstEmployee = await repository.SearchFirstAsync<Employee>(x => x.Age >= 30);
 var firstByStorageKey = await repository.QueryFirstByStorageKeyAsync("person-john-smith");
 var exactlyOne = await repository.QuerySingleAsync(x => x.Name == "Jane");
 var optional = await repository.QuerySingleOrDefaultAsync(x => x.Name == "Jane");
@@ -128,7 +133,15 @@ var deleted = await repository.DeleteAsync(exactlyOne);
 
 Single-result methods accept optional exception factories for cardinality violations.
 
-The query-performance model is split by predicate type. Equality on the storage identity/logical envelope key resolves through the envelope cache in constant time, including multiple-cardinality groups. `SearchManyAsync` and `SearchFirstAsync` accept expression trees and use opt-in per-property search indexes when possible. The existing `QueryManyAsync(Func<T,bool>)` path remains a predicate scan fallback because compiled delegates cannot be inspected.
+The query-performance model is split by predicate type. Equality on the storage identity/logical envelope key resolves through the envelope cache in constant time, including multiple-cardinality groups. `SearchManyAsync` and `SearchFirstAsync` accept expression trees and use opt-in per-property search indexes when possible. Generic overloads such as `SearchManyAsync<Employee>(...)` narrow a contract repository to a concrete implementation type and can use implementation-level search indexes. The existing `QueryManyAsync(Func<T,bool>)` path remains a predicate scan fallback because compiled delegates cannot be inspected.
+
+The envelope cache is always the metadata catalog. Object instance caching is selective:
+
+- default behavior keeps envelope metadata only;
+- `[StorageCached]` on a concrete storage class keeps all instances of that implementation in memory after save/read;
+- `object.Envelope.CacheObjectInstance = true` persists a per-object cache preference for individual records.
+
+Use selective object caching only for object types or records that benefit from hot in-memory reuse. The default keeps file-backed reads honest and avoids turning the repository into a hidden full-object memory store.
 
 Search indexes are opt-in:
 
@@ -151,14 +164,14 @@ The first index implementation supports exact equality, comparable range operato
 
 Storage exceptions are provider-neutral. File, SQL, document, event-stream, and memory providers can report the same `StorageException` hierarchy while retaining provider-specific failures as inner exceptions.
 
-Optional encryption at rest is applied to the complete serialized envelope. The default `EncryptionNone` implementation keeps normal `IDB2` files unchanged. AES-GCM can be enabled before repository registration:
+Optional encryption at rest is applied to the complete serialized envelope. The default `EncryptionNone` implementation keeps normal plaintext envelope files unchanged. Current plaintext writes use `IDB3`; legacy `IDB2` files remain readable. AES-GCM can be enabled before repository registration:
 
 ```csharp
 services.AddInterfaceDbAesGcmEncryption(keyProvider);
 services.AddRepository<IMyContract>(options);
 ```
 
-AES-GCM files use an authenticated `IDBE` outer frame containing the encrypted `IDB2` payload.
+AES-GCM files use an authenticated `IDBE` outer frame containing the encrypted plaintext envelope payload.
 
 Key rotation uses `IRotatingKeyProvider`. The `IDBE` version 2 header stores a non-secret key ID so the exact historical key can be selected without trying every key. Reads can optionally re-encrypt directly to the current key:
 
@@ -334,13 +347,13 @@ This walks the known adjacent baseline versions and creates any missing migratio
 The benchmark projects are useful for comparing the file-backed repository against database-backed inserts, but they are not zero-config:
 
 - `StorageBenchmarks/` and `StorageBenchmarks.Transactions/` expect a SQL Server connection string in their `appsettings.json` files or environment variables.
-- The file-system benchmark setup currently writes under `G:\PerformanceTest\...`. Update the code if that path does not exist on your machine.
+- The transaction benchmark defaults to 25,000 persons. Set `INTERFACEDB_BENCH_PERSON_COUNT=50000` when you want to reproduce the older 50k result set.
 
 Run them with:
 
 ```bash
 dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release
-dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release
+dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release -- --run-all
 ```
 
 Current benchmark highlights from `TestResults/results.txt`:
@@ -368,6 +381,7 @@ Run just the InterfaceDB transaction benchmark with:
 $env:INTERFACEDB_BENCH_MAX_CONCURRENCY = "16"
 $env:INTERFACEDB_BENCH_BULK_BATCH_SIZE = "16384"
 $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER = "true"
+$env:INTERFACEDB_BENCH_PERSON_COUNT = "25000"
 
 dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem_StoreTransaction*
 ```

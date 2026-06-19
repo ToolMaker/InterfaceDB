@@ -59,9 +59,25 @@ public interface IIndexManager<TContract>
     IAsyncEnumerable<TContract> QueryAsync(Func<TContract, bool> predicate, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Retrieves entities of the requested implementation/interface type that satisfy the supplied predicate.
+    /// </summary>
+    IAsyncEnumerable<TImplementation> QueryAsync<TImplementation>(
+        Func<TImplementation, bool> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
+
+    /// <summary>
     /// Retrieves entities matching an inspectable expression, using search indexes when possible.
     /// </summary>
     IAsyncEnumerable<TContract> SearchAsync(Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves entities of the requested implementation/interface type matching an inspectable expression.
+    /// </summary>
+    IAsyncEnumerable<TImplementation> SearchAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> predicate,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
 
     /// <summary>
     /// Retrieves contracts by logical storage identity through the envelope cache.

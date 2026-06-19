@@ -30,6 +30,13 @@ public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
 
     public TContract? ObjectInstance { get; set; }
 
+    public string? ImplementationTypeName { get; set; }
+
+    public bool CacheObjectInstance { get; set; }
+
+    public IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
+        = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
+
     public string? Location { get; set; }
 
     public StorageObjectState State { get; set; }

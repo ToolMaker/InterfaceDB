@@ -133,19 +133,22 @@ The active version comes from contract config, usually `IDbContractConfigDto<TCo
 
 ## Serialization
 
-`BinaryObjectSerializer<TContract>` uses MessagePack and writes an `IDB2` payload format.
+`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB3` payload format. Legacy `IDB2` payloads remain readable for backward compatibility.
 
 Serialization is already behind `IObjectSerializer<TContract>`. The default registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so future serializer implementations can be registered below the repository without changing `IRepository<TContract>` or the file reader/writer contracts.
 
 The current format stores:
 
-- magic prefix: `IDB2`
+- magic prefix: `IDB3`
 - version tag
 - envelope cache key
 - concrete runtime type name
+- per-object cache flag
 - serialized object payload
 
 Envelope references are guarded during serialization to avoid object-envelope-object cycles.
+
+`IDB3` differs from `IDB2` by persisting `IObjectEnvelope<TContract>.CacheObjectInstance`. That flag lets an individual object opt into full object retention even when the concrete type is not marked with `[StorageCached]`.
 
 Current limitation: payloads still depend on concrete .NET type names. Stable type aliases are a future hardening item.
 
@@ -154,11 +157,11 @@ Current limitation: payloads still depend on concrete .NET type names. Stable ty
 Encryption is applied after the complete envelope has been serialized and before its bytes are written:
 
 ```text
-object -> IDB2 serialization -> IEncryptor.Encrypt -> file
-file -> IEncryptor.Decrypt -> IDB2 deserialization -> object
+object -> IDB3 serialization -> IEncryptor.Encrypt -> file
+file -> IEncryptor.Decrypt -> IDB3 deserialization -> object
 ```
 
-`EncryptionNone` is registered by default and returns the serialized bytes unchanged. Existing unencrypted repositories therefore keep the normal `IDB2` file format.
+`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB3` file format. Existing `IDB2` files remain readable.
 
 `AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
 
@@ -168,9 +171,9 @@ file -> IEncryptor.Decrypt -> IDB2 deserialization -> object
 - key identifier for key-aware version 2 payloads;
 - random nonce;
 - authentication tag;
-- encrypted `IDB2` payload.
+- encrypted plaintext envelope payload.
 
-The `IDB2` envelope metadata and object body are both encrypted. The filename and version directory remain visible.
+The plaintext envelope metadata and object body are both encrypted. The filename and version directory remain visible.
 
 AES-GCM can be selected before repository registration:
 
@@ -183,7 +186,7 @@ services.AddRepository<IMyContract>(options);
 
 Custom encryption can be registered with `AddInterfaceDbEncryption(IEncryptor)`.
 
-For rollout over existing plaintext files, `AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old `IDB2` payloads to be read while all new writes use `IDBE`. This compatibility setting should be disabled after the old files have been rewritten.
+For rollout over existing plaintext files, `AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old plaintext payloads to be read while all new writes use `IDBE`. This compatibility setting should be disabled after the old files have been rewritten.
 
 `IKeyProvider` remains the simple single-key contract. `IRotatingKeyProvider` resolves an active key ID and historical keys by ID. New key-aware payloads store only the non-secret key ID; key material remains in the configured key store.
 
@@ -340,6 +343,14 @@ The envelope cache is intentionally equality-only. It should not evaluate `>`, `
 During initialization, the file repository scans the data root and stores skeleton envelopes. Hydration is optional and controlled by `StoragePolicy.HydrateOnInitialize`.
 
 If hydration is disabled, envelopes can remain lightweight until query/read time.
+
+The envelope metadata catalog is always maintained. Full object instances are retained only when one of these policies allows it:
+
+- `StoragePolicy.KeepObjectInstanceInCacheOnWrite` is enabled as a database-wide override;
+- the concrete storage class has `[StorageCached]`;
+- the envelope has `CacheObjectInstance = true`.
+
+The default is metadata-only object caching. A query that materializes an uncached object returns that object to the caller but does not promote it into the envelope cache unless the type or envelope opted in.
 
 ## Query And Index Routing
 
@@ -568,8 +579,8 @@ The original `QueryAsync` method remains as a compatibility alias for first-or-d
 
 - write concurrency;
 - notification publishing;
-- cache-on-write behavior;
-- object retention in cache;
+- envelope metadata caching;
+- selective object retention in cache;
 - single-buffer vs stream write;
 - writer semaphore;
 - sidecar locks;
@@ -649,7 +660,7 @@ Before eager migration, the repository acquires a contract-wide migration scope:
 4. migrate committed payloads;
 5. release waiting writers.
 
-Migration now reads the `IDB2` envelope header separately from the object body, preserves the envelope cache key, applies the migration chain to the body, and writes the result through the normal coalescing writer.
+Migration now reads the plaintext envelope header separately from the object body, preserves the envelope cache key, applies the migration chain to the body, and writes the result through the normal coalescing writer.
 
 Migration chains follow these rules:
 

@@ -5,6 +5,7 @@ using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Encryption.Options;
@@ -58,6 +59,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
     ("repository bulk save persists canonical objects in input order", RepositoryBulkSavePersistsInInputOrderAsync),
     ("repository bulk save reports partial failures", RepositoryBulkSaveReportsPartialFailuresAsync),
+    ("repository keeps envelope metadata but does not cache objects by default", RepositoryDoesNotCacheObjectInstancesByDefaultAsync),
+    ("repository caches objects when concrete type is marked", RepositoryCachesStorageCachedObjectsAsync),
+    ("repository caches objects when envelope flag is persisted", RepositoryCachesEnvelopeFlaggedObjectsAsync),
     ("repository registration storage policy overrides config policy", RepositoryRegistrationStoragePolicyOverridesConfigAsync),
     ("repository registration storage identity factory controls file identity", RepositoryRegistrationStorageIdentityFactoryControlsFileIdentityAsync),
     ("default identity factory uses guid v7 file keys", DefaultIdentityFactoryUsesGuidV7KeysAsync),
@@ -84,6 +88,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("lazy migration upgrades raw storage on first query", LazyMigrationUpgradesOnFirstQueryAsync),
     ("encrypted storage round trips and rejects tampering", EncryptedStorageRoundTripsAndRejectsTamperingAsync),
     ("encrypted storage lazily rotates directly to the active key", EncryptedStorageLazilyRotatesToActiveKeyAsync),
+    ("encrypted storage fields decrypt through the contract proxy", EncryptedStorageFieldsDecryptThroughProxyAsync),
     ("forced encryption rotation rewrites the full store", ForcedEncryptionRotationRewritesStoreAsync),
     ("legacy encrypted payloads use the configured historical key", LegacyEncryptedPayloadUsesConfiguredKeyAsync),
     ("Windows Credential Manager stores active and historical keys", WindowsCredentialManagerStoresKeyRingAsync),
@@ -747,6 +752,103 @@ static async Task RepositoryBulkSaveReportsPartialFailuresAsync()
     }
 }
 
+static async Task RepositoryDoesNotCacheObjectInstancesByDefaultAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        await using var provider = BuildSelectiveObjectCacheProvider(testRoot);
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var saved = await repository.SaveAsync(
+            new LockTestRecord { Id = "metadata-only", Value = "stored" }).ConfigureAwait(false);
+        var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
+        var envelopes = provider.GetRequiredKeyedService<
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+
+        Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope metadata should be cached after save.");
+        Assert(cached!.ObjectInstance is null, "Default cache should retain envelope metadata without the object instance.");
+
+        var queried = await repository.QueryFirstAsync(x => x.Id == "metadata-only").ConfigureAwait(false);
+        AssertNotNull(queried, "Record should still be queryable from storage.");
+        Assert(cached.ObjectInstance is null, "Default query hydration should not promote the object into the envelope cache.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositoryCachesStorageCachedObjectsAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        await using var provider = BuildSelectiveObjectCacheProvider(testRoot);
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var saved = await repository.SaveAsync(
+            new CachedLockTestRecord { Id = "type-cache", Value = "stored" }).ConfigureAwait(false);
+        var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
+        var envelopes = provider.GetRequiredKeyedService<
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+
+        Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after save.");
+        Assert(ReferenceEquals(saved, cached!.ObjectInstance), "StorageCached concrete types should retain the object instance.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        string storageKey;
+        await using (var writerProvider = BuildSelectiveObjectCacheProvider(testRoot))
+        {
+            var repository = writerProvider.GetRequiredService<IRepository<ILockTestRecord>>();
+            await repository.InitializeAsync().ConfigureAwait(false);
+
+            var saved = await repository.SaveAsync(
+                new LockTestRecord { Id = "envelope-cache", Value = "stored" }).ConfigureAwait(false);
+            storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
+            saved.Envelope!.CacheObjectInstance = true;
+            await repository.SaveAsync(saved).ConfigureAwait(false);
+
+            var envelopes = writerProvider.GetRequiredKeyedService<
+                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+            Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after flagged save.");
+            Assert(ReferenceEquals(saved, cached!.ObjectInstance), "Envelope cache flag should retain the current object instance.");
+        }
+
+        await using (var readerProvider = BuildSelectiveObjectCacheProvider(testRoot))
+        {
+            var repository = readerProvider.GetRequiredService<IRepository<ILockTestRecord>>();
+            await repository.InitializeAsync().ConfigureAwait(false);
+
+            var envelopes = readerProvider.GetRequiredKeyedService<
+                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+            Assert(envelopes.TryGetValue(storageKey, out var coldEnvelope), "Cold start should seed envelope metadata.");
+            Assert(coldEnvelope!.ObjectInstance is null, "Cold start should not hydrate the object before query.");
+
+            var queried = await repository.QueryFirstAsync(x => x.Id == "envelope-cache").ConfigureAwait(false);
+            queried = AssertNotNull(queried, "Flagged record should be queryable after restart.");
+            Assert(coldEnvelope.CacheObjectInstance, "Persisted envelope cache flag should be restored from storage.");
+            Assert(ReferenceEquals(queried, coldEnvelope.ObjectInstance), "Persisted envelope flag should retain the queried object instance.");
+        }
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
 static async Task RepositoryRegistrationStoragePolicyOverridesConfigAsync()
 {
     var testRoot = CreateTestRoot();
@@ -1129,7 +1231,7 @@ static async Task KeyedDependencyInjectionIsolatesDatabasesAsync()
 
         var localBytes = await File.ReadAllBytesAsync(localSaved.Envelope!.Location!).ConfigureAwait(false);
         var secureBytes = await File.ReadAllBytesAsync(secureSaved.Envelope!.Location!).ConfigureAwait(false);
-        Assert(localBytes.AsSpan(0, 4).SequenceEqual("IDB2"u8), "Local database should use plaintext serialization.");
+        Assert(HasPlaintextEnvelopeHeader(localBytes), "Local database should use plaintext serialization.");
         Assert(secureBytes.AsSpan(0, 4).SequenceEqual("IDBE"u8), "Secure database should use keyed AES encryption.");
 
         Assert(await local.QueryFirstAsync(x => x.Id == "secure").ConfigureAwait(false) is null,
@@ -1742,7 +1844,7 @@ static async Task EncryptedStorageRoundTripsAndRejectsTamperingAsync()
 
         var stored = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
         Assert(stored.AsSpan(0, 4).SequenceEqual("IDBE"u8), "Encrypted payload should use the IDBE outer header.");
-        Assert(stored.AsSpan().IndexOf("IDB2"u8) < 0, "Plain IDB2 header should not be visible in encrypted storage.");
+        Assert(!HasPlaintextEnvelopeHeader(stored), "Plain envelope header should not be visible in encrypted storage.");
 
         await using (var reloadProvider = BuildEncryptedProvider(testRoot))
         {
@@ -1813,6 +1915,46 @@ static async Task EncryptedStorageLazilyRotatesToActiveKeyAsync()
         Assert(keyProvider.RequestedKeyIds.Count(id => id == "key-2") == 1,
             "The active key should be resolved once for replacement encryption.");
         AssertNoSidecarArtifacts(testRoot);
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task EncryptedStorageFieldsDecryptThroughProxyAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        await using (var provider = BuildEncryptedFieldProvider(testRoot))
+        {
+            var repository = provider.GetRequiredService<IRepository<IEncryptedFieldTestRecord>>();
+            await repository.InitializeAsync().ConfigureAwait(false);
+
+            var concrete = new EncryptedFieldTestRecord
+            {
+                Id = "field-encryption",
+                Secret = "sensitive-value"
+            };
+            await repository.SaveAsync(concrete).ConfigureAwait(false);
+
+            Assert(string.IsNullOrEmpty(concrete.Secret), "Encrypted backing property should be cleared after save.");
+            Assert(concrete.Envelope?.EncryptedFields.ContainsKey(nameof(IEncryptedFieldTestRecord.Secret)) == true,
+                "Envelope should contain encrypted field ciphertext.");
+        }
+
+        await using (var provider = BuildEncryptedFieldProvider(testRoot))
+        {
+            var repository = provider.GetRequiredService<IRepository<IEncryptedFieldTestRecord>>();
+            await repository.InitializeAsync().ConfigureAwait(false);
+
+            var loaded = await repository.QueryFirstAsync(x => x.Id == "field-encryption").ConfigureAwait(false);
+            loaded = AssertNotNull(loaded, "Encrypted field record should reload.");
+            Assert(loaded.Secret == "sensitive-value", "Encrypted field getter should decrypt through the contract proxy.");
+            Assert(loaded.Envelope?.EncryptedFields.ContainsKey(nameof(IEncryptedFieldTestRecord.Secret)) == true,
+                "Reloaded proxy should expose encrypted field metadata through the envelope.");
+        }
     }
     finally
     {
@@ -2123,6 +2265,14 @@ static ServiceProvider BuildProvider(string dataRoot)
     return services.BuildServiceProvider();
 }
 
+static ServiceProvider BuildSelectiveObjectCacheProvider(string dataRoot)
+{
+    var options = new SelectiveObjectCacheOptions(dataRoot);
+    var services = new ServiceCollection();
+    services.AddRepository<ILockTestRecord>(options);
+    return services.BuildServiceProvider();
+}
+
 static ServiceProvider BuildWatcherProvider(string dataRoot)
 {
     var services = new ServiceCollection();
@@ -2162,6 +2312,17 @@ static ServiceProvider BuildEncryptedProvider(string dataRoot)
         new FixedTestKeyProvider(),
         new AesGcmEncryptorOptions());
     services.AddRepository<ILockTestRecord>(options);
+    return services.BuildServiceProvider();
+}
+
+static ServiceProvider BuildEncryptedFieldProvider(string dataRoot)
+{
+    var options = new EncryptedFieldTestOptions(dataRoot);
+    var services = new ServiceCollection();
+    services.AddInterfaceDbAesGcmEncryption(
+        new FixedTestKeyProvider(),
+        new AesGcmEncryptorOptions());
+    services.AddRepository<IEncryptedFieldTestRecord>(options);
     return services.BuildServiceProvider();
 }
 
@@ -2335,6 +2496,15 @@ static void Assert(bool condition, string message)
     }
 }
 
+static bool HasPlaintextEnvelopeHeader(byte[] bytes)
+{
+    return bytes.Length >= 4
+        && bytes[0] == (byte)'I'
+        && bytes[1] == (byte)'D'
+        && bytes[2] == (byte)'B'
+        && (bytes[3] == (byte)'2' || bytes[3] == (byte)'3' || bytes[3] == (byte)'4');
+}
+
 static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)
 {
     var results = new List<T>();
@@ -2433,6 +2603,34 @@ public sealed class LockTestOptions : IDbContractConfigDto<ILockTestRecord>
         WriteLockTimeout = TimeSpan.FromSeconds(15),
         WriteLockRetryDelay = TimeSpan.FromMilliseconds(10),
         StaleWriteLockTimeout = TimeSpan.FromSeconds(30)
+    };
+}
+
+public sealed class SelectiveObjectCacheOptions : IDbContractConfigDto<ILockTestRecord>
+{
+    public SelectiveObjectCacheOptions(string dataRoot)
+    {
+        DataRoot = dataRoot;
+    }
+
+    public string EnvelopeDICacheKey { get; } = "ObjectCacheTest";
+    public string ContractName { get; } = "ObjectCacheTest";
+    public string FileExtension { get; } = ".mpk";
+    public string? ImplementationsPath { get; } = null;
+    public string? ContractPath { get; } = null;
+    public string? MigrationsPath { get; } = null;
+    public string? DataRoot { get; }
+    public string? ActiveVersion { get; } = "1.0.0";
+    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
+    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
+    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
+    public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
+    {
+        HydrateOnInitialize = false,
+        KeepObjectInstanceInCacheOnWrite = false,
+        RaiseNotifications = false,
+        UseSidecarWriteLocks = true,
+        WatchStorageChanges = false
     };
 }
 
@@ -2597,6 +2795,34 @@ public sealed class NamedLockTestOptions : IDbContractConfigDto<ILockTestRecord>
     };
 }
 
+public sealed class EncryptedFieldTestOptions : IDbContractConfigDto<IEncryptedFieldTestRecord>
+{
+    public EncryptedFieldTestOptions(string dataRoot)
+    {
+        DataRoot = dataRoot;
+    }
+
+    public string EnvelopeDICacheKey { get; } = "EncryptedFieldTest";
+    public string ContractName { get; } = "EncryptedFieldTest";
+    public string FileExtension { get; } = ".mpk";
+    public string? ImplementationsPath { get; } = null;
+    public string? ContractPath { get; } = null;
+    public string? MigrationsPath { get; } = null;
+    public string? DataRoot { get; }
+    public string? ActiveVersion { get; } = "1.0.0";
+    public IIndex<IEncryptedFieldTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<IEncryptedFieldTestRecord>>();
+    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
+    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
+    public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
+    {
+        DurabilityMode = StorageDurabilityMode.Durable,
+        HydrateOnInitialize = false,
+        RaiseNotifications = false,
+        UseSidecarWriteLocks = true,
+        WatchStorageChanges = false
+    };
+}
+
 public sealed class LockTestStorageIdentityFactory : IEnvelopeStorageIdentityFactory<ILockTestRecord>
 {
     private readonly SingleLockTestOptions _options;
@@ -2667,6 +2893,31 @@ public sealed class LockTestRecord : ILockTestRecord
     public string Id { get; set; } = string.Empty;
     public string Value { get; set; } = string.Empty;
     public IObjectEnvelope<ILockTestRecord>? Envelope { get; private set; }
+}
+
+[StorageCached]
+public sealed class CachedLockTestRecord : ILockTestRecord
+{
+    public string Id { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+    public IObjectEnvelope<ILockTestRecord>? Envelope { get; private set; }
+}
+
+[StorageScope(VersionTag = "1.0.0")]
+[EncryptedStorage]
+public interface IEncryptedFieldTestRecord : IStoredContract<IEncryptedFieldTestRecord>
+{
+    string Id { get; set; }
+
+    [EncryptedStorageField]
+    string Secret { get; set; }
+}
+
+public sealed class EncryptedFieldTestRecord : IEncryptedFieldTestRecord
+{
+    public string Id { get; set; } = string.Empty;
+    public string Secret { get; set; } = string.Empty;
+    public IObjectEnvelope<IEncryptedFieldTestRecord>? Envelope { get; private set; }
 }
 
 [StorageScope(VersionTag = "1.0.0")]

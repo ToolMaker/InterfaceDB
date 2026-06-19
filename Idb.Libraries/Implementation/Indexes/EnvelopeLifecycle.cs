@@ -1,7 +1,9 @@
 using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Encryption;
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -16,13 +18,16 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
 {
     private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
     private readonly IEnvelopeStorageIdentityFactory<TContract> _storageIdentityFactory;
+    private readonly EncryptedStorageFieldProcessor<TContract> _encryptedFieldProcessor;
 
     public EnvelopeLifecycle(
         Func<IObjectEnvelope<TContract>> envelopeFactory,
-        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory)
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory,
+        IEncryptor encryptor)
     {
         _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
         _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
+        _encryptedFieldProcessor = new EncryptedStorageFieldProcessor<TContract>(encryptor);
     }
 
     public ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
@@ -44,8 +49,9 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
             wrappedEnvelope = entity.Envelope;
         }
 
-        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope: null);
-        wrappedEnvelope.ObjectInstance = entity;
+        var storageEntity = _encryptedFieldProcessor.PrepareForStorage(entity, wrappedEnvelope);
+        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(storageEntity, envelope: null);
+        wrappedEnvelope.ObjectInstance = storageEntity;
         _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
         
         return ValueTask.FromResult(wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."));
@@ -62,7 +68,9 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
             ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
 
         StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
-        return entity;
+        var contract = _encryptedFieldProcessor.WrapForRead(entity, envelope);
+        envelope.ObjectInstance = contract;
+        return contract;
     }
 
     //private IObjectEnvelope<TContract, string> CreateEnvelope(
@@ -91,6 +99,11 @@ internal static class StoredContractEnvelopeAccessor<TContract>
         if (entity is null)
         {
             throw new ArgumentNullException(nameof(entity));
+        }
+
+        if (entity is EncryptedStorageDispatchProxy<TContract>)
+        {
+            return;
         }
 
         var setter = Setters.GetOrAdd(entity.GetType(), CreateSetter);

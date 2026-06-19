@@ -67,6 +67,14 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Queries the repository for the first entity of the requested implementation/interface type that satisfies the predicate.
+    /// </summary>
+    ValueTask<TImplementation> QueryAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
+
+    /// <summary>
     /// Streams every entity matching the supplied predicate.
     /// </summary>
     IAsyncEnumerable<TContract> QueryManyAsync(
@@ -74,11 +82,27 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Streams every entity of the requested implementation/interface type matching the supplied predicate.
+    /// </summary>
+    IAsyncEnumerable<TImplementation> QueryManyAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
+
+    /// <summary>
     /// Streams every entity matching the supplied expression, using search indexes when possible.
     /// </summary>
     IAsyncEnumerable<TContract> SearchManyAsync(
         Expression<Func<TContract, bool>> filterExpression,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Streams every entity of the requested implementation/interface type matching the supplied expression.
+    /// </summary>
+    IAsyncEnumerable<TImplementation> SearchManyAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
 
     /// <summary>
     /// Streams entities whose logical storage key equals the supplied value.
@@ -96,11 +120,27 @@ public interface IRepository<TContract>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the first matching entity of the requested implementation/interface type, or <c>null</c>.
+    /// </summary>
+    ValueTask<TImplementation?> QueryFirstAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
+
+    /// <summary>
     /// Returns the first matching entity using search indexes when possible, or <c>null</c>.
     /// </summary>
     ValueTask<TContract?> SearchFirstAsync(
         Expression<Func<TContract, bool>> filterExpression,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the first matching entity of the requested implementation/interface type using search indexes when possible, or <c>null</c>.
+    /// </summary>
+    ValueTask<TImplementation?> SearchFirstAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract;
 
     /// <summary>
     /// Returns the first entity whose logical storage key equals the supplied value, or <c>null</c>.
@@ -120,12 +160,31 @@ public interface IRepository<TContract>
         Func<Exception>? multipleExceptionFactory = null);
 
     /// <summary>
+    /// Returns exactly one matching entity of the requested implementation/interface type.
+    /// </summary>
+    ValueTask<TImplementation> QuerySingleAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? noneExceptionFactory = null,
+        Func<Exception>? multipleExceptionFactory = null)
+        where TImplementation : class, TContract;
+
+    /// <summary>
     /// Returns one matching entity or <c>null</c>, and rejects multiple matches.
     /// </summary>
     ValueTask<TContract?> QuerySingleOrDefaultAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default,
         Func<Exception>? multipleExceptionFactory = null);
+
+    /// <summary>
+    /// Returns one matching entity of the requested implementation/interface type or <c>null</c>, and rejects multiple matches.
+    /// </summary>
+    ValueTask<TImplementation?> QuerySingleOrDefaultAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? multipleExceptionFactory = null)
+        where TImplementation : class, TContract;
 
     /// <summary>
     /// Checks whether an entity with equivalent identity already exists.

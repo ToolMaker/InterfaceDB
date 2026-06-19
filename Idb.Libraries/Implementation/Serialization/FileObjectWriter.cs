@@ -396,7 +396,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 return;
             }
 
-            if (_storagePolicy.KeepObjectInstanceInCacheOnWrite)
+            if (StorageObjectCachePolicy.ShouldRetainObjectInstance(envelope, _storagePolicy))
             {
                 _envelopes.AddOrUpdate(
                     envelope.EnvelopeCacheKey,
@@ -410,6 +410,9 @@ namespace Idb.Libraries.Implementation.Serialization
                 cached.VersionTag = envelope.VersionTag;
                 cached.Location = envelope.Location;
                 cached.State = envelope.State;
+                cached.ImplementationTypeName = envelope.ImplementationTypeName;
+                cached.CacheObjectInstance = envelope.CacheObjectInstance;
+                cached.EncryptedFields = envelope.EncryptedFields;
                 cached.ObjectInstance = null;
                 return;
             }
@@ -419,6 +422,9 @@ namespace Idb.Libraries.Implementation.Serialization
                 EnvelopeCacheKey = envelope.EnvelopeCacheKey,
                 VersionTag = envelope.VersionTag,
                 Location = envelope.Location,
+                ImplementationTypeName = envelope.ImplementationTypeName,
+                CacheObjectInstance = envelope.CacheObjectInstance,
+                EncryptedFields = envelope.EncryptedFields,
                 ObjectInstance = null,
                 State = envelope.State
             };

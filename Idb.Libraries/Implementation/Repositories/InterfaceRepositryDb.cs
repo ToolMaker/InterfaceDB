@@ -91,6 +91,12 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         CancellationToken cancellationToken = default)
         => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ?? null!;
 
+    public async ValueTask<TImplementation> QueryAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ?? null!;
+
     public IAsyncEnumerable<TContract> QueryManyAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default)
@@ -99,9 +105,27 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return _indexManager.QueryAsync(filterFunction, cancellationToken);
     }
 
+    public IAsyncEnumerable<TImplementation> QueryManyAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        ArgumentNullException.ThrowIfNull(filterFunction);
+        return _indexManager.QueryAsync(filterFunction, cancellationToken);
+    }
+
     public IAsyncEnumerable<TContract> SearchManyAsync(
         Expression<Func<TContract, bool>> filterExpression,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filterExpression);
+        return _indexManager.SearchAsync(filterExpression, cancellationToken);
+    }
+
+    public IAsyncEnumerable<TImplementation> SearchManyAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
     {
         ArgumentNullException.ThrowIfNull(filterExpression);
         return _indexManager.SearchAsync(filterExpression, cancellationToken);
@@ -131,9 +155,35 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return null;
     }
 
+    public async ValueTask<TImplementation?> QueryFirstAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        await foreach (var match in QueryManyAsync(filterFunction, cancellationToken).ConfigureAwait(false))
+        {
+            return match;
+        }
+
+        return null;
+    }
+
     public async ValueTask<TContract?> SearchFirstAsync(
         Expression<Func<TContract, bool>> filterExpression,
         CancellationToken cancellationToken = default)
+    {
+        await foreach (var match in SearchManyAsync(filterExpression, cancellationToken).ConfigureAwait(false))
+        {
+            return match;
+        }
+
+        return null;
+    }
+
+    public async ValueTask<TImplementation?> SearchFirstAsync<TImplementation>(
+        Expression<Func<TImplementation, bool>> filterExpression,
+        CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
     {
         await foreach (var match in SearchManyAsync(filterExpression, cancellationToken).ConfigureAwait(false))
         {
@@ -182,10 +232,63 @@ public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
         return single;
     }
 
+    public async ValueTask<TImplementation> QuerySingleAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? noneExceptionFactory = null,
+        Func<Exception>? multipleExceptionFactory = null)
+        where TImplementation : class, TContract
+    {
+        await using var enumerator = QueryManyAsync(filterFunction, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                noneExceptionFactory,
+                RepositoryQueryCardinalityException.NoMatches);
+        }
+
+        var single = enumerator.Current;
+        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                multipleExceptionFactory,
+                RepositoryQueryCardinalityException.MultipleMatches);
+        }
+
+        return single;
+    }
+
     public async ValueTask<TContract?> QuerySingleOrDefaultAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default,
         Func<Exception>? multipleExceptionFactory = null)
+    {
+        await using var enumerator = QueryManyAsync(filterFunction, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var single = enumerator.Current;
+        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            throw CreateException(
+                multipleExceptionFactory,
+                RepositoryQueryCardinalityException.MultipleMatches);
+        }
+
+        return single;
+    }
+
+    public async ValueTask<TImplementation?> QuerySingleOrDefaultAsync<TImplementation>(
+        Func<TImplementation, bool> filterFunction,
+        CancellationToken cancellationToken = default,
+        Func<Exception>? multipleExceptionFactory = null)
+        where TImplementation : class, TContract
     {
         await using var enumerator = QueryManyAsync(filterFunction, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
