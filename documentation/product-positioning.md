@@ -85,24 +85,33 @@ The exception model is also provider-neutral, so file, SQL, document, event, and
 
 ## Current Performance Baseline
 
-Latest full stack benchmark provided on 2026-06-17:
+Latest full stack benchmark provided on 2026-06-19.
 
-| Method                                                    | Mean       | Error     | StdDev    | Gen0       | Gen1      | Gen2      | Allocated |
-|---------------------------------------------------------- |-----------:|----------:|----------:|-----------:|----------:|----------:|----------:|
-| Interface DB - 100 predicate scans over 50k persons       |   787.8 ms |  37.97 ms | 110.76 ms |  1000.0000 | 1000.0000 | 1000.0000 |  38.20 MB |
-| SQL Server - 100 indexed count queries over 50k persons   |   108.5 ms |   2.12 ms |   2.35 ms |          - |         - |         - |   0.34 MB |
-| Interface DB transaction baseline - store 50k persons     | 5,408.4 ms | 102.60 ms | 114.04 ms |  4000.0000 |         - |         - | 160.87 MB |
-| SQL Server transaction - store 50k persons                | 3,658.6 ms |  72.77 ms | 148.65 ms | 16000.0000 |         - |         - | 159.84 MB |
-| Dapper transaction - store 50k persons                    | 3,731.9 ms |  73.57 ms | 126.90 ms | 47000.0000 |         - |         - | 404.74 MB |
-| SQL Server SqlBulkCopy - store 50k persons                |   178.9 ms |   1.35 ms |   1.12 ms |          - |         - |         - |  23.11 MB |
+Read benchmarks use 100 queries over 50k persons and materialize matching objects for SQL Server and Dapper. InterfaceDB predicate scan is the non-indexed fallback path. InterfaceDB indexed search uses the opt-in in-memory search index layer.
 
-Best current InterfaceDB store-only run after tuning:
+| Scenario | Technology | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
+|--------- |----------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
+| Broad predicate/materialized query | InterfaceDB predicate scan | 1,069.74 ms | 15.977 ms | 14.945 ms | - | - | - | 38.20 MB |
+| Broad predicate/materialized query | SQL Server indexed materialized | 912.15 ms | 11.702 ms | 10.946 ms | 4000.0000 | 3000.0000 | 2000.0000 | 265.33 MB |
+| Broad predicate/materialized query | Dapper indexed materialized | 1,016.84 ms | 19.263 ms | 18.019 ms | 4000.0000 | 3000.0000 | 2000.0000 | 349.28 MB |
+| Broad indexed search | InterfaceDB indexed search | 841.55 ms | 14.988 ms | 13.287 ms | 1000.0000 | - | - | 82.26 MB |
+| Selective indexed search | InterfaceDB indexed search | 63.19 ms | 1.167 ms | 1.433 ms | 1000.0000 | 428.5714 | - | 8.41 MB |
+| Selective indexed search | SQL Server indexed materialized | 163.48 ms | 2.017 ms | 1.887 ms | 1250.0000 | 250.0000 | - | 10.78 MB |
+| Selective indexed search | Dapper indexed materialized | 161.03 ms | 1.180 ms | 1.104 ms | 1750.0000 | 500.0000 | - | 14.14 MB |
 
-| Method                                                | Mean  | Allocated |
-|------------------------------------------------------ |------:|----------:|
-| Interface DB transaction baseline - store 50k persons | 5.261 s | 160.82 MB |
+Write benchmarks store 50k persons. SQL Server and Dapper use object-by-object insert loops in a transaction. `SqlBulkCopy` is included as an upper-bound bulk-ingest reference, not as the object-by-object comparison.
 
-Settings:
+| Scenario | Technology | Mean | Error | StdDev | Gen0 | Gen1 | Gen2 | Allocated |
+|--------- |----------- |-----:|------:|-------:|-----:|-----:|-----:|----------:|
+| Object transaction write | InterfaceDB baseline | 5,491.32 ms | 107.020 ms | 184.605 ms | 4000.0000 | - | - | 227.36 MB |
+| Object transaction write | InterfaceDB indexed | 5,812.01 ms | 116.152 ms | 180.835 ms | 7000.0000 | 2000.0000 | - | 343.21 MB |
+| Object transaction write | SQL Server | 3,728.50 ms | 73.705 ms | 169.350 ms | 16000.0000 | - | - | 159.84 MB |
+| Object transaction write | SQL Server indexed | 4,159.31 ms | 82.799 ms | 215.206 ms | 16000.0000 | - | - | 159.84 MB |
+| Object transaction write | Dapper | 3,912.45 ms | 95.593 ms | 281.857 ms | 47000.0000 | - | - | 404.74 MB |
+| Object transaction write | Dapper indexed | 4,377.70 ms | 86.729 ms | 118.715 ms | 47000.0000 | - | - | 404.74 MB |
+| Bulk ingest reference | SQL Server SqlBulkCopy | 177.05 ms | 0.704 ms | 0.588 ms | - | - | - | 23.11 MB |
+
+Current file benchmark settings:
 
 ```text
 INTERFACEDB_BENCH_MAX_CONCURRENCY=16
@@ -110,7 +119,7 @@ INTERFACEDB_BENCH_BULK_BATCH_SIZE=16384
 INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER=true
 ```
 
-This result is encouraging because InterfaceDB is doing more than scalar row insertion:
+These results are encouraging because InterfaceDB is doing more than scalar row insertion:
 
 - interface-based object persistence;
 - concrete implementation recovery metadata;
@@ -121,7 +130,9 @@ This result is encouraging because InterfaceDB is doing more than scalar row ins
 
 Despite that richer storage model, write allocation is significantly lower than the current Dapper transaction benchmark.
 
-The query result shows the current architectural gap clearly. InterfaceDB is doing 100 predicate scans over 50k cached objects without secondary indexes. SQL Server is using an index on the queried columns and returning counts without materializing objects. Secondary indexing is therefore the next major feature required for query performance parity.
+The query results show why indexing matters. The non-indexed InterfaceDB predicate scan is still slower than SQL Server for broad reads, but the indexed InterfaceDB path now beats the SQL Server and Dapper materialized-object benchmarks in both broad and selective indexed reads. The selective indexed case is the clearest win because the index can return a small candidate set before object filtering.
+
+The remaining performance gap is on writes. InterfaceDB indexed writes currently add about 321 ms and 116 MB over the non-indexed InterfaceDB write path for 50k objects. The next optimization work should focus on reducing index update allocation and file-write overhead.
 
 ## Benchmark Interpretation
 

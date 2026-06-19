@@ -484,6 +484,63 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
+    [GlobalSetup(Targets = new[] { nameof(SqlServer_QueryBatch), nameof(SqlServer_SelectiveQueryBatch) })]
+    public void SetupSqlServerQuery()
+    {
+        _sqlQueryConnection = CreateOpenConnection();
+        EnsureSqlSchema(_sqlQueryConnection);
+        using var bulkCopy = new SqlBulkCopy(
+            _sqlQueryConnection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
+        CreateSqlQueryIndexes(_sqlQueryConnection);
+        var validationCount = MaterializeSqlPersons(_sqlQueryConnection, "Student", 20).Count;
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("SQL Server query benchmark setup produced no queryable records.");
+        }
+    }
+
+    [GlobalSetup(Targets = new[] { nameof(Dapper_QueryBatch), nameof(Dapper_SelectiveQueryBatch) })]
+    public void SetupDapperQuery()
+    {
+        _dapperQueryConnection = CreateOpenConnection();
+        EnsureSqlSchema(_dapperQueryConnection);
+        using var bulkCopy = new SqlBulkCopy(
+            _dapperQueryConnection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
+        CreateSqlQueryIndexes(_dapperQueryConnection);
+
+        var validationCount = QueryDapperPersons(_dapperQueryConnection, "Student", 20).Count;
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("Dapper query benchmark setup produced no queryable records.");
+        }
+    }
+
     [Benchmark(Description = "Interface DB - 100 predicate scans over 50k persons")]
     public async Task<int> FileSystem_QueryBatch()
     {
@@ -498,6 +555,44 @@ public class TransactionBenchmarks : IDisposable
             {
                 total++;
             }
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "SQL Server - 100 indexed materialized queries over 50k persons")]
+    public int SqlServer_QueryBatch()
+    {
+        if (_sqlQueryConnection is null)
+        {
+            throw new InvalidOperationException("SQL Server query connection not initialized.");
+        }
+
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            total += MaterializeSqlPersons(_sqlQueryConnection, role, minimumAge).Count;
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "Dapper - 100 indexed materialized queries over 50k persons")]
+    public int Dapper_QueryBatch()
+    {
+        if (_dapperQueryConnection is null)
+        {
+            throw new InvalidOperationException("Dapper query connection not initialized.");
+        }
+
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            total += QueryDapperPersons(_dapperQueryConnection, role, minimumAge).Count;
         }
 
         return total;
@@ -551,53 +646,6 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [GlobalSetup(Targets = new[] { nameof(SqlServer_QueryBatch), nameof(SqlServer_SelectiveQueryBatch) })]
-    public void SetupSqlServerQuery()
-    {
-        _sqlQueryConnection = CreateOpenConnection();
-        EnsureSqlSchema(_sqlQueryConnection);
-        using var bulkCopy = new SqlBulkCopy(
-            _sqlQueryConnection,
-            SqlBulkCopyOptions.TableLock,
-            externalTransaction: null)
-        {
-            DestinationTableName = "dbo.Persons",
-            BatchSize = 5_000,
-            BulkCopyTimeout = 0
-        };
-        bulkCopy.ColumnMappings.Add("Id", "Id");
-        bulkCopy.ColumnMappings.Add("Name", "Name");
-        bulkCopy.ColumnMappings.Add("Age", "Age");
-        bulkCopy.ColumnMappings.Add("Role", "Role");
-        bulkCopy.ColumnMappings.Add("Surname", "Surname");
-        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
-        CreateSqlQueryIndexes(_sqlQueryConnection);
-        var validationCount = MaterializeSqlPersons(_sqlQueryConnection, "Student", 20).Count;
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("SQL Server query benchmark setup produced no queryable records.");
-        }
-    }
-
-    [Benchmark(Description = "SQL Server - 100 indexed materialized queries over 50k persons")]
-    public int SqlServer_QueryBatch()
-    {
-        if (_sqlQueryConnection is null)
-        {
-            throw new InvalidOperationException("SQL Server query connection not initialized.");
-        }
-
-        var total = 0;
-        for (var i = 0; i < QueryRepeatCount; i++)
-        {
-            var role = QueryRoles[i % QueryRoles.Length];
-            var minimumAge = 20 + (i % 30);
-            total += MaterializeSqlPersons(_sqlQueryConnection, role, minimumAge).Count;
-        }
-
-        return total;
-    }
-
     [Benchmark(Description = "SQL Server - 100 selective indexed materialized queries over 50k persons")]
     public int SqlServer_SelectiveQueryBatch()
     {
@@ -619,54 +667,6 @@ public class TransactionBenchmarks : IDisposable
                 var role = QueryRoles[i % QueryRoles.Length];
                 total += MaterializeSqlPersons(_sqlQueryConnection, role, 58).Count;
             }
-        }
-
-        return total;
-    }
-
-    [GlobalSetup(Targets = new[] { nameof(Dapper_QueryBatch), nameof(Dapper_SelectiveQueryBatch) })]
-    public void SetupDapperQuery()
-    {
-        _dapperQueryConnection = CreateOpenConnection();
-        EnsureSqlSchema(_dapperQueryConnection);
-        using var bulkCopy = new SqlBulkCopy(
-            _dapperQueryConnection,
-            SqlBulkCopyOptions.TableLock,
-            externalTransaction: null)
-        {
-            DestinationTableName = "dbo.Persons",
-            BatchSize = 5_000,
-            BulkCopyTimeout = 0
-        };
-        bulkCopy.ColumnMappings.Add("Id", "Id");
-        bulkCopy.ColumnMappings.Add("Name", "Name");
-        bulkCopy.ColumnMappings.Add("Age", "Age");
-        bulkCopy.ColumnMappings.Add("Role", "Role");
-        bulkCopy.ColumnMappings.Add("Surname", "Surname");
-        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
-        CreateSqlQueryIndexes(_dapperQueryConnection);
-
-        var validationCount = QueryDapperPersons(_dapperQueryConnection, "Student", 20).Count;
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("Dapper query benchmark setup produced no queryable records.");
-        }
-    }
-
-    [Benchmark(Description = "Dapper - 100 indexed materialized queries over 50k persons")]
-    public int Dapper_QueryBatch()
-    {
-        if (_dapperQueryConnection is null)
-        {
-            throw new InvalidOperationException("Dapper query connection not initialized.");
-        }
-
-        var total = 0;
-        for (var i = 0; i < QueryRepeatCount; i++)
-        {
-            var role = QueryRoles[i % QueryRoles.Length];
-            var minimumAge = 20 + (i % 30);
-            total += QueryDapperPersons(_dapperQueryConnection, role, minimumAge).Count;
         }
 
         return total;
