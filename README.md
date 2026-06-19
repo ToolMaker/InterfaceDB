@@ -1,427 +1,155 @@
 # InterfaceDB
 
-InterfaceDB is an interface-first object storage stack. The current baseline is a flat file-backed repository for desktop/mobile style local storage, plus a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
+InterfaceDB is an interface-first object database for .NET. It stores concrete objects behind versioned C# interfaces, keeps storage metadata in envelopes, and lets the storage engine, identity model, indexing, migrations, and encryption live below the repository API.
 
-For product positioning, tradeoffs, and current performance notes, see [Why InterfaceDB Exists](documentation/product-positioning.md). For trace-based performance investigation, see [InterfaceDB Performance Profiling](documentation/performance-profiling.md).
+The current provider is a high-capability file-backed object store. It is aimed at desktop, mobile, Unity, local-first, embedded, and application-owned data where object-native persistence matters. The roadmap also includes memory-backed storage and a single-file database storage engine so the same InterfaceDB model can compete in different performance profiles.
 
-## Positioning
+## Why It Exists
 
-InterfaceDB file storage is designed for local object persistence where the application wants interface contracts, polymorphic concrete types, version-aware envelopes, lifecycle notifications, file change awareness, optional encryption, and an in-memory envelope catalog.
+Most databases ask you to model storage as tables, documents, or key/value records. InterfaceDB starts from the application contract:
 
-The file-backed provider is not trying to behave like a relational SQL engine. It stores object envelopes as individual payloads and keeps object identity and search metadata in memory. Full object instances are not cached by default; they are read from storage unless a concrete type or specific envelope opts into object retention. That makes the current file provider strongest for desktop, mobile, embedded, and local-first application storage where object-native behavior matters more than relational joins or server-side query planning.
+```csharp
+[StorageScope(VersionTag = "1.0.0")]
+public interface IPerson : IStoredContract<IPerson>
+{
+    string Name { get; set; }
+    int Age { get; set; }
+}
+```
 
-The fairest current database comparison is the indexed read path: InterfaceDB's `SearchIndexManager<TContract>` versus SQL-backed indexed materialized queries. Raw write throughput comparisons are useful signals, but they are not pure apples-to-apples because InterfaceDB is doing envelope creation, interface/concrete type metadata, serialization, file writes, cache updates, optional index updates, and storage lifecycle behavior while SQL Server, Dapper, and EF Core are writing rows into a mature relational storage engine.
+You save and query the interface:
 
-Future SQL/document/object-store providers should make deeper apples-to-apples comparisons possible by running the same InterfaceDB repository and envelope model over different physical storage engines.
+```csharp
+await repository.SaveAsync(new Student { Name = "Jane", Age = 22 });
 
-## Solution layout
+var adults = repository.SearchManyAsync(x => x.Age >= 18);
+```
 
-- `Idb.Libraries/`
-  Core abstractions and the default file-system implementation. The library uses MessagePack envelopes, an in-memory envelope cache, and optional migration strategies.
-- `MigrationTool/`
-  CLI for creating versioned contract baselines and scaffolding migration classes between adjacent versions.
-- `IdbDemoStorage/`
-  Sample `Person` contract, concrete storage types, contract options, and a sample migration.
-- `InterfaceDb.ConsoleApp/`
-  Small console demo that writes and queries `Person` records through `IRepository<TContract>`.
-- `PerformanceCommon/`
-  Shared benchmark data generation helpers.
-- `StorageBenchmarks/`
-  Throughput comparison between the file-system repository, SQL Server, Dapper, and EF Core.
-- `StorageBenchmarks.Transactions/`
-  Transaction-oriented benchmark variant for the same `Person` sample payloads.
+InterfaceDB stores enough metadata to recover the correct concrete type later, migrate versions, apply indexes, handle file changes, and protect data through full-envelope or field-level encryption.
 
-## Build and run
+## Current Capabilities
 
-1. Install the .NET 10 SDK.
-2. Build the solution:
+- Interface-first repositories through `IRepository<TContract>`.
+- Polymorphic concrete implementations behind one contract.
+- File-backed envelope storage with flat versioned directories.
+- Envelope metadata catalog for constant-time storage-key equality lookup.
+- Single and multiple object cardinality models.
+- Configurable storage identity factories, including GUID v7 and sequential factories.
+- `SaveAsync`, `SaveManyAsync`, streaming queries, first/single query helpers, delete, and existence checks.
+- Opt-in search indexes for equality, range, and string prefix queries.
+- Concrete-type-specific query overloads.
+- Cross-process file write coordination with sidecar locks and last-write-wins proposal commits.
+- File-system watcher reconciliation for external create, update, rename, and delete events.
+- Runtime migrations with eager and lazy strategies.
+- Whole-envelope AES-GCM encryption with key rotation.
+- Field-level encryption through interface attributes and secure getter/setter proxy behavior.
+- Windows Credential Manager key store.
+- Roslyn analyzer protection against accidental storage contract renames.
+- Benchmark projects comparing InterfaceDB file storage with SQL Server, Dapper, and EF Core.
 
-```bash
+## Documentation
+
+- [Getting Started](documentation/getting-started.md)
+- [Feature Guide](documentation/features.md)
+- [Architecture](documentation/architecture.md)
+- [Security And Encryption](documentation/security.md)
+- [Storage, Indexing, And Performance](documentation/storage-indexing-performance.md)
+- [Product Positioning And Benchmarks](documentation/product-positioning.md)
+- [Performance Profiling](documentation/performance-profiling.md)
+- [Roadmap](documentation/roadmaps.md)
+
+## Install And Build
+
+InterfaceDB currently targets .NET 10.
+
+```powershell
 dotnet build InterfaceDB.sln
 ```
 
-3. Run the console demo:
+Run the integration harness:
 
-```bash
-dotnet run --project InterfaceDb.ConsoleApp/InterfaceDb.ConsoleApp.csproj
+```powershell
+dotnet run -c Release --project InterfaceDb.IntegrationTests
 ```
 
-The console app writes 500 sample `Person` records to a local `Data/` folder under its output directory, then runs a few simple existence and query checks.
+Run the console demo:
 
-4. Run the migration tool:
-
-```bash
-dotnet run --project MigrationTool/MigrationTool.csproj -- <command>
+```powershell
+dotnet run -c Release --project InterfaceDb.ConsoleApp
 ```
 
-## Storage model
-
-The storage stack is built around versioned interfaces:
-
-1. Define a contract interface, make it inherit `IStoredContract<TContract>`, and decorate it with `[StorageScope(VersionTag = "...")]`.
-2. Implement the contract in one or more concrete classes.
-3. Register the repository with `AddRepository<TContract>(...)` or `AddFileRepository<TContract>(...)`.
-4. Persist and query contracts through `IRepository<TContract>`.
-5. When the contract shape changes, generate the next baseline and implement the scaffolded migration logic.
-
-`IStoredContract<TContract>` exposes a getter-only `Envelope`. Concrete implementations should use a non-public setter such as `public IObjectEnvelope<TContract>? Envelope { get; private set; }`. The library sets and clears that property internally during wrap and unwrap operations.
-
-The file-backed implementation stores MessagePack payloads on disk under a versioned directory layout.
-
-Flat file-system layout:
-
-```text
-Data/
-  1.0.0/
-    <key>.mpk
-```
-
-This flat layout is the only active filesystem layout. Higher-throughput storage backends, such as SQL/document/object database envelope stores, are future roadmap work. `StoragePolicy` controls write concurrency, envelope hydration, notifications, sidecar write locks, and file change watching.
-
-File watching synchronizes independent repository instances for committed create, update, rename, and delete operations. Local operations acknowledge their provider locator so watcher echoes do not duplicate notifications. The watcher maintains a payload snapshot and rescans after watcher errors or buffer overflow; `IEnvelopeStorageChangeSource<T>.RescanAsync` also supports explicit reconciliation.
-
-Storage identity is factory-driven. `StorageObjectCardinality.Single` allows one object per factory-resolved path and rejects detached duplicate creation, while `Multiple` gives every new envelope-less object a unique physical key. Custom `IEnvelopeStorageIdentityFactory<TContract>` implementations can derive keys from object state without requiring a prescribed ID property.
-
-Repository registrations are keyed by `EnvelopeDICacheKey`, falling back to `ContractName`. Multiple databases can use the same contract:
+## Minimal Registration
 
 ```csharp
-services.AddRepository<IPerson>(localOptions);
-services.AddRepository<IPerson>(secureOptions);
+services.AddRepository<IPerson>(personOptions);
+
+await using var provider = services.BuildServiceProvider();
+var repository = provider.GetRequiredService<IRepository<IPerson>>();
+
+await repository.InitializeAsync();
+await repository.SaveAsync(new Student { Name = "Jane", Age = 22 });
+```
+
+Multiple databases can use the same contract with keyed registration:
+
+```csharp
+services.AddRepository<IPerson>(localOptions, "LocalPeople");
+services.AddRepository<IPerson>(secureOptions, "SecurePeople");
 
 var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
 var secure = provider.GetInterfaceDbRepository<IPerson>("SecurePeople");
 ```
 
-The registration key can also be supplied at registration time when the options object should stay shared:
+## Encryption Example
 
-```csharp
-services.AddRepository<IPerson>(personOptions, "LocalPeople");
-
-var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
-```
-
-Per-database encryption and filename factories can be registered with the same key before `AddRepository`. Unkeyed resolution remains available and points to the first registered database for backward compatibility.
-
-Repository queries support streaming and bounded cardinality:
-
-```csharp
-await foreach (var person in repository.QueryManyAsync(x => x.Role == "Student"))
-{
-}
-
-await foreach (var person in repository.SearchManyAsync(x => x.Role == "Student" && x.Age >= 20))
-{
-}
-
-await foreach (var employee in repository.SearchManyAsync<Employee>(x => x.Age >= 30))
-{
-}
-
-await foreach (var person in repository.QueryManyByStorageKeyAsync("person-john-smith"))
-{
-}
-
-var first = await repository.QueryFirstAsync(x => x.Role == "Student");
-var firstIndexed = await repository.SearchFirstAsync(x => x.Role == "Student" && x.Age >= 20);
-var firstEmployee = await repository.SearchFirstAsync<Employee>(x => x.Age >= 30);
-var firstByStorageKey = await repository.QueryFirstByStorageKeyAsync("person-john-smith");
-var exactlyOne = await repository.QuerySingleAsync(x => x.Name == "Jane");
-var optional = await repository.QuerySingleOrDefaultAsync(x => x.Name == "Jane");
-
-var deleted = await repository.DeleteAsync(exactlyOne);
-```
-
-Single-result methods accept optional exception factories for cardinality violations.
-
-The query-performance model is split by predicate type. Equality on the storage identity/logical envelope key resolves through the envelope cache in constant time, including multiple-cardinality groups. `SearchManyAsync` and `SearchFirstAsync` accept expression trees and use opt-in per-property search indexes when possible. Generic overloads such as `SearchManyAsync<Employee>(...)` narrow a contract repository to a concrete implementation type and can use implementation-level search indexes. The existing `QueryManyAsync(Func<T,bool>)` path remains a predicate scan fallback because compiled delegates cannot be inspected.
-
-The envelope cache is always the metadata catalog. Object instance caching is selective:
-
-- default behavior keeps envelope metadata only;
-- `[StorageCached]` on a concrete storage class keeps all instances of that implementation in memory after save/read;
-- `object.Envelope.CacheObjectInstance = true` persists a per-object cache preference for individual records.
-
-Use selective object caching only for object types or records that benefit from hot in-memory reuse. The default keeps file-backed reads honest and avoids turning the repository into a hidden full-object memory store.
-
-Search indexes are opt-in:
-
-```csharp
-[StorageScope(VersionTag = "1.0.0")]
-[SearchIndex]
-public interface IPerson : IStoredContract<IPerson>
-{
-    string Name { get; }
-    int Age { get; }
-
-    [NotSearchIndexed]
-    string Notes { get; }
-}
-```
-
-The first index implementation supports exact equality, comparable range operators, string `StartsWith`, `&&`, and `||`. Nested objects are traversed only when the nested property is explicitly marked with `[SearchIndex]`.
-
-`DeleteAsync` deletes the exact storage object identified by its envelope. It returns `true` when active storage was removed and `false` when the same object was already deleted. Envelope-less objects are rejected, and saving an object after its envelope was deleted throws `StorageObjectDeletedException`.
-
-Storage exceptions are provider-neutral. File, SQL, document, event-stream, and memory providers can report the same `StorageException` hierarchy while retaining provider-specific failures as inner exceptions.
-
-Optional encryption at rest is applied to the complete serialized envelope. The default `EncryptionNone` implementation keeps normal plaintext envelope files unchanged. Current plaintext writes use `IDB3`; legacy `IDB2` files remain readable. AES-GCM can be enabled before repository registration:
+Whole-envelope encryption:
 
 ```csharp
 services.AddInterfaceDbAesGcmEncryption(keyProvider);
-services.AddRepository<IMyContract>(options);
+services.AddRepository<IPerson>(personOptions);
 ```
 
-AES-GCM files use an authenticated `IDBE` outer frame containing the encrypted plaintext envelope payload.
-
-Key rotation uses `IRotatingKeyProvider`. The `IDBE` version 2 header stores a non-secret key ID so the exact historical key can be selected without trying every key. Reads can optionally re-encrypt directly to the current key:
+Field-level encryption:
 
 ```csharp
-var keyStore = new WindowsCredentialEncryptionKeyStore("People");
-keyStore.AddOrUpdateKey("key-2025", oldKey);
-keyStore.AddOrUpdateKey("key-2026", currentKey);
-keyStore.SetActiveKey("key-2026");
+[StorageScope(VersionTag = "1.0.0")]
+[EncryptedStorage("PeopleSecure")]
+public interface IPerson : IStoredContract<IPerson>
+{
+    string Name { get; set; }
 
-services.AddInterfaceDbWindowsCredentialEncryption(
-    "People",
-    new AesGcmEncryptorOptions
-    {
-        LegacyKeyId = "key-2025",
-        RotationMode = EncryptionRotationMode.ReencryptOnRead
-    });
+    [EncryptedStorageField("NationalId")]
+    string NationalIdentifier { get; set; }
+}
 ```
 
-For a forced full-store rotation, resolve `IEncryptionRotationOperation<TContract>` and call `RotateAllAsync`. Old keys should be removed only after all payloads have been rewritten.
-
-Lazy rotation is enabled in the AES registration options. This is application configuration because it changes normal repository read behavior:
-
-```csharp
-services.AddInterfaceDbWindowsCredentialEncryption(
-    "People",
-    new AesGcmEncryptorOptions
-    {
-        LegacyKeyId = "key-2025",
-        RotationMode = EncryptionRotationMode.ReencryptOnRead
-    });
-```
-
-Use `ReadHistoricalOnly` when reads should decrypt historical payloads without rewriting them.
-
-Forced rotation can also be run from the InterfaceDB maintenance CLI. The project remains named `MigrationTool` for command and script compatibility:
-
-```powershell
-dotnet run --project MigrationTool/MigrationTool.csproj -- `
-  encryption rotate `
-  --database People `
-  --data-root C:\Data\People `
-  --extension .mpk `
-  --legacy-key-id key-2025
-```
-
-The command reads the active and historical keys from Windows Credential Manager, drains pending writes, acquires the exclusive storage scope, and re-encrypts each payload directly to the active key.
-
-## Contract rename protection
-
-`Idb.Analyzers` provides Roslyn diagnostics for immutable InterfaceDB baseline identities. Roslyn analyzers run in Visual Studio, VS Code with C# tooling, Rider, `dotnet build`, and CI.
-
-The migration tool writes a `.interfacedb-baseline` manifest beside every generated contract baseline. The analyzer reports:
-
-- `IDB001`: a previously recorded contract type was removed, renamed, or moved;
-- `IDB002`: a `[StorageScope]` contract was added without a generated baseline manifest;
-- `IDB003`: an existing baseline's `VersionTag` was changed in place;
-- `IDB004`: a baseline manifest is malformed.
-
-During repository development, reference the analyzer project:
-
-```xml
-<ProjectReference Include="..\Idb.Analyzers\Idb.Analyzers.csproj"
-                  OutputItemType="Analyzer"
-                  ReferenceOutputAssembly="false" />
-<AdditionalFiles Include="Contracts\**\.interfacedb-baseline" />
-```
-
-For distributed applications, reference the `Idb.Analyzers` package with `PrivateAssets="all"`. Its build-transitive props automatically include baseline manifests:
-
-```xml
-<PackageReference Include="Idb.Analyzers" Version="1.0.0" PrivateAssets="all" />
-```
-
-The diagnostics are warnings by default and can be promoted to errors in `.editorconfig`:
-
-```ini
-dotnet_diagnostic.IDB001.severity = error
-dotnet_diagnostic.IDB002.severity = error
-dotnet_diagnostic.IDB003.severity = error
-dotnet_diagnostic.IDB004.severity = error
-```
-
-## Sample contract in this repo
-
-The sample storage project currently centers on `Person`:
-
-- Contracts live under `IdbDemoStorage/Contracts/Person/`.
-- Runtime implementations live under `IdbDemoStorage/Storage/Person/`.
-- Contract options live in `IdbDemoStorage/Options/PersonOptions.cs`.
-- Migration stubs live under `IdbDemoStorage/Migrations/Person/`.
-
-The sample includes two contract versions:
-
-- `v1_0_0` defines `Id`, `Name`, `Age`, and `Role`.
-- `v1_0_1` adds `Surname`.
-
-There is already a scaffolded migration at `IdbDemoStorage/Migrations/Person/Person_v1_0_0_To_v1_0_1_Migration.cs`. It is still sample code and should be treated as a starting point, not finished migration logic.
-
-## Migration tool workflow
-
-The `baseline` command creates or advances a contract under a contracts root such as `IdbDemoStorage/Contracts/<Contract>/vX_Y_Z/`.
-
-The command requires exactly one of:
-
-- `--contracts-dir <path>`
-- `--config-file-dir <path>`
-
-Important behavior:
-
-- `--contracts-dir` should point at the contracts root folder, not a single version folder.
-- `--config-file-dir` can point at a specific `*Options.cs` file or a directory that contains one.
-- When the tool increments an existing contract version, it also scaffolds any missing adjacent migration files automatically.
-- `migrate scaffold` can be used later to backfill missing migration files without creating a new baseline.
-- If a contract options file does not already exist, the tool scaffolds one into a sibling `Options/` folder.
-
-### Use absolute paths for CLI examples
-
-The tool normalizes user-supplied paths from its executable directory. In practice, the least surprising way to run it is to pass absolute paths.
-
-PowerShell example:
-
-```powershell
-$repo = (Resolve-Path .).Path
-$contracts = Join-Path $repo "IdbDemoStorage\Contracts"
-$storage = Join-Path $repo "IdbDemoStorage\Storage"
-$migrations = Join-Path $repo "IdbDemoStorage\Migrations"
-$personOptions = Join-Path $repo "IdbDemoStorage\Options\PersonOptions.cs"
-```
-
-### Create an initial contract baseline
-
-```powershell
-dotnet run --project MigrationTool/MigrationTool.csproj -- `
-  baseline Dog `
-  --contracts-dir $contracts `
-  --storage-dir $storage `
-  --migration-dir $migrations `
-  --impl Dog `
-  --version 1.0.0
-```
-
-This creates a new `Dog/v1_0_0/` baseline folder under the contracts root, prepares matching storage and migration folders, and scaffolds a contract options file if one does not already exist.
-
-### Increment an existing contract
-
-```powershell
-dotnet run --project MigrationTool/MigrationTool.csproj -- `
-  baseline Person `
-  --config-file-dir $personOptions `
-  --increment patch
-```
-
-If a previous baseline exists, the tool copies the latest version into the next semantic-version folder, updates the namespace and `VersionTag`, and scaffolds any missing adjacent migration classes.
-
-Runtime migration chains are strict and deterministic. For every stored version below `ActiveVersion`, exactly one forward migration must exist for each step until the active version is reached. Missing links, duplicate source migrations, malformed versions, and backward links raise migration-specific exceptions.
-
-`EagerStrict` propagates migration failures and retains legacy storage. `EagerTolerant` skips objects with invalid or failed chains without modifying their legacy payloads. `Lazy` keeps legacy envelopes unhydrated during initialization and migrates their raw payload on the first matching query.
-
-Cross-process writes and deletes use last-operation-wins ordering. A delete completed after a write removes the object. A write completed after another process deletes an object can recreate it when that writer loaded the valid envelope before deletion. Stale-write rejection belongs to the optional optimistic-concurrency capability.
-
-### Scaffold migrations without creating a new baseline
-
-```powershell
-dotnet run --project MigrationTool/MigrationTool.csproj -- `
-  migrate scaffold Person `
-  --config-file-dir $personOptions
-```
-
-This walks the known adjacent baseline versions and creates any missing migration stubs under the configured migrations root.
+Encrypted fields are stored in the envelope as ciphertext and are decrypted through the InterfaceDB contract proxy when accessed through the interface.
 
 ## Benchmarks
 
-The benchmark projects are useful for comparing the file-backed repository against database-backed inserts, but they are not zero-config:
-
-- `StorageBenchmarks/` and `StorageBenchmarks.Transactions/` expect a SQL Server connection string in their `appsettings.json` files or environment variables.
-- The transaction benchmark defaults to 25,000 persons. Set `INTERFACEDB_BENCH_PERSON_COUNT=50000` when you want to reproduce the older 50k result set.
-
-Run them with:
-
-```bash
-dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release
-dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release -- --run-all
-```
-
-Current benchmark highlights from `TestResults/results.txt`:
-
-```text
-Selective indexed reads over 50k persons, 100 queries:
-  InterfaceDB FileEnvelopeRepository + SearchIndexManager: 64.49 ms, 8.41 MB
-  SQL Server ADO.NET + SQL indexes:                       161.59 ms, 10.63 MB
-  Dapper SQL Server + SQL indexes:                        164.82 ms, 13.84 MB
-  Entity Framework Core + SQL indexes:                    184.85 ms, 29.10 MB
-
-Object transaction writes, 50k persons:
-  InterfaceDB FileEnvelopeRepository + PassthroughIndexManager: 5,240.45 ms, 230.43 MB
-  InterfaceDB FileEnvelopeRepository + SearchIndexManager:      5,533.27 ms, 325.46 MB
-  SQL Server ADO.NET transaction:                              3,796.24 ms, 159.84 MB
-  Dapper SQL Server transaction:                               3,980.96 ms, 404.74 MB
-  Entity Framework Core transaction:                           1,682.89 ms, 355.90 MB
-```
-
-The selective indexed read result is the strongest current apples-to-apples signal because both sides are using an index to narrow the candidate set before materializing results. The write results are still valuable, but they compare different physical storage models: InterfaceDB writes versioned object envelopes to files while the SQL stacks write rows into SQL Server.
-
-Run just the InterfaceDB transaction benchmark with:
+The transaction benchmark defaults to 25,000 persons. For the older 50,000-person full run:
 
 ```powershell
-$env:INTERFACEDB_BENCH_MAX_CONCURRENCY = "16"
-$env:INTERFACEDB_BENCH_BULK_BATCH_SIZE = "16384"
-$env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER = "true"
-$env:INTERFACEDB_BENCH_PERSON_COUNT = "25000"
+$env:INTERFACEDB_BENCH_PERSON_COUNT="50000"
+$env:INTERFACEDB_BENCH_MAX_CONCURRENCY="16"
+$env:INTERFACEDB_BENCH_BULK_BATCH_SIZE="16384"
+$env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER="true"
 
-dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem_StoreTransaction*
+dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --run-all
 ```
 
-Run a direct profiling workload for `dotnet-trace`:
+The current file provider is not the final performance ceiling. It is one storage pattern. InterfaceDB has already shown strong indexed-read potential while doing more storage-model work than a scalar row benchmark: envelopes, concrete type metadata, migrations, encryption hooks, file coordination, and object materialization. Future memory-backed and single-file storage engines are intended to push the same repository model into higher-throughput profiles.
 
-```powershell
-dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store
-dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-indexed-store
-dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-selective-indexed-query
-```
+## Current Storage Format
 
-The benchmark project includes both the existing predicate-scan query and the indexed search query:
+Plain envelope files use internal `IDB*` headers:
 
-```powershell
-dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*QueryBatch*
-```
+- `IDB2`: older binary envelope format.
+- `IDB3`: added per-object cache preference.
+- `IDB4`: current format, adds encrypted field metadata.
 
-## Tests
+AES-GCM encrypted files use an outer `IDBE` frame. Existing `IDB2` and `IDB3` payloads remain readable.
 
-The solution has a dedicated MSTest project plus a console integration harness:
+## Project Status
 
-```powershell
-dotnet test InterfaceDB.sln
-dotnet run --project InterfaceDb.IntegrationTests/InterfaceDb.IntegrationTests.csproj
-```
-
-The integration harness covers:
-
-- single and bulk save behavior, including partial failures;
-- delete semantics and stale-object protection;
-- sidecar write locking and process interruption recovery;
-- keyed DI isolation and registration behavior;
-- storage identity factories and cardinality;
-- file watcher synchronization and rescan recovery;
-- eager and lazy migration chains;
-- encryption, historical key reads, lazy key rotation, forced rotation, and encrypted migration.
-
-## Current state
-
-- The solution builds cleanly with `dotnet build InterfaceDB.sln`.
-- `InterfaceDb.Tests` wraps the integration harness so `dotnet test` exercises the current product scenarios.
-- Some sample namespaces still use the `MigrationTool.Contracts.*` naming pattern even when the files live under `IdbDemoStorage/`. Follow the actual project paths when navigating the repo.
+This is an active product/library project. The current file-backed implementation is usable for local object storage scenarios, and the roadmap is focused on polish, documentation, storage-engine extensibility, indexing depth, security providers, and performance profiling.

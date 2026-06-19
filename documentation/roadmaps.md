@@ -8,12 +8,16 @@ This document separates known roadmap work from smaller correctness or repositor
 
 The current file-system implementation is a simple local object database baseline. Future enterprise storage should move the envelope persistence boundary behind provider implementations such as:
 
+- memory-backed storage for very fast in-process or embedded workloads;
+- single-file database storage with page/object pointers and a central catalog;
 - SQL-backed envelope storage;
 - document database envelope storage;
 - object database storage;
 - distributed cache or queue-backed write coordination where appropriate.
 
 The application-facing contract should remain `IRepository<TContract>` and envelope-aware storage contracts. Storage backends should plug in below that boundary.
+
+The memory-backed and single-file engines are important because the current file provider is one storage pattern, not InterfaceDB's performance ceiling. A memory provider can optimize hot object access directly. A single-file provider can use page/object pointers, skip reads for cached objects, reduce file metadata overhead, and compete with traditional database storage layouts while preserving InterfaceDB's interface/envelope model.
 
 ### Git-Backed Data Versioning
 
@@ -116,31 +120,21 @@ Windows Credential Manager is the first implemented `IEncryptionKeyStore`. Futur
 - hardware security modules;
 - development-only environment or configuration stores.
 
-### Field-Level Encryption
+### Encryption Profiles And Secure Unlock Providers
 
-Current encryption protects the complete serialized envelope payload. Future work can add property-level encryption for contracts that need selected fields encrypted independently before full payload serialization.
+Field-level encryption is implemented, but profile resolution is still basic. The next security design step is a profile system where `[EncryptedStorage("Profile")]` and `[EncryptedStorageField("Profile")]` point to named security configuration instead of directly implying one global encryptor.
 
-One possible developer experience:
+Future profile capabilities:
 
-```csharp
-public interface IPerson : IStoredContract<IPerson>
-{
-    string Name { get; }
+- profile-to-key-store resolution;
+- different key stores per object or field;
+- passphrase-based unlock;
+- app-mediated approval or two-step unlock flows;
+- cloud key vault and mobile keychain providers;
+- envelope integrity signatures for plaintext or mixed-mode stores;
+- device/user-bound save or document files.
 
-    [EncryptedStorageField]
-    string NationalIdentifier { get; }
-}
-```
-
-Suggested flow:
-
-1. During write, inspect the contract/implementation metadata for encrypted fields.
-2. Encrypt only those values before the object payload is serialized.
-3. Store enough non-secret field encryption metadata to choose the correct key on read.
-4. During read, decrypt the field once while materializing the object.
-5. Keep the decrypted value in memory on the materialized object, so property access does not decrypt repeatedly.
-
-The implementation should avoid mutating user objects unexpectedly. A safer design may require serializer-level hooks, generated storage proxies, or envelope-side encrypted field templates rather than reflection that changes live object state. This should be designed carefully after the indexing and batch-write layers are stable.
+Attributes must not contain raw keys. They should contain stable profile names only.
 
 ### Adaptive Storage Policy Resolution
 
@@ -245,3 +239,7 @@ The broad `IdbDemoStorage/*` ignore rule was removed so required demo storage so
 ### Registration-Level Storage Policy
 
 Repository registration now accepts an optional `StoragePolicy` override. The effective policy is registered in DI per database and low-level storage services consume that resolved policy instead of repeatedly reading the contract config.
+
+### Field-Level Encryption
+
+Interface-level `[EncryptedStorage]` and property-level `[EncryptedStorageField]` are implemented. Marked properties are encrypted into `Envelope.EncryptedFields`, concrete backing properties are cleared after save, and loaded objects are returned through an interface dispatch proxy that decrypts marked getters on demand.
