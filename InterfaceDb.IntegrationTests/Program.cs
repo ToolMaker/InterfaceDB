@@ -13,6 +13,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstraction.Services.Migrations;
 using Idb.Libraries.Implementation.Encryption;
 using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Indexes;
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
 using System.Numerics;
@@ -51,6 +52,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("multiple cardinality creates distinct physical objects", MultipleCardinalityCreatesDistinctObjectsAsync),
     ("multiple cardinality allocates incremented cache keys", MultipleCardinalityAllocatesIncrementedCacheKeysAsync),
     ("repository storage-key equality queries use envelope groups", RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync),
+    ("repository index manager selection follows contract search metadata", RepositoryIndexManagerSelectionFollowsContractMetadataAsync),
     ("repository search indexes support exact range prefix and maintenance", RepositorySearchIndexesSupportQueriesAsync),
     ("repository query cardinality methods enforce result bounds", RepositoryQueryCardinalityMethodsAsync),
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
@@ -395,6 +397,37 @@ static async Task RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync()
     finally
     {
         TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositoryIndexManagerSelectionFollowsContractMetadataAsync()
+{
+    var plainRoot = CreateTestRoot();
+    var indexedRoot = CreateTestRoot();
+    try
+    {
+        await using (var plainProvider = BuildProvider(plainRoot))
+        {
+            var manager = plainProvider.GetRequiredService<IIndexManager<ILockTestRecord>>();
+            Assert(
+                manager is PassthroughIndexManager<ILockTestRecord>,
+                $"Non-indexed contracts should use {nameof(PassthroughIndexManager<ILockTestRecord>)}.");
+        }
+
+        var services = new ServiceCollection();
+        services.AddRepository<IIndexedTestRecord>(new IndexedTestOptions(indexedRoot));
+        await using (var indexedProvider = services.BuildServiceProvider())
+        {
+            var manager = indexedProvider.GetRequiredService<IIndexManager<IIndexedTestRecord>>();
+            Assert(
+                manager is SearchIndexManager<IIndexedTestRecord>,
+                $"Indexed contracts should use {nameof(SearchIndexManager<IIndexedTestRecord>)}.");
+        }
+    }
+    finally
+    {
+        TryDeleteDirectory(plainRoot);
+        TryDeleteDirectory(indexedRoot);
     }
 }
 

@@ -10,15 +10,20 @@ internal sealed class SearchIndexStore<TContract>
 {
     private readonly IReadOnlyList<SearchIndexDefinition> _definitions;
     private readonly Dictionary<string, PropertySearchIndex> _indexes;
-    private readonly Dictionary<string, Dictionary<string, object?>> _valuesByPhysicalKey = new(StringComparer.Ordinal);
+    private readonly PropertySearchIndex[] _indexesByDefinition;
+    private readonly Dictionary<string, object?[]> _valuesByPhysicalKey = new(StringComparer.Ordinal);
 
     public SearchIndexStore()
     {
         _definitions = SearchIndexDiscovery.Discover(typeof(TContract));
-        _indexes = _definitions.ToDictionary(
-            static definition => definition.Path,
-            static definition => new PropertySearchIndex(definition),
-            StringComparer.Ordinal);
+        _indexesByDefinition = new PropertySearchIndex[_definitions.Count];
+        _indexes = new Dictionary<string, PropertySearchIndex>(_definitions.Count, StringComparer.Ordinal);
+        for (var index = 0; index < _definitions.Count; index++)
+        {
+            var propertyIndex = new PropertySearchIndex(_definitions[index]);
+            _indexesByDefinition[index] = propertyIndex;
+            _indexes[_definitions[index].Path] = propertyIndex;
+        }
     }
 
     public bool HasIndexes => _indexes.Count > 0;
@@ -40,14 +45,15 @@ internal sealed class SearchIndexStore<TContract>
         }
 
         Remove(physicalKey);
-        var values = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var definition in _definitions)
+        var values = new object?[_definitions.Count];
+        for (var index = 0; index < _definitions.Count; index++)
         {
+            var definition = _definitions[index];
             var value = NormalizeValue(definition.Getter(entity));
-            values[definition.Path] = value;
-            if (value is not null && _indexes.TryGetValue(definition.Path, out var index))
+            values[index] = value;
+            if (value is not null)
             {
-                index.Add(value, physicalKey);
+                _indexesByDefinition[index].Add(value, physicalKey);
             }
         }
 
@@ -61,11 +67,12 @@ internal sealed class SearchIndexStore<TContract>
             return;
         }
 
-        foreach (var item in values)
+        for (var index = 0; index < values.Length && index < _definitions.Count; index++)
         {
-            if (item.Value is not null && _indexes.TryGetValue(item.Key, out var index))
+            var value = values[index];
+            if (value is not null)
             {
-                index.Remove(item.Value, physicalKey);
+                _indexesByDefinition[index].Remove(value, physicalKey);
             }
         }
 

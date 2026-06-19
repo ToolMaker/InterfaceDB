@@ -1,8 +1,18 @@
 # InterfaceDB
 
-InterfaceDB is a sandbox for an interface-first object storage stack. The current baseline is a simple flat file-backed repository for desktop/mobile style local storage, plus a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
+InterfaceDB is an interface-first object storage stack. The current baseline is a flat file-backed repository for desktop/mobile style local storage, plus a contract baseline and migration scaffolding CLI, a sample storage project, and performance benchmarks.
 
 For product positioning, tradeoffs, and current performance notes, see [Why InterfaceDB Exists](documentation/product-positioning.md).
+
+## Positioning
+
+InterfaceDB file storage is designed for local object persistence where the application wants interface contracts, polymorphic concrete types, version-aware envelopes, lifecycle notifications, file change awareness, optional encryption, and an in-memory envelope catalog.
+
+The file-backed provider is not trying to behave like a relational SQL engine. It stores object envelopes as individual payloads and keeps object identity and search metadata in memory. That makes the current file provider strongest for desktop, mobile, embedded, and local-first application storage where object-native behavior matters more than relational joins or server-side query planning.
+
+The fairest current database comparison is the indexed read path: InterfaceDB's `SearchIndexManager<TContract>` versus SQL-backed indexed materialized queries. Raw write throughput comparisons are useful signals, but they are not pure apples-to-apples because InterfaceDB is doing envelope creation, interface/concrete type metadata, serialization, file writes, cache updates, optional index updates, and storage lifecycle behavior while SQL Server, Dapper, and EF Core are writing rows into a mature relational storage engine.
+
+Future SQL/document/object-store providers should make deeper apples-to-apples comparisons possible by running the same InterfaceDB repository and envelope model over different physical storage engines.
 
 ## Solution layout
 
@@ -333,16 +343,24 @@ dotnet run --project StorageBenchmarks/StorageBenchmarks.csproj -c Release
 dotnet run --project StorageBenchmarks.Transactions/StorageBenchmarks.Transactions.csproj -c Release
 ```
 
-The current best measured InterfaceDB store-only benchmark for 50k `Person` objects is:
+Current benchmark highlights from `TestResults/results.txt`:
 
 ```text
-Mean: 5.261 s
-Allocated: 160.82 MB
-Settings:
-  INTERFACEDB_BENCH_MAX_CONCURRENCY=16
-  INTERFACEDB_BENCH_BULK_BATCH_SIZE=16384
-  INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER=true
+Selective indexed reads over 50k persons, 100 queries:
+  InterfaceDB FileEnvelopeRepository + SearchIndexManager: 64.49 ms, 8.41 MB
+  SQL Server ADO.NET + SQL indexes:                       161.59 ms, 10.63 MB
+  Dapper SQL Server + SQL indexes:                        164.82 ms, 13.84 MB
+  Entity Framework Core + SQL indexes:                    184.85 ms, 29.10 MB
+
+Object transaction writes, 50k persons:
+  InterfaceDB FileEnvelopeRepository + PassthroughIndexManager: 5,240.45 ms, 230.43 MB
+  InterfaceDB FileEnvelopeRepository + SearchIndexManager:      5,533.27 ms, 325.46 MB
+  SQL Server ADO.NET transaction:                              3,796.24 ms, 159.84 MB
+  Dapper SQL Server transaction:                               3,980.96 ms, 404.74 MB
+  Entity Framework Core transaction:                           1,682.89 ms, 355.90 MB
 ```
+
+The selective indexed read result is the strongest current apples-to-apples signal because both sides are using an index to narrow the candidate set before materializing results. The write results are still valuable, but they compare different physical storage models: InterfaceDB writes versioned object envelopes to files while the SQL stacks write rows into SQL Server.
 
 Run just the InterfaceDB transaction benchmark with:
 

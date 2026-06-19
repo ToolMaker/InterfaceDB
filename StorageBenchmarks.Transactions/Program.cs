@@ -16,6 +16,7 @@ using Idb.Libraries.Implementation.Serialization;
 using IdbDemoStorage.Options;
 using MessagePack;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using PerformanceCommon;
@@ -80,6 +81,9 @@ public class TransactionBenchmarks : IDisposable
     private SqlConnection? _dapperConnection;
     private SqlConnection? _dapperIndexedConnection;
     private SqlConnection? _dapperQueryConnection;
+    private DbContextOptions<TransactionBenchDbContext>? _efOptions;
+    private DbContextOptions<TransactionBenchDbContext>? _efIndexedOptions;
+    private DbContextOptions<TransactionBenchDbContext>? _efQueryOptions;
     private List<ContractPerson.IPerson>? _iterationPersons;
     private List<IIndexedBenchmarkPerson>? _iterationIndexedPersons;
     private IRepository<ContractPerson.IPerson>? _queryRepository;
@@ -133,7 +137,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
     }
 
-    [Benchmark(Description = "Interface DB (transaction baseline) - store 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - store 50k persons")]
     public async Task FileSystem_StoreTransaction()
     {
         if (_fileProvider is null)
@@ -182,7 +186,7 @@ public class TransactionBenchmarks : IDisposable
         _iterationIndexedPersons = CloneIndexedPersons(_seedIndexedPersons);
     }
 
-    [Benchmark(Description = "Interface DB (indexed transaction) - store 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - store 50k persons")]
     public async Task FileSystem_IndexedStoreTransaction()
     {
         if (_indexedFileProvider is null)
@@ -401,6 +405,82 @@ public class TransactionBenchmarks : IDisposable
         transaction.Commit();
     }
 
+    [GlobalSetup(Target = nameof(EfCore_StoreTransaction))]
+    public void SetupEfCore()
+    {
+        _efOptions = CreateEfOptions();
+        using var connection = CreateOpenConnection();
+        EnsureSqlSchema(connection);
+    }
+
+    [IterationSetup(Target = nameof(EfCore_StoreTransaction))]
+    public void PrepareEfCoreIteration()
+    {
+        using var connection = CreateOpenConnection();
+        EnsureSqlSchema(connection);
+        _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+    }
+
+    [Benchmark(Description = "Entity Framework Core SQL Server - store 50k persons")]
+    public void EfCore_StoreTransaction()
+    {
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        using var context = new TransactionBenchDbContext(_efOptions ?? throw new InvalidOperationException("EF Core options not initialized."));
+        context.ChangeTracker.AutoDetectChangesEnabled = false;
+        using var transaction = context.Database.BeginTransaction();
+        context.Persons.AddRange(persons.Select(static person => new TransactionPersonEntity
+        {
+            Id = person.Id,
+            Name = person.Name,
+            Age = person.Age,
+            Role = person.Role,
+            Surname = string.Empty
+        }));
+        context.SaveChanges();
+        transaction.Commit();
+    }
+
+    [GlobalSetup(Target = nameof(EfCore_IndexedStoreTransaction))]
+    public void SetupIndexedEfCore()
+    {
+        _efIndexedOptions = CreateEfOptions();
+        using var connection = CreateOpenConnection();
+        EnsureSqlSchema(connection);
+        CreateSqlQueryIndexes(connection);
+    }
+
+    [IterationSetup(Target = nameof(EfCore_IndexedStoreTransaction))]
+    public void PrepareIndexedEfCoreIteration()
+    {
+        using var connection = CreateOpenConnection();
+        EnsureSqlSchema(connection);
+        CreateSqlQueryIndexes(connection);
+        _iterationPersons = PersonDataFactory.ClonePersons(_seedPersons);
+    }
+
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - store 50k persons")]
+    public void EfCore_IndexedStoreTransaction()
+    {
+        var persons = _iterationPersons ?? throw new InvalidOperationException("Benchmark iteration has not been prepared.");
+        _iterationPersons = null;
+
+        using var context = new TransactionBenchDbContext(_efIndexedOptions ?? throw new InvalidOperationException("Indexed EF Core options not initialized."));
+        context.ChangeTracker.AutoDetectChangesEnabled = false;
+        using var transaction = context.Database.BeginTransaction();
+        context.Persons.AddRange(persons.Select(static person => new TransactionPersonEntity
+        {
+            Id = person.Id,
+            Name = person.Name,
+            Age = person.Age,
+            Role = person.Role,
+            Surname = string.Empty
+        }));
+        context.SaveChanges();
+        transaction.Commit();
+    }
+
     [GlobalSetup(Target = nameof(SqlServer_BulkCopy))]
     public void SetupSqlBulkCopy()
     {
@@ -541,7 +621,37 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
-    [Benchmark(Description = "Interface DB - 100 predicate scans over 50k persons")]
+    [GlobalSetup(Targets = new[] { nameof(EfCore_QueryBatch), nameof(EfCore_SelectiveQueryBatch) })]
+    public void SetupEfCoreQuery()
+    {
+        _efQueryOptions = CreateEfOptions();
+        using var connection = CreateOpenConnection();
+        EnsureSqlSchema(connection);
+        using var bulkCopy = new SqlBulkCopy(
+            connection,
+            SqlBulkCopyOptions.TableLock,
+            externalTransaction: null)
+        {
+            DestinationTableName = "dbo.Persons",
+            BatchSize = 5_000,
+            BulkCopyTimeout = 0
+        };
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("Name", "Name");
+        bulkCopy.ColumnMappings.Add("Age", "Age");
+        bulkCopy.ColumnMappings.Add("Role", "Role");
+        bulkCopy.ColumnMappings.Add("Surname", "Surname");
+        bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
+        CreateSqlQueryIndexes(connection);
+
+        var validationCount = QueryEfCorePersons(_efQueryOptions, "Student", 20).Count;
+        if (validationCount <= 0)
+        {
+            throw new InvalidOperationException("EF Core query benchmark setup produced no queryable records.");
+        }
+    }
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - 100 predicate scans over 50k persons")]
     public async Task<int> FileSystem_QueryBatch()
     {
         var repository = _queryRepository ?? throw new InvalidOperationException("File-system query repository not initialized.");
@@ -560,7 +670,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "SQL Server - 100 indexed materialized queries over 50k persons")]
+    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 materialized queries over 50k persons")]
     public int SqlServer_QueryBatch()
     {
         if (_sqlQueryConnection is null)
@@ -579,7 +689,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Dapper - 100 indexed materialized queries over 50k persons")]
+    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 materialized queries over 50k persons")]
     public int Dapper_QueryBatch()
     {
         if (_dapperQueryConnection is null)
@@ -598,7 +708,22 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Interface DB - 100 indexed searches over 50k persons")]
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 materialized queries over 50k persons")]
+    public int EfCore_QueryBatch()
+    {
+        var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            total += QueryEfCorePersons(options, role, minimumAge).Count;
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 indexed searches over 50k persons")]
     public async Task<int> FileSystem_SearchIndexQueryBatch()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
@@ -617,7 +742,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Interface DB - 100 selective indexed searches over 50k persons")]
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 selective indexed searches over 50k persons")]
     public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
@@ -646,7 +771,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "SQL Server - 100 selective indexed materialized queries over 50k persons")]
+    [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 selective materialized queries over 50k persons")]
     public int SqlServer_SelectiveQueryBatch()
     {
         if (_sqlQueryConnection is null)
@@ -672,7 +797,7 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "Dapper - 100 selective indexed materialized queries over 50k persons")]
+    [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 selective materialized queries over 50k persons")]
     public int Dapper_SelectiveQueryBatch()
     {
         if (_dapperQueryConnection is null)
@@ -692,6 +817,28 @@ public class TransactionBenchmarks : IDisposable
             {
                 var role = QueryRoles[i % QueryRoles.Length];
                 total += QueryDapperPersons(_dapperQueryConnection, role, 58).Count;
+            }
+        }
+
+        return total;
+    }
+
+    [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 selective materialized queries over 50k persons")]
+    public int EfCore_SelectiveQueryBatch()
+    {
+        var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");
+        var total = 0;
+        for (var i = 0; i < QueryRepeatCount; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                var id = _seedPersons[i % _seedPersons.Count].Id;
+                total += QueryEfCorePersonById(options, id).Count;
+            }
+            else
+            {
+                var role = QueryRoles[i % QueryRoles.Length];
+                total += QueryEfCorePersons(options, role, 58).Count;
             }
         }
 
@@ -901,6 +1048,16 @@ public class TransactionBenchmarks : IDisposable
         return connection;
     }
 
+    private static DbContextOptions<TransactionBenchDbContext> CreateEfOptions()
+    {
+        var builder = new DbContextOptionsBuilder<TransactionBenchDbContext>();
+        builder.UseSqlServer(ResolveSqlConnectionString(), sql =>
+        {
+            sql.CommandTimeout(300);
+        });
+        return builder.Options;
+    }
+
     private static void EnsureSqlSchema(SqlConnection connection)
     {
         if (connection is null)
@@ -1051,6 +1208,29 @@ public class TransactionBenchmarks : IDisposable
             .AsList();
     }
 
+    private static List<TransactionPersonEntity> QueryEfCorePersons(
+        DbContextOptions<TransactionBenchDbContext> options,
+        string role,
+        int minimumAge)
+    {
+        using var context = new TransactionBenchDbContext(options);
+        return context.Persons
+            .AsNoTracking()
+            .Where(person => person.Role == role && person.Age >= minimumAge)
+            .ToList();
+    }
+
+    private static List<TransactionPersonEntity> QueryEfCorePersonById(
+        DbContextOptions<TransactionBenchDbContext> options,
+        Guid id)
+    {
+        using var context = new TransactionBenchDbContext(options);
+        return context.Persons
+            .AsNoTracking()
+            .Where(person => person.Id == id)
+            .ToList();
+    }
+
     private static DataTable CreatePersonDataTable(IEnumerable<ContractPerson.IPerson> persons)
     {
         var table = new DataTable();
@@ -1168,4 +1348,38 @@ public sealed class IndexedBenchmarkPersonOptions : IDbContractConfigDto<IIndexe
     public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; set; } =
         StoragePolicy.Default with { MaxConcurrency = Environment.ProcessorCount };
+}
+
+public sealed class TransactionBenchDbContext : DbContext
+{
+    public TransactionBenchDbContext(DbContextOptions<TransactionBenchDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<TransactionPersonEntity> Persons => Set<TransactionPersonEntity>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<TransactionPersonEntity>();
+        entity.ToTable("Persons", schema: "dbo");
+        entity.HasKey(person => person.Id);
+        entity.Property(person => person.Name).HasMaxLength(200).IsRequired();
+        entity.Property(person => person.Age).IsRequired();
+        entity.Property(person => person.Role).HasMaxLength(100).IsRequired();
+        entity.Property(person => person.Surname).HasMaxLength(100);
+    }
+}
+
+public sealed class TransactionPersonEntity
+{
+    public Guid Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public int Age { get; set; }
+
+    public string Role { get; set; } = string.Empty;
+
+    public string? Surname { get; set; }
 }
