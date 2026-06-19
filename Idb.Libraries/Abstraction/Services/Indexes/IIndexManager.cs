@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Idb.Libraries.Abstractions.Dtos;
@@ -56,6 +57,11 @@ public interface IIndexManager<TContract>
     /// Implementations unwrap the envelope, restore the contract's envelope reference, and should clear <c>Envelope.ObjectInstance</c> before returning to prevent retain cycles.
     /// </summary>
     IAsyncEnumerable<TContract> QueryAsync(Func<TContract, bool> predicate, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves entities matching an inspectable expression, using search indexes when possible.
+    /// </summary>
+    IAsyncEnumerable<TContract> SearchAsync(Expression<Func<TContract, bool>> predicate, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retrieves contracts by logical storage identity through the envelope cache.

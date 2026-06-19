@@ -336,23 +336,32 @@ If hydration is disabled, envelopes can remain lightweight until query/read time
 
 ## Query And Index Routing
 
-The current runtime query path is still pass-through unless a caller uses APIs that can already resolve a storage identity directly. A structured query planner is planned so repository queries can choose the right lookup path instead of treating every predicate as an in-memory scan.
+The delegate query path is still pass-through because a compiled `Func<TContract, bool>` cannot be inspected. Indexed queries use expression-based search APIs such as `SearchManyAsync` and `SearchFirstAsync`.
 
-The first planned indexed path is a single range condition over one field:
+Search indexes are opt-in with `[SearchIndex]` and `[NotSearchIndexed]`. No attribute means no automatic indexing. A type-level `[SearchIndex]` indexes eligible scalar root members, and member-level attributes override the inherited default. Nested objects are traversed only when the nested property is explicitly marked with `[SearchIndex]`.
+
+Each indexed property path owns a property index container. That container can hold more than one internal index:
+
+- exact index for `==`;
+- range index for `>`, `>=`, `<`, and `<=`;
+- prefix index for string `StartsWith`.
+
+For example:
 
 ```csharp
 person => person.Age >= 18 && person.Age <= 30
 ```
 
-That should route to the B-tree-style index registered for `Age`. Each indexed field owns its own sorted index. The index returns matching logical envelope keys, then the repository resolves those keys through the envelope cache and flattens any multiple-cardinality groups.
+routes to the range index registered for `Age`. The index returns physical envelope keys, and the repository materializes those exact envelopes. This avoids returning an entire multiple-cardinality logical group when only one physical object matched an indexed property.
 
 Equality and range should use different mechanisms:
 
 - `Name == "John Smith"` on the storage identity key: envelope cache.
-- `Age >= 18`: `Age` field index.
-- `CreatedAt < cutoff`: `CreatedAt` field index.
+- `Age >= 18`: `Age` range index.
+- `Phone.StartsWith("+27")`: `Phone` prefix index.
+- `Role == "Student"`: `Role` exact index.
 
-Multiple range conditions are a separate design step. The first implementation should solve one indexed range field cleanly before adding intersection, ordering, or planner-cost rules.
+The first query planner supports `==`, range comparisons, `StartsWith`, `&&`, and `||`. `AND` nodes intersect index result sets and `OR` nodes union them. Unsupported expressions fall back to the existing predicate scan.
 
 ## Write Path
 

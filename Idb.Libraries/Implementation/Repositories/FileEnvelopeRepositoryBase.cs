@@ -383,6 +383,20 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         }
     }
 
+    public async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
+        string physicalStorageKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(physicalStorageKey))
+        {
+            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(physicalStorageKey));
+        }
+
+        return _envelopes.TryGetValue(physicalStorageKey, out var envelope)
+            ? await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false)
+            : null;
+    }
+
     public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {

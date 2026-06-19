@@ -99,11 +99,16 @@ await foreach (var person in repository.QueryManyAsync(x => x.Role == "Student")
 {
 }
 
+await foreach (var person in repository.SearchManyAsync(x => x.Role == "Student" && x.Age >= 20))
+{
+}
+
 await foreach (var person in repository.QueryManyByStorageKeyAsync("person-john-smith"))
 {
 }
 
 var first = await repository.QueryFirstAsync(x => x.Role == "Student");
+var firstIndexed = await repository.SearchFirstAsync(x => x.Role == "Student" && x.Age >= 20);
 var firstByStorageKey = await repository.QueryFirstByStorageKeyAsync("person-john-smith");
 var exactlyOne = await repository.QuerySingleAsync(x => x.Name == "Jane");
 var optional = await repository.QuerySingleOrDefaultAsync(x => x.Name == "Jane");
@@ -113,7 +118,24 @@ var deleted = await repository.DeleteAsync(exactlyOne);
 
 Single-result methods accept optional exception factories for cardinality violations.
 
-The intended query-performance model is split by predicate type. Equality on the storage identity/logical envelope key should resolve through the envelope cache in constant time, including multiple-cardinality groups. Range predicates such as `Age >= 18` should route through a per-field B-tree-style index once secondary indexing is implemented. The envelope cache is not intended to handle range queries.
+The query-performance model is split by predicate type. Equality on the storage identity/logical envelope key resolves through the envelope cache in constant time, including multiple-cardinality groups. `SearchManyAsync` and `SearchFirstAsync` accept expression trees and use opt-in per-property search indexes when possible. The existing `QueryManyAsync(Func<T,bool>)` path remains a predicate scan fallback because compiled delegates cannot be inspected.
+
+Search indexes are opt-in:
+
+```csharp
+[StorageScope(VersionTag = "1.0.0")]
+[SearchIndex]
+public interface IPerson : IStoredContract<IPerson>
+{
+    string Name { get; }
+    int Age { get; }
+
+    [NotSearchIndexed]
+    string Notes { get; }
+}
+```
+
+The first index implementation supports exact equality, comparable range operators, string `StartsWith`, `&&`, and `||`. Nested objects are traversed only when the nested property is explicitly marked with `[SearchIndex]`.
 
 `DeleteAsync` deletes the exact storage object identified by its envelope. It returns `true` when active storage was removed and `false` when the same object was already deleted. Envelope-less objects are rejected, and saving an object after its envelope was deleted throws `StorageObjectDeletedException`.
 
@@ -332,7 +354,11 @@ $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER = "true"
 dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem_StoreTransaction*
 ```
 
-The query benchmark is intentionally still a predicate scan over the envelope cache. Secondary indexing is the next major performance feature. The first indexed target is a single range predicate over one registered field, backed by a B-tree-style sorted index.
+The benchmark project includes both the existing predicate-scan query and the indexed search query:
+
+```powershell
+dotnet run -c Release --project StorageBenchmarks.Transactions -- --filter *FileSystem*QueryBatch*
+```
 
 ## Tests
 

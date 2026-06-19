@@ -2,7 +2,7 @@
 <html lang='en'>
 <head>
 <meta charset='utf-8' />
-<title>TransactionBenchmarks-20260618-100008</title>
+<title>TransactionBenchmarks-20260618-214143</title>
 
 <style type="text/css">
 	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
@@ -17,15 +17,28 @@ BenchmarkDotNet v0.15.8, Windows 10 (10.0.19045.7417/22H2/2022Update)
 AMD Ryzen 9 3950X 3.49GHz, 1 CPU, 32 logical and 16 physical cores
 .NET SDK 10.0.301
   [Host]     : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+  DefaultJob : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
   Job-CNUJVU : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
 </code></pre>
-<pre><code>InvocationCount=1  UnrollFactor=1  
-</code></pre>
+<pre><code></code></pre>
 
 <table>
-<thead><tr><th>Method                                             </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Allocated</th>
+<thead><tr><th>Method                                                              </th><th>Job </th><th>InvocationCount</th><th>UnrollFactor</th><th>Mean </th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
 </tr>
-</thead><tbody><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>5.461 s</td><td>0.1061 s</td><td>0.1487 s</td><td>4000.0000</td><td>1000.0000</td><td>164.32 MB</td>
+</thead><tbody><tr><td>&#39;Interface DB - 100 predicate scans over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>1,069.74 ms</td><td>15.977 ms</td><td>14.945 ms</td><td>-</td><td>-</td><td>-</td><td>38.2 MB</td>
+</tr><tr><td>&#39;Interface DB - 100 indexed searches over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>841.55 ms</td><td>14.988 ms</td><td>13.287 ms</td><td>1000.0000</td><td>-</td><td>-</td><td>82.26 MB</td>
+</tr><tr><td>&#39;Interface DB - 100 selective indexed searches over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>63.19 ms</td><td>1.167 ms</td><td>1.433 ms</td><td>1000.0000</td><td>428.5714</td><td>-</td><td>8.41 MB</td>
+</tr><tr><td>&#39;SQL Server - 100 indexed materialized queries over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>912.15 ms</td><td>11.702 ms</td><td>10.946 ms</td><td>4000.0000</td><td>3000.0000</td><td>2000.0000</td><td>265.33 MB</td>
+</tr><tr><td>&#39;SQL Server - 100 selective indexed materialized queries over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>163.48 ms</td><td>2.017 ms</td><td>1.887 ms</td><td>1250.0000</td><td>250.0000</td><td>-</td><td>10.78 MB</td>
+</tr><tr><td>&#39;Dapper - 100 indexed materialized queries over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>1,016.84 ms</td><td>19.263 ms</td><td>18.019 ms</td><td>4000.0000</td><td>3000.0000</td><td>2000.0000</td><td>349.28 MB</td>
+</tr><tr><td>&#39;Dapper - 100 selective indexed materialized queries over 50k persons&#39;</td><td>DefaultJob</td><td>Default</td><td>16</td><td>161.03 ms</td><td>1.180 ms</td><td>1.104 ms</td><td>1750.0000</td><td>500.0000</td><td>-</td><td>14.14 MB</td>
+</tr><tr><td>&#39;Interface DB (transaction baseline) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>5,491.32 ms</td><td>107.020 ms</td><td>184.605 ms</td><td>4000.0000</td><td>-</td><td>-</td><td>227.36 MB</td>
+</tr><tr><td>&#39;Interface DB (indexed transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>5,812.01 ms</td><td>116.152 ms</td><td>180.835 ms</td><td>7000.0000</td><td>2000.0000</td><td>-</td><td>343.21 MB</td>
+</tr><tr><td>&#39;SQL Server (object transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>3,728.50 ms</td><td>73.705 ms</td><td>169.350 ms</td><td>16000.0000</td><td>-</td><td>-</td><td>159.84 MB</td>
+</tr><tr><td>&#39;SQL Server (indexed object transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>4,159.31 ms</td><td>82.799 ms</td><td>215.206 ms</td><td>16000.0000</td><td>-</td><td>-</td><td>159.84 MB</td>
+</tr><tr><td>&#39;Dapper (object transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>3,912.45 ms</td><td>95.593 ms</td><td>281.857 ms</td><td>47000.0000</td><td>-</td><td>-</td><td>404.74 MB</td>
+</tr><tr><td>&#39;Dapper (indexed object transaction) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>4,377.70 ms</td><td>86.729 ms</td><td>118.715 ms</td><td>47000.0000</td><td>-</td><td>-</td><td>404.74 MB</td>
+</tr><tr><td>&#39;SQL Server (SqlBulkCopy) - store 50k persons&#39;</td><td>Job-CNUJVU</td><td>1</td><td>1</td><td>177.05 ms</td><td>0.704 ms</td><td>0.588 ms</td><td>-</td><td>-</td><td>-</td><td>23.11 MB</td>
 </tr></tbody></table>
 </body>
 </html>

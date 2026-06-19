@@ -17,26 +17,23 @@ The application-facing contract should remain `IRepository<TContract>` and envel
 
 ### Secondary Indexing
 
-Full secondary indexing is planned future work. The current `IIndexManager<TContract>` implementation is a pass-through manager that scans envelopes and delegates persistence to the envelope repository.
+The first in-memory search indexing layer is implemented. It supports opt-in `[SearchIndex]` / `[NotSearchIndexed]` metadata, exact equality, comparable ranges, string prefix lookup, expression parsing for `&&` and `||`, and fallback to predicate scans for unsupported expressions.
 
-The first indexing milestone should keep the boundary simple:
+The current boundary is:
 
 - equality on the storage identity/logical envelope key routes to the envelope cache;
-- range predicates route to a secondary index;
-- every indexed field owns its own B-tree-style sorted index;
-- the index returns logical envelope keys, and the repository resolves those through the envelope cache;
-- multiple-cardinality groups are flattened by the repository after lookup.
+- indexed property predicates route through property-specific search indexes;
+- index results store physical envelope keys, not object copies;
+- the repository materializes exact physical envelopes after index lookup.
 
-Planned indexing work should include:
+Remaining indexing work should include:
 
-- A clearer index contract for registering indexed fields or expressions.
-- Structured query interpretation so equality and range predicates can be routed deliberately.
-- A single-field range path before multi-range planning.
-- Index update behavior for save, delete, and migration flows.
-- Rebuild behavior on repository initialization.
-- Query planner behavior for deciding when an index can satisfy a predicate.
-- Persistence or deterministic rebuild strategy for large stores.
-- Tests covering indexed and non-indexed query paths.
+- Cost/selectivity estimates so `AND` groups evaluate the smallest candidate set first.
+- Dedicated public index contracts for custom index implementations.
+- Persistent or deterministic rebuild strategies for large stores.
+- Additional string modes such as contains/full-text.
+- Vector indexes.
+- Deeper tests for watcher-driven external updates and migration-driven index refresh.
 
 ### Additional Encryption Key Stores
 
