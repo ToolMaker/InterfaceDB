@@ -44,23 +44,33 @@ The first design should be conservative: maintenance-tool driven, explicit, and 
 
 ### Secondary Indexing
 
-The first in-memory search indexing layer is implemented. It supports opt-in `[SearchIndex]` / `[NotSearchIndexed]` metadata, exact equality, comparable ranges, string prefix lookup, expression parsing for `&&` and `||`, and fallback to predicate scans for unsupported expressions.
+The in-memory search indexing layer supports opt-in `[SearchIndex]` /
+`[NotSearchIndexed]` metadata, dictionary equality, adaptive comparable ranges,
+forward and reversed ordinal radix lookup for `StartsWith` and `EndsWith`,
+adaptive-gram literal ordinal `Contains`, cost-aware planning for `&&` and
+`||`, and safe scan fallback for unsupported expressions.
 
 The current boundary is:
 
 - equality on the storage identity/logical envelope key routes to the envelope cache;
 - indexed property predicates route through property-specific search indexes;
 - index results store physical envelope keys, not object copies;
-- the repository materializes exact physical envelopes after index lookup.
+- the repository materializes exact physical envelopes after index lookup;
+- live cardinality estimates choose the initial path and conditional intersections;
+- bounded ranges consolidate compatible comparisons on one property;
+- unsupported and negative predicates remain residual filters when positively bounded;
+- `ExplainSearch` exposes the selected plan without executing it.
 
 Remaining indexing work should include:
 
-- Cost/selectivity estimates so `AND` groups evaluate the smallest candidate set first.
 - Query compilation and validation optimization. The current indexed query path compiles the expression and validates candidates after index lookup. That is a useful correctness guard, but the hot trace shows it is one of the remaining visible query-side costs. Future work should cache compiled predicates per expression shape where possible, and consider skipping validation only when the query planner can prove that supported indexes fully satisfy the predicate.
-- Data-distribution-aware planning. The best index order depends on live data, not only the interface shape. The same contract can have very different selectivity in different applications or companies, so query planning should use per-index cardinality/selectivity estimates from the current repository data instead of hard-coded property order.
+- Richer distribution statistics. Current live cardinality estimates avoid
+  property-order planning and many wasteful intersections. Histograms,
+  correlation estimates, and observed-cost feedback could improve estimates for
+  correlated predicates and skewed distributions.
 - Dedicated public index contracts for custom index implementations.
 - Persistent or deterministic rebuild strategies for large stores.
-- Additional string modes such as contains/full-text.
+- Optional case-insensitive and full-text string modes.
 - Vector indexes.
 - Deeper tests for watcher-driven external updates and migration-driven index refresh.
 
@@ -201,6 +211,20 @@ Detection must never override an explicit policy. It should only fill gaps or pr
 The existing `MigrationTool` project now presents itself as the InterfaceDB Maintenance Tool and includes encryption rotation. A physical project and executable rename should be reserved for a major version, with a compatibility alias or forwarding command so existing scripts do not break.
 
 ## Completed Cleanup
+
+### Cost-Aware Secondary Query Planning
+
+The expression path now models normalized predicates, index access paths,
+cardinality/cost estimates, and explicit full-scan, index-scan, intersection,
+and union plans. It combines bounded ranges, chooses the smallest economical
+candidate source, conditionally intersects additional indexes according to
+repository object-cache cost, safely handles `OR`, preserves negative and
+unsupported residual predicates, and exposes `ExplainSearch` diagnostics.
+
+Literal ordinal `Contains` is implemented through RadixForge's adaptive gram
+index, including insert/update/remove lifecycle, concurrency, randomized
+differential correctness tests, and benchmark coverage. On the recorded
+100,000-item workload it was about 71.5 times faster than a full ordinal scan.
 
 ### Encryption Key Rotation
 

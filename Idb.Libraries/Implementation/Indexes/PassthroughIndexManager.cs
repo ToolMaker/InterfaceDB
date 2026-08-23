@@ -4,6 +4,7 @@ using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Indexes;
 
@@ -78,6 +79,17 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         return QueryInternalAsync(predicate.Compile(), cancellationToken);
     }
 
+    public SearchQueryPlanExplanation ExplainSearch(Expression<Func<TContract, bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return new SearchQueryPlanExplanation(
+            "FullScan: no search indexes are configured.",
+            UsesIndexes: false,
+            EstimatedCandidateCount: null,
+            EstimatedCost: double.PositiveInfinity,
+            ResidualPredicateCount: 1);
+    }
+
     public IAsyncEnumerable<TContract> QueryByStorageKeyAsync(
         string storageKey,
         CancellationToken cancellationToken = default)
@@ -110,8 +122,10 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
     {
         await foreach (var envelope in _envelopeRepository.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             if (!predicate(entity))
             {
                 continue;
@@ -131,8 +145,10 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
             .EnumerateByImplementationTypeAsync<TImplementation>(cancellationToken)
             .ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             var implementation = (TImplementation)entity;
             if (!predicate(implementation))
             {
@@ -150,8 +166,10 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
     {
         await foreach (var envelope in _envelopeRepository.GetAsync(storageKey, cancellationToken).ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
         }

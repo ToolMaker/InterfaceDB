@@ -80,6 +80,11 @@ public interface IIndexManager<TContract>
         where TImplementation : class, TContract;
 
     /// <summary>
+    /// Explains the candidate-retrieval plan for an inspectable search expression without loading results.
+    /// </summary>
+    SearchQueryPlanExplanation ExplainSearch(Expression<Func<TContract, bool>> predicate);
+
+    /// <summary>
     /// Retrieves contracts by logical storage identity through the envelope cache.
     /// This path is equality-only and should not evaluate range predicates.
     /// </summary>

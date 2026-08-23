@@ -7,6 +7,7 @@ using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Indexes;
 
@@ -14,23 +15,28 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// In-memory search index implementation that forwards persistence to the envelope repository.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
-public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
+public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, IDisposable
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
+    private readonly SearchQueryPlannerOptions _plannerOptions;
     private readonly bool _writesPublishStoredNotifications;
-    private readonly SearchIndexStore<TContract> _searchIndexes = new();
+    private readonly SearchIndexStore<TContract> _searchIndexes;
     private readonly ConcurrentDictionary<Type, IRuntimeSearchIndexStore> _runtimeSearchIndexes = new();
     private IContractSubscription? _storedSubscription;
     private IContractSubscription? _deletedSubscription;
     private int _subscriptionsStarted;
+    private int _disposed;
 
     public SearchIndexManager(
         IEnvelopeRepository<TContract> envelopeRepository,
         StoragePolicy storagePolicy)
     {
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
-        _writesPublishStoredNotifications = (storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy))).RaiseNotifications;
+        var resolvedStoragePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        _writesPublishStoredNotifications = resolvedStoragePolicy.RaiseNotifications;
+        _plannerOptions = SearchQueryPlannerOptions.For(resolvedStoragePolicy.ObjectCacheMode);
+        _searchIndexes = new SearchIndexStore<TContract>(_plannerOptions);
     }
 
     public ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default)
@@ -103,6 +109,12 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         return QueryExpressionInternalAsync(predicate, cancellationToken);
     }
 
+    public SearchQueryPlanExplanation ExplainSearch(Expression<Func<TContract, bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return _searchIndexes.ExplainPlan(predicate);
+    }
+
     public IAsyncEnumerable<TContract> QueryByStorageKeyAsync(
         string storageKey,
         CancellationToken cancellationToken = default)
@@ -134,8 +146,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     {
         await foreach (var envelope in _envelopeRepository.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             if (!predicate(entity))
             {
                 continue;
@@ -155,8 +169,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
             .EnumerateByImplementationTypeAsync<TImplementation>(cancellationToken)
             .ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             var implementation = (TImplementation)entity;
             if (!predicate(implementation))
             {
@@ -188,7 +204,11 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var envelope = await _envelopeRepository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
-            var entity = envelope?.ObjectInstance;
+            TContract? entity = null;
+            if (envelope is not null)
+            {
+                StorageObjectCachePolicy.TryGetObjectInstance(envelope, out entity);
+            }
             if (entity is null || !compiled(entity))
             {
                 continue;
@@ -232,7 +252,11 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var envelope = await _envelopeRepository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
-            var entity = envelope?.ObjectInstance;
+            TContract? entity = null;
+            if (envelope is not null)
+            {
+                StorageObjectCachePolicy.TryGetObjectInstance(envelope, out entity);
+            }
             if (entity is not TImplementation implementation || !compiled(implementation))
             {
                 continue;
@@ -249,8 +273,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     {
         await foreach (var envelope in _envelopeRepository.GetAsync(storageKey, cancellationToken).ConfigureAwait(false))
         {
-            var entity = envelope.ObjectInstance
-                ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) || entity is null)
+            {
+                throw new InvalidOperationException("Envelope does not contain an object instance.");
+            }
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
         }
@@ -289,6 +315,11 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     private async ValueTask RebuildIndexesAsync(CancellationToken cancellationToken)
     {
         _searchIndexes.Clear();
+        foreach (var runtimeIndex in _runtimeSearchIndexes.Values)
+        {
+            runtimeIndex.Dispose();
+        }
+
         _runtimeSearchIndexes.Clear();
         if (!_searchIndexes.HasIndexes)
         {
@@ -297,9 +328,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
 
         await foreach (var envelope in _envelopeRepository.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (envelope.ObjectInstance is not null)
+            if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
             {
-                UpdateIndexes(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
+                UpdateIndexes(envelope.EnvelopeCacheKey, entity);
             }
         }
     }
@@ -313,9 +344,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
 
         _storedSubscription = _envelopeRepository.SubscribeToStored(envelope =>
         {
-            if (envelope.ObjectInstance is not null)
+            if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
             {
-                UpdateIndexes(envelope.EnvelopeCacheKey, envelope.ObjectInstance);
+                UpdateIndexes(envelope.EnvelopeCacheKey, entity);
             }
 
             return ValueTask.CompletedTask;
@@ -348,7 +379,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
     }
 
     private IRuntimeSearchIndexStore GetRuntimeSearchIndexStore(Type runtimeType)
-        => _runtimeSearchIndexes.GetOrAdd(runtimeType, static type => new RuntimeSearchIndexStore(type));
+        => _runtimeSearchIndexes.GetOrAdd(
+            runtimeType,
+            type => new RuntimeSearchIndexStore(type, _plannerOptions));
 
     private void RemoveRuntimeSearchIndexes(string physicalKey)
     {
@@ -358,7 +391,25 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
         }
     }
 
-    private interface IRuntimeSearchIndexStore
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _storedSubscription?.Dispose();
+        _deletedSubscription?.Dispose();
+        _searchIndexes.Dispose();
+        foreach (var runtimeIndex in _runtimeSearchIndexes.Values)
+        {
+            runtimeIndex.Dispose();
+        }
+
+        _runtimeSearchIndexes.Clear();
+    }
+
+    private interface IRuntimeSearchIndexStore : IDisposable
     {
         bool HasIndexes { get; }
 
@@ -378,10 +429,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
 
         public bool HasIndexes { get; }
 
-        public RuntimeSearchIndexStore(Type runtimeType)
+        public RuntimeSearchIndexStore(Type runtimeType, SearchQueryPlannerOptions plannerOptions)
         {
             var storeType = typeof(SearchIndexStore<>).MakeGenericType(runtimeType);
-            _store = Activator.CreateInstance(storeType)
+            _store = Activator.CreateInstance(storeType, plannerOptions)
                 ?? throw new InvalidOperationException($"Unable to create search index store for '{runtimeType.FullName}'.");
 
             var upsert = storeType.GetMethod(nameof(SearchIndexStore<TContract>.Upsert))
@@ -407,5 +458,13 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>
 
         public HashSet<string>? TryEvaluate(LambdaExpression expression)
             => _tryEvaluate(expression);
+
+        public void Dispose()
+        {
+            if (_store is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
     }
 }

@@ -5,3 +5,4 @@ BenchmarkDotNet.Artifacts/results/*.*
 BenchmarkDotNet.Artifacts/*.log
 NDependOut/*
 Idb.Libraries/artifacts/build/Debug/**
+.local-nuget/

@@ -141,7 +141,7 @@ The trace should tell us which direction is worth pursuing:
 | File IO dominates | Defer large gains to a future storage engine provider. Keep file provider simple. |
 | Serialization dominates | Keep `IObjectSerializer<TContract>` stable and consider optional serializer providers later. |
 | Index update allocation dominates | Optimize `SearchIndexStore<TContract>` value tracking and candidate set handling. |
-| Expression planning dominates | Add a small query-plan layer over `SearchIndexStore<TContract>`. |
+| Expression planning dominates | Profile and tune the cost-aware query-plan layer, expression-shape compilation cache, and candidate materialization. |
 | Notifications/watchers dominate | Batch or suppress internal notification paths during bulk save where safe. |
 
 ## Current Architecture Boundary

@@ -99,6 +99,10 @@ Indexes are opt-in through attributes:
 [SearchIndex]
 public interface IPerson : IStoredContract<IPerson>
 {
+    [SearchIndex(SearchIndexMode.Exact
+        | SearchIndexMode.Prefix
+        | SearchIndexMode.Suffix
+        | SearchIndexMode.Contains)]
     string Name { get; set; }
     int Age { get; set; }
 
@@ -111,10 +115,44 @@ Supported first-pass index operations:
 
 - exact equality;
 - comparable ranges;
-- string `StartsWith`;
+- ordinal string `StartsWith` and `EndsWith`;
+- literal ordinal string `Contains` through RadixForge's adaptive gram index;
 - `&&`;
 - `||`;
 - fallback to scan for unsupported expressions.
+
+Use the explicit ordinal overloads when routing string operations through the
+radix indexes:
+
+```csharp
+person => person.Phone.StartsWith("+27", StringComparison.Ordinal)
+person => person.Email.EndsWith("@example.com", StringComparison.Ordinal)
+person => person.Name.Contains("ann")
+person => person.Name.Contains("ann", StringComparison.Ordinal)
+```
+
+The one-argument `Contains` overload has ordinal semantics in .NET and is
+indexable. For `StartsWith` and `EndsWith`, use the explicit ordinal overload;
+their one-argument overloads are culture-sensitive and therefore fall back to
+a scan. Ignore-case and culture-aware string operations are not routed through
+the ordinal indexes.
+
+The planner estimates live candidate counts, starts with the least expensive
+access path, and intersects additional indexes only when the projected saving
+outweighs the set-operation cost. It unions safe `||` branches and treats
+unsupported or negative conditions as residual predicates when a positive
+index can still bound the search.
+
+Resolve `IIndexManager<TContract>` to inspect a plan without executing it:
+
+```csharp
+var explanation = indexManager.ExplainSearch(
+    person => person.Role == "Student" && person.Age >= 18);
+
+Console.WriteLine(explanation.PlanText);
+```
+
+See [Query Planning](query-planning.md) for the complete routing rules.
 
 ## Object Caching
 

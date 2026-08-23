@@ -1,0 +1,9 @@
+Dataset,Method,Patterns,DocumentPatternMatches,BuildMilliseconds,SearchMilliseconds,Status
+"random-100000x64",".NET repeated scans",8,8,0,37.942,"OK"
+"random-100000x64","AhoCorasick NuGet",8,8,1.527,191.14,"OK"
+"random-100000x64",".NET repeated scans",64,64,0,112.719,"OK"
+"random-100000x64","AhoCorasick NuGet",64,64,0.196,142.455,"OK"
+"random-100000x64",".NET repeated scans",512,1534,0,782.852,"OK"
+"random-100000x64","AhoCorasick NuGet",512,1534,1.465,191.433,"OK"
+"random-100000x64",".NET repeated scans",1024,12049,0,1567.92,"OK"
+"random-100000x64","AhoCorasick NuGet",1024,12049,1.115,217.492,"OK"

@@ -104,9 +104,9 @@ namespace Idb.Libraries.Implementation.Serialization
                         isNewStorageObject,
                         cancellationToken).ConfigureAwait(false);
 
-                    UpdateEnvelopeCache(envelope);
-                    _envelopeLifecycle.Unwrap(envelope);
-                    return objectInstance;
+                    var savedObject = _envelopeLifecycle.Unwrap(envelope);
+                    UpdateEnvelopeCache(envelope, savedObject);
+                    return savedObject;
                 }
 
                 var proposalIsCanonical = await _fileWriteCoordinator.PublishAndCommitAsync(
@@ -153,12 +153,10 @@ namespace Idb.Libraries.Implementation.Serialization
                         envelope.EnvelopeCacheKey,
                         cancellationToken).ConfigureAwait(false);
 
-                UpdateEnvelopeCache(canonicalEnvelope);
-
-                _envelopeLifecycle.Unwrap(envelope);
+                var restoredInput = _envelopeLifecycle.Unwrap(envelope);
                 return ReferenceEquals(canonicalEnvelope, envelope)
-                    ? objectInstance
-                    : _envelopeLifecycle.Unwrap(canonicalEnvelope);
+                    ? StoreCanonicalEnvelope(canonicalEnvelope, restoredInput)
+                    : StoreCanonicalEnvelope(canonicalEnvelope, _envelopeLifecycle.Unwrap(canonicalEnvelope));
             }
             finally
             {
@@ -389,15 +387,23 @@ namespace Idb.Libraries.Implementation.Serialization
             await _serializer.SerializeAsync(envelope, stream, cancellationToken).ConfigureAwait(false);
         }
 
-        private void UpdateEnvelopeCache(IObjectEnvelope<TContract> envelope)
+        private TContract StoreCanonicalEnvelope(IObjectEnvelope<TContract> envelope, TContract instance)
+        {
+            UpdateEnvelopeCache(envelope, instance);
+            return instance;
+        }
+
+        private void UpdateEnvelopeCache(IObjectEnvelope<TContract> envelope, TContract? instance)
         {
             if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
             {
                 return;
             }
 
-            if (StorageObjectCachePolicy.ShouldRetainObjectInstance(envelope, _storagePolicy))
+            var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(envelope, _storagePolicy);
+            if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
             {
+                StorageObjectCachePolicy.StoreObjectReference(envelope, instance, _storagePolicy);
                 _envelopes.AddOrUpdate(
                     envelope.EnvelopeCacheKey,
                     EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
@@ -413,7 +419,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 cached.ImplementationTypeName = envelope.ImplementationTypeName;
                 cached.CacheObjectInstance = envelope.CacheObjectInstance;
                 cached.EncryptedFields = envelope.EncryptedFields;
-                cached.ObjectInstance = null;
+                StorageObjectCachePolicy.StoreObjectReference(cached, envelope.ObjectInstance, _storagePolicy);
                 return;
             }
 
@@ -428,6 +434,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 ObjectInstance = null,
                 State = envelope.State
             };
+            StorageObjectCachePolicy.StoreObjectReference(skeleton, envelope.ObjectInstance, _storagePolicy);
             _envelopes.AddOrUpdate(
                 envelope.EnvelopeCacheKey,
                 EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),

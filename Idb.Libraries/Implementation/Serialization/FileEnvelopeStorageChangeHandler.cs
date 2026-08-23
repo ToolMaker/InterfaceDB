@@ -120,13 +120,12 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
             ? ResolveVersion(file)
             : envelope.VersionTag;
 
-        if (envelope.ObjectInstance is not null)
-        {
-            _envelopeLifecycle.Unwrap(envelope);
-        }
-
         var cachedEnvelope = envelope;
-        if (!StorageObjectCachePolicy.ShouldRetainObjectInstance(envelope, _storagePolicy))
+        var unwrapped = envelope.ObjectInstance is not null
+            ? _envelopeLifecycle.Unwrap(envelope)
+            : null;
+        var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(envelope, _storagePolicy);
+        if (cacheMode is StorageObjectCacheMode.MetadataOnly)
         {
             cachedEnvelope = new FileObjectEnvelope<TContract>(_contractConfig)
             {
@@ -137,8 +136,13 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
                 CacheObjectInstance = envelope.CacheObjectInstance,
                 EncryptedFields = envelope.EncryptedFields,
                 ObjectInstance = null,
+                ObjectInstanceWeakReference = null,
                 State = envelope.State
             };
+        }
+        else
+        {
+            StorageObjectCachePolicy.StoreObjectReference(cachedEnvelope, unwrapped, _storagePolicy);
         }
 
         _envelopes.AddOrUpdate(

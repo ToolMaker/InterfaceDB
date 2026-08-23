@@ -1,6 +1,7 @@
 ﻿using Idb.Libraries.Abstraction.Services;
 using Idb.Libraries.Abstraction.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -42,9 +43,12 @@ namespace Idb.Libraries.Implementation.Serialization
             var candidateKey = Path.GetFileNameWithoutExtension(file.Name);
             if (!string.IsNullOrWhiteSpace(candidateKey) && _envelopes.TryGetValue(candidateKey, out var cached) && cached is not null)
             {
-                if (cached.ObjectInstance is not null)
+                if (StorageObjectCachePolicy.TryGetObjectInstance(cached, out var cachedInstance) && cachedInstance is not null)
                 {
-                    return _envelopeLifecycle.Unwrap(cached);
+                    cached.ObjectInstance = cachedInstance;
+                    var unwrapped = _envelopeLifecycle.Unwrap(cached);
+                    StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
+                    return unwrapped;
                 }
 
                 // Hydrate from disk without retaining the object unless the cache policy allows it.
@@ -60,16 +64,18 @@ namespace Idb.Libraries.Implementation.Serialization
                     cached.CacheObjectInstance = true;
                 }
 
-                if (StorageObjectCachePolicy.ShouldRetainObjectInstance(deserialized, _storagePolicy))
+                var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(deserialized, _storagePolicy);
+                if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
                 {
+                    var unwrapped = _envelopeLifecycle.Unwrap(deserialized);
                     cached.VersionTag = deserialized.VersionTag;
                     cached.Location = deserialized.Location;
                     cached.State = deserialized.State;
                     cached.ImplementationTypeName = deserialized.ImplementationTypeName;
                     cached.CacheObjectInstance = deserialized.CacheObjectInstance;
                     cached.EncryptedFields = deserialized.EncryptedFields;
-                    cached.ObjectInstance = deserialized.ObjectInstance;
-                    return _envelopeLifecycle.Unwrap(cached);
+                    StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
+                    return unwrapped;
                 }
 
                 return _envelopeLifecycle.Unwrap(deserialized);

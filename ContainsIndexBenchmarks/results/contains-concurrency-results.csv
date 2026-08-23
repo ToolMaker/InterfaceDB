@@ -1,0 +1,10 @@
+Dataset,Index,Workers,QueryCount,SingleThreadQps,ParallelQps,Scaling,Status
+"random-100000x64",".NET string.Contains scan",8,176,717.514,4055.617,5.652,"OK"
+"random-100000x64","Packed UTF-16 arena scan",8,160,772.069,6188.358,8.015,"OK"
+"random-100000x64","Packed 48-bit trigram / sorted postings",8,256,451339.915,1052631.579,2.332,"OK"
+"random-100000x64","Packed trigram / adaptive sparse+bitmap",8,256,537250.787,1119370.354,2.084,"OK"
+"random-100000x64","Packed trigram / adaptive Roaring",8,256,177309.877,553992.642,3.124,"OK"
+"random-100000x64","Bit-sliced signature 256-bit/3h",8,256,49064.704,308099.651,6.279,"OK"
+"random-100000x64","Bit-sliced signature 1024-bit/3h",8,256,48790.715,198311.256,4.065,"OK"
+"random-100000x64","LIFTI whole-token wildcard",8,8,3.16,15.261,4.829,"OK"
+"random-100000x64","Lucene.Net exact trigram terms",8,104,299.113,211.811,0.708,"OK"

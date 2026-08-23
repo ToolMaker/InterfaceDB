@@ -30,6 +30,12 @@ public interface IObjectEnvelope<TContract>
         TContract? ObjectInstance { get; set; }
 
         /// <summary>
+        /// Runtime-only weak reference to the contract instance. This is used by cache modes that should reuse
+        /// live objects without keeping them alive. It is not part of the serialized envelope payload.
+        /// </summary>
+        WeakReference<TContract>? ObjectInstanceWeakReference { get; set; }
+
+        /// <summary>
         /// Concrete implementation type stored in this envelope.
         /// Used by polymorphic queries over a contract repository.
         /// </summary>

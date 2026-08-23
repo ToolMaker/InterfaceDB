@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AhoCorasick" Version="2.0.279" />
+    <PackageReference Include="BelNytheraSeiche.WaveletMatrix" Version="1.0.6" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="CaseON" Version="3.0.0" />
+    <PackageReference Include="DeltaQ.SuffixSorting.SAIS" Version="2.1.0" />
+    <PackageReference Include="Lifti.Core" Version="7.0.2" />
+    <PackageReference Include="Lucene.Net" Version="4.8.0-beta00018" />
+    <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00018" />
+    <PackageReference Include="NLibSais" Version="1.0.0" />
+    <PackageReference Include="Roaring.Net" Version="1.4.1" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,5 @@
+Dataset,Builder,InputUnits,Milliseconds,ManagedMiB,Status
+"random-20000x64","NLibSais UTF-16 native",1319282,51.196,5.048,"OK"
+"random-20000x64","DeltaQ SAIS UTF-8",1319282,100.94,5.048,"OK"
+"random-20000x64","DeltaQ GoSAIS UTF-8",1319282,103.269,5.048,"OK"
+"random-20000x64","CaseON prefix-doubling UTF-16",1319282,774.362,25.179,"OK"
