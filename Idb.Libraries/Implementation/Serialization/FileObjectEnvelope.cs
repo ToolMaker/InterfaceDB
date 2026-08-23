@@ -30,6 +30,8 @@ public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
 
     public TContract? ObjectInstance { get; set; }
 
+    public WeakReference<TContract>? ObjectInstanceWeakReference { get; set; }
+
     public string? ImplementationTypeName { get; set; }
 
     public bool CacheObjectInstance { get; set; }

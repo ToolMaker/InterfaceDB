@@ -12,6 +12,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
+    <PackageReference Include="RadixForge" Version="1.1.0" />
     <PackageReference Include="System.IO.Hashing" Version="10.0.9" />
   </ItemGroup>
 
@@ -51,6 +52,8 @@
     <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
     <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
     <Compile Include="Implementation\Indexes\SearchIndexManager.cs" />
+    <Compile Include="Implementation\Indexes\SearchQueryPlanning.cs" />
+    <Compile Include="Implementation\Indexes\SearchIndexStructures.cs" />
     <Compile Include="Implementation\Indexes\SearchIndexDefinition.cs" />
     <Compile Include="Implementation\Indexes\SearchIndexDiscovery.cs" />
     <Compile Include="Implementation\Indexes\SearchIndexStore.cs" />

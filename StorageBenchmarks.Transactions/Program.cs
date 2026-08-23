@@ -25,6 +25,27 @@ using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
 try
 {
+    if (args.Any(argument => string.Equals(argument, "--planner-validate", StringComparison.OrdinalIgnoreCase)))
+    {
+        QueryPlannerBenchmarks.Validate();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--planner-quick", StringComparison.OrdinalIgnoreCase)))
+    {
+        QueryPlannerBenchmarks.RunQuickComparison();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--planner-benchmark", StringComparison.OrdinalIgnoreCase)))
+    {
+        args = args
+            .Where(argument => !string.Equals(argument, "--planner-benchmark", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        BenchmarkRunner.Run<QueryPlannerBenchmarks>(args: args);
+        return;
+    }
+
     TransactionBenchmarks.EnsureConfigurationInitialized();
     if (args.Any(argument => string.Equals(argument, "--smoke-sql", StringComparison.OrdinalIgnoreCase)))
     {
@@ -126,6 +147,11 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine();
         Console.WriteLine("Run a direct profiling workload for dotnet-trace:");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --profile filesystem-store");
+        Console.WriteLine();
+        Console.WriteLine("Validate or benchmark the query planner:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-validate");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-quick");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-benchmark");
     }
 
     public static void SmokeTestSqlConnection()
@@ -189,29 +215,29 @@ public class TransactionBenchmarks : IDisposable
                     break;
                 case "filesystem-indexed-query":
                 case "file-indexed-query":
-                    benchmark.SetupIndexedFileSystemQuery();
-                    _ = benchmark.FileSystem_SearchIndexQueryBatch().GetAwaiter().GetResult();
+                    benchmark.SetupIndexedFileSystemQueryStrongObjectCache();
+                    _ = benchmark.FileSystem_SearchIndexQueryBatch_StrongObjectCache().GetAwaiter().GetResult();
                     break;
                 case "filesystem-indexed-query-hot":
                 case "file-indexed-query-hot":
-                    benchmark.SetupIndexedFileSystemQuery();
+                    benchmark.SetupIndexedFileSystemQueryStrongObjectCache();
                     for (var iteration = 0; iteration < 100; iteration++)
                     {
-                        _ = benchmark.FileSystem_SearchIndexQueryBatch().GetAwaiter().GetResult();
+                        _ = benchmark.FileSystem_SearchIndexQueryBatch_StrongObjectCache().GetAwaiter().GetResult();
                     }
 
                     break;
                 case "filesystem-selective-indexed-query":
                 case "file-selective-indexed-query":
-                    benchmark.SetupIndexedFileSystemQuery();
-                    _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch().GetAwaiter().GetResult();
+                    benchmark.SetupIndexedFileSystemQueryStrongObjectCache();
+                    _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache().GetAwaiter().GetResult();
                     break;
                 case "filesystem-selective-indexed-query-hot":
                 case "file-selective-indexed-query-hot":
-                    benchmark.SetupIndexedFileSystemQuery();
+                    benchmark.SetupIndexedFileSystemQueryStrongObjectCache();
                     for (var iteration = 0; iteration < 100; iteration++)
                     {
-                        _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch().GetAwaiter().GetResult();
+                        _ = benchmark.FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache().GetAwaiter().GetResult();
                     }
 
                     break;
@@ -654,12 +680,23 @@ public class TransactionBenchmarks : IDisposable
         bulkCopy.WriteToServer(CreatePersonDataTable(persons));
     }
 
-    [GlobalSetup(Target = nameof(FileSystem_QueryBatch))]
-    public void SetupFileSystemQuery()
+    [GlobalSetup(Target = nameof(FileSystem_QueryBatch_StrongObjectCache))]
+    public void SetupFileSystemQueryStrongObjectCache()
+        => SetupFileSystemQuery(StorageObjectCacheMode.StrongObject);
+
+    [GlobalSetup(Target = nameof(FileSystem_QueryBatch_MetadataOnly))]
+    public void SetupFileSystemQueryMetadataOnly()
+        => SetupFileSystemQuery(StorageObjectCacheMode.MetadataOnly);
+
+    [GlobalSetup(Target = nameof(FileSystem_QueryBatch_WeakObjectCache))]
+    public void SetupFileSystemQueryWeakObjectCache()
+        => SetupFileSystemQuery(StorageObjectCacheMode.WeakObject);
+
+    private void SetupFileSystemQuery(StorageObjectCacheMode objectCacheMode)
     {
         _fileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-query", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_fileDataRoot);
-        _fileProvider = BuildFileSystemProvider(_fileDataRoot, keepObjectsOnWrite: false);
+        _fileProvider = BuildFileSystemProvider(_fileDataRoot, objectCacheMode: objectCacheMode);
         _queryRepository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
         _queryRepository.InitializeAsync().GetAwaiter().GetResult();
         _queryRepository.SaveManyAsync(PersonDataFactory.ClonePersons(_seedPersons)).GetAwaiter().GetResult();
@@ -672,12 +709,35 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
-    [GlobalSetup(Targets = new[] { nameof(FileSystem_SearchIndexQueryBatch), nameof(FileSystem_SearchIndexSelectiveQueryBatch) })]
-    public void SetupIndexedFileSystemQuery()
+    [GlobalSetup(Targets = new[]
+    {
+        nameof(FileSystem_SearchIndexQueryBatch_StrongObjectCache),
+        nameof(FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache)
+    })]
+    public void SetupIndexedFileSystemQueryStrongObjectCache()
+        => SetupIndexedFileSystemQuery(StorageObjectCacheMode.StrongObject);
+
+    [GlobalSetup(Targets = new[]
+    {
+        nameof(FileSystem_SearchIndexQueryBatch_MetadataOnly),
+        nameof(FileSystem_SearchIndexSelectiveQueryBatch_MetadataOnly)
+    })]
+    public void SetupIndexedFileSystemQueryMetadataOnly()
+        => SetupIndexedFileSystemQuery(StorageObjectCacheMode.MetadataOnly);
+
+    [GlobalSetup(Targets = new[]
+    {
+        nameof(FileSystem_SearchIndexQueryBatch_WeakObjectCache),
+        nameof(FileSystem_SearchIndexSelectiveQueryBatch_WeakObjectCache)
+    })]
+    public void SetupIndexedFileSystemQueryWeakObjectCache()
+        => SetupIndexedFileSystemQuery(StorageObjectCacheMode.WeakObject);
+
+    private void SetupIndexedFileSystemQuery(StorageObjectCacheMode objectCacheMode)
     {
         _indexedFileDataRoot = Path.Combine(ResolveBenchmarkRoot(), "interface-db-indexed-query", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_indexedFileDataRoot);
-        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot, keepObjectsOnWrite: false);
+        _indexedFileProvider = BuildIndexedFileSystemProvider(_indexedFileDataRoot, objectCacheMode: objectCacheMode);
         _indexedQueryRepository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
         _indexedQueryRepository.InitializeAsync().GetAwaiter().GetResult();
         _indexedQueryRepository.SaveManyAsync(CloneIndexedPersons(_seedIndexedPersons)).GetAwaiter().GetResult();
@@ -777,8 +837,19 @@ public class TransactionBenchmarks : IDisposable
         }
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager - 100 predicate scans over configured persons")]
-    public async Task<int> FileSystem_QueryBatch()
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + strong object cache - 100 predicate scans over configured persons")]
+    public async Task<int> FileSystem_QueryBatch_StrongObjectCache()
+        => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + metadata-only cache - 100 predicate scans over configured persons")]
+    public async Task<int> FileSystem_QueryBatch_MetadataOnly()
+        => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + weak object cache - 100 predicate scans over configured persons")]
+    public async Task<int> FileSystem_QueryBatch_WeakObjectCache()
+        => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
+
+    private async Task<int> ExecuteFileSystemQueryBatchAsync()
     {
         var repository = _queryRepository ?? throw new InvalidOperationException("File-system query repository not initialized.");
         var total = 0;
@@ -849,8 +920,19 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexQueryBatch()
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + strong object cache - 100 indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexQueryBatch_StrongObjectCache()
+        => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + metadata-only cache - 100 indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexQueryBatch_MetadataOnly()
+        => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + weak object cache - 100 indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexQueryBatch_WeakObjectCache()
+        => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
+
+    private async Task<int> ExecuteFileSystemSearchIndexQueryBatchAsync()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
         var total = 0;
@@ -868,8 +950,19 @@ public class TransactionBenchmarks : IDisposable
         return total;
     }
 
-    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager - 100 selective indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch()
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + strong object cache - 100 selective indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache()
+        => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + metadata-only cache - 100 selective indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_MetadataOnly()
+        => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + weak object cache - 100 selective indexed searches over configured persons")]
+    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_WeakObjectCache()
+        => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
+
+    private async Task<int> ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
         var total = 0;
@@ -1021,7 +1114,7 @@ public class TransactionBenchmarks : IDisposable
 
     private static ServiceProvider BuildFileSystemProvider(
         string dataRoot,
-        bool keepObjectsOnWrite = false)
+        StorageObjectCacheMode objectCacheMode = StorageObjectCacheMode.MetadataOnly)
     {
         var maxConcurrency = ResolvePositiveInt(
             MaxConcurrencyEnvironmentVariable,
@@ -1050,7 +1143,7 @@ public class TransactionBenchmarks : IDisposable
                 BulkWriteBatchSize = bulkBatchSize,
                 FileWriteBufferSize = 16 * 1024,
                 RaiseNotifications = false,
-                KeepObjectInstanceInCacheOnWrite = keepObjectsOnWrite,
+                ObjectCacheMode = objectCacheMode,
                 UseSingleWriteBuffer = useSingleWriteBuffer,
                 UseWriterSemaphore = false,
                 WatchStorageChanges = false
@@ -1065,7 +1158,7 @@ public class TransactionBenchmarks : IDisposable
 
     private static ServiceProvider BuildIndexedFileSystemProvider(
         string dataRoot,
-        bool keepObjectsOnWrite = false)
+        StorageObjectCacheMode objectCacheMode = StorageObjectCacheMode.MetadataOnly)
     {
         var maxConcurrency = ResolvePositiveInt(
             MaxConcurrencyEnvironmentVariable,
@@ -1091,7 +1184,7 @@ public class TransactionBenchmarks : IDisposable
                 BulkWriteBatchSize = bulkBatchSize,
                 FileWriteBufferSize = 16 * 1024,
                 RaiseNotifications = false,
-                KeepObjectInstanceInCacheOnWrite = keepObjectsOnWrite,
+                ObjectCacheMode = objectCacheMode,
                 UseSingleWriteBuffer = useSingleWriteBuffer,
                 UseWriterSemaphore = false,
                 WatchStorageChanges = false

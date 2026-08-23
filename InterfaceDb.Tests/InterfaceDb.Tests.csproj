@@ -12,9 +12,11 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="MSTest.TestAdapter" Version="3.10.5" />
     <PackageReference Include="MSTest.TestFramework" Version="3.10.5" />
+    <PackageReference Include="RadixForge" Version="1.1.0" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
     <ProjectReference Include="..\InterfaceDb.IntegrationTests\InterfaceDb.IntegrationTests.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 

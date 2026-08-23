@@ -381,6 +381,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         public string EnvelopeCacheKey { get; set; } = string.Empty;
         public string VersionTag { get; set; } = string.Empty;
         public TContract? ObjectInstance { get; set; }
+        public WeakReference<TContract>? ObjectInstanceWeakReference { get; set; }
         public string? ImplementationTypeName { get; set; }
         public bool CacheObjectInstance { get; set; }
         public IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }

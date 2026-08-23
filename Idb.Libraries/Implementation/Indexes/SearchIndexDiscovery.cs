@@ -46,9 +46,10 @@ internal static class SearchIndexDiscovery
                 var mode = NormalizeMode(memberType, memberIndex?.Mode ?? SearchIndexMode.Default);
                 if (mode is not SearchIndexMode.Default)
                 {
+                    var valueType = Nullable.GetUnderlyingType(memberType) ?? memberType;
                     definitions.Add(new SearchIndexDefinition(
                         path,
-                        Nullable.GetUnderlyingType(memberType) ?? memberType,
+                        valueType.IsEnum ? Enum.GetUnderlyingType(valueType) : valueType,
                         mode,
                         CreateGetter(nextAccessors)));
                 }
@@ -178,7 +179,7 @@ internal static class SearchIndexDiscovery
         var mode = requested;
         if (actual != typeof(string))
         {
-            mode &= ~SearchIndexMode.Prefix;
+            mode &= ~(SearchIndexMode.Prefix | SearchIndexMode.Suffix | SearchIndexMode.Contains);
         }
 
         if (!typeof(IComparable).IsAssignableFrom(actual)

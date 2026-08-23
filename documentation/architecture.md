@@ -87,7 +87,7 @@ The active `IIndexManager<TContract>` is selected per registered contract:
 - `PassthroughIndexManager<TContract>` is used when the contract has no searchable index metadata.
 - `SearchIndexManager<TContract>` is used when `[SearchIndex]` metadata is discovered.
 
-This keeps the no-index path small while allowing indexed contracts to maintain in-memory exact, range, and prefix search structures.
+This keeps the no-index path small while allowing indexed contracts to maintain in-memory exact, range, prefix, suffix, and adaptive substring search structures.
 
 The intended query routing boundary is:
 
@@ -371,7 +371,7 @@ If hydration is disabled, envelopes can remain lightweight until query/read time
 
 The envelope metadata catalog is always maintained. Full object instances are retained only when one of these policies allows it:
 
-- `StoragePolicy.KeepObjectInstanceInCacheOnWrite` is enabled as a database-wide override;
+- `StoragePolicy.ObjectCacheMode` is set to `StrongObject`;
 - the concrete storage class has `[StorageCached]`;
 - the envelope has `CacheObjectInstance = true`.
 
@@ -387,7 +387,9 @@ Each indexed property path owns a property index container. That container can h
 
 - exact index for `==`;
 - range index for `>`, `>=`, `<`, and `<=`;
-- prefix index for string `StartsWith`.
+- prefix index for ordinal string `StartsWith`;
+- optional reverse-codec suffix index for ordinal string `EndsWith`;
+- optional adaptive gram index for literal ordinal string `Contains`.
 
 For example:
 
@@ -401,10 +403,26 @@ Equality and range should use different mechanisms:
 
 - `Name == "John Smith"` on the storage identity key: envelope cache.
 - `Age >= 18`: `Age` range index.
-- `Phone.StartsWith("+27")`: `Phone` prefix index.
+- `Phone.StartsWith("+27", StringComparison.Ordinal)`: `Phone` prefix index.
+- `Email.EndsWith("@example.com", StringComparison.Ordinal)`: reversed `Email` suffix index.
+- `Name.Contains("ann")`: adaptive gram substring index.
 - `Role == "Student"`: `Role` exact index.
 
-The first query planner supports `==`, range comparisons, `StartsWith`, `&&`, and `||`. `AND` nodes intersect index result sets and `OR` nodes union them. Unsupported expressions fall back to the existing predicate scan.
+The planner normalizes expression trees into indexable access paths and
+residual predicates. It supports `==`, range comparisons, explicit ordinal
+`StartsWith` and `EndsWith`, literal ordinal `Contains`, `&&`, and `||`.
+Compatible lower and upper comparisons on one property become one bounded
+range. An `AND` starts with the lowest-cost path and conditionally intersects
+additional paths only when estimated object-load savings justify the set work.
+The cost model accounts for metadata-only, weak-object, and strong-object cache
+modes. An `OR` unions its branches only when every branch has a safe candidate
+source; otherwise it scans to avoid false negatives. Unsupported and negative
+conditions remain residual predicates when a positive path bounds the search,
+and every returned candidate is validated with the complete compiled predicate.
+
+`IIndexManager<TContract>.ExplainSearch` exposes the selected hierarchy,
+estimated candidates and cost, index usage, and residual-predicate count without
+loading objects. See [Query Planning](query-planning.md).
 
 ## Write Path
 

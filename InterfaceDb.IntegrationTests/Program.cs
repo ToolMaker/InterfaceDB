@@ -54,12 +54,13 @@ var tests = new (string Name, Func<Task> Run)[]
     ("multiple cardinality allocates incremented cache keys", MultipleCardinalityAllocatesIncrementedCacheKeysAsync),
     ("repository storage-key equality queries use envelope groups", RepositoryStorageKeyEqualityQueriesUseEnvelopeGroupsAsync),
     ("repository index manager selection follows contract search metadata", RepositoryIndexManagerSelectionFollowsContractMetadataAsync),
-    ("repository search indexes support exact range prefix and maintenance", RepositorySearchIndexesSupportQueriesAsync),
+    ("repository search indexes support exact range prefix suffix contains and maintenance", RepositorySearchIndexesSupportQueriesAsync),
     ("repository query cardinality methods enforce result bounds", RepositoryQueryCardinalityMethodsAsync),
     ("repository operations honor their public contracts", RepositoryOperationsHonorContractsAsync),
     ("repository bulk save persists canonical objects in input order", RepositoryBulkSavePersistsInInputOrderAsync),
     ("repository bulk save reports partial failures", RepositoryBulkSaveReportsPartialFailuresAsync),
     ("repository keeps envelope metadata but does not cache objects by default", RepositoryDoesNotCacheObjectInstancesByDefaultAsync),
+    ("repository weak object cache reuses live objects without strong retention", RepositoryWeakObjectCacheUsesWeakReferenceAsync),
     ("repository caches objects when concrete type is marked", RepositoryCachesStorageCachedObjectsAsync),
     ("repository caches objects when envelope flag is persisted", RepositoryCachesEnvelopeFlaggedObjectsAsync),
     ("repository registration storage policy overrides config policy", RepositoryRegistrationStoragePolicyOverridesConfigAsync),
@@ -446,6 +447,7 @@ static async Task RepositorySearchIndexesSupportQueriesAsync()
 
         await using var provider = services.BuildServiceProvider();
         var repository = provider.GetRequiredService<IRepository<IIndexedTestRecord>>();
+        var indexManager = provider.GetRequiredService<IIndexManager<IIndexedTestRecord>>();
         await repository.InitializeAsync().ConfigureAwait(false);
 
         var records = new IIndexedTestRecord[]
@@ -458,6 +460,15 @@ static async Task RepositorySearchIndexesSupportQueriesAsync()
 
         await repository.SaveManyAsync(records).ConfigureAwait(false);
 
+        var explanation = indexManager.ExplainSearch(
+            x => x.Country == "ZA" && x.Age > 80);
+        Assert(explanation.UsesIndexes,
+            "ExplainSearch should report index use for indexed predicates.");
+        Assert(explanation.EstimatedCandidateCount.HasValue,
+            "ExplainSearch should provide a candidate estimate for indexed predicates.");
+        Assert(explanation.PlanText.Contains("index", StringComparison.OrdinalIgnoreCase),
+            "ExplainSearch should identify the selected index access path.");
+
         var exact = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
         Assert(exact.Count == 2, $"Exact index should return two ZA records, found {exact.Count}.");
 
@@ -465,9 +476,43 @@ static async Task RepositorySearchIndexesSupportQueriesAsync()
         Assert(range.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "c"]),
             "Range index should return records older than 80.");
 
+        var inclusiveRange = await CollectAsync(repository.SearchManyAsync(x => x.Age >= 81)).ConfigureAwait(false);
+        Assert(inclusiveRange.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "c"]),
+            "Inclusive range index should include the lower boundary.");
+
+        var upperRange = await CollectAsync(repository.SearchManyAsync(x => x.Age <= 40)).ConfigureAwait(false);
+        Assert(upperRange.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["b", "d"]),
+            "Range index should support inclusive upper boundaries.");
+
+        var reversedRange = await CollectAsync(repository.SearchManyAsync(x => 80 < x.Age)).ConfigureAwait(false);
+        Assert(reversedRange.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "c"]),
+            "Range index should reverse comparisons with the indexed member on the right.");
+
+        var boundedRange = await CollectAsync(repository.SearchManyAsync(x => x.Age >= 40 && x.Age < 90)).ConfigureAwait(false);
+        Assert(boundedRange.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "b"]),
+            "Range index should combine lower and upper bounds on the same indexed member.");
+
         var prefix = await CollectAsync(repository.SearchManyAsync(x => x.Phone.StartsWith("+27", StringComparison.Ordinal))).ConfigureAwait(false);
         Assert(prefix.Count == 2 && prefix.All(x => x.Country == "ZA"),
             "Prefix index should return South African phone numbers.");
+
+        var suffix = await CollectAsync(repository.SearchManyAsync(x => x.Phone.EndsWith("000001", StringComparison.Ordinal))).ConfigureAwait(false);
+        Assert(suffix.Count == 1 && suffix[0].Id == "a",
+            "Suffix index should return the record whose phone number has the requested ending.");
+
+        var contains = await CollectAsync(repository.SearchManyAsync(x => x.Name.Contains("lic"))).ConfigureAwait(false);
+        Assert(contains.Select(x => x.Id).OrderBy(static x => x).SequenceEqual(["a", "d"]),
+            "Contains index should return exact ordinal substring matches.");
+
+        var ordinalContains = await CollectAsync(repository.SearchManyAsync(
+            x => x.Name.Contains("har", StringComparison.Ordinal))).ConfigureAwait(false);
+        Assert(ordinalContains.Count == 1 && ordinalContains[0].Id == "c",
+            "Contains index should support the explicit ordinal overload.");
+
+        var negativeContains = await CollectAsync(repository.SearchManyAsync(
+            x => x.Country == "ZA" && !x.Name.Contains("Alice"))).ConfigureAwait(false);
+        Assert(negativeContains.Count == 1 && negativeContains[0].Id == "b",
+            "Negative contains should use a positive index candidate and remain a residual predicate.");
 
         var nested = await CollectAsync(repository.SearchManyAsync(x => x.Address.City == "Cape Town")).ConfigureAwait(false);
         Assert(nested.Count == 1 && nested[0].Id == "a",
@@ -482,10 +527,24 @@ static async Task RepositorySearchIndexesSupportQueriesAsync()
             "OR query should union indexed results.");
 
         records[0].Country = "NL";
+        records[0].Name = "Eve";
+        records[0].Phone = "+31299999999";
         await repository.SaveAsync(records[0]).ConfigureAwait(false);
         var afterUpdate = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
         Assert(afterUpdate.Count == 1 && afterUpdate[0].Id == "b",
             "Index update should remove old values when an existing object is saved.");
+
+        var prefixAfterUpdate = await CollectAsync(repository.SearchManyAsync(x => x.Phone.StartsWith("+27"))).ConfigureAwait(false);
+        Assert(prefixAfterUpdate.Count == 1 && prefixAfterUpdate[0].Id == "b",
+            "Radix prefix updates should remove the old prefix and index the new value.");
+
+        var suffixAfterUpdate = await CollectAsync(repository.SearchManyAsync(x => x.Phone.EndsWith("000001", StringComparison.Ordinal))).ConfigureAwait(false);
+        Assert(suffixAfterUpdate.Count == 0,
+            "Radix suffix updates should remove the old reversed key.");
+
+        var containsAfterUpdate = await CollectAsync(repository.SearchManyAsync(x => x.Name.Contains("lic"))).ConfigureAwait(false);
+        Assert(containsAfterUpdate.Count == 1 && containsAfterUpdate[0].Id == "d",
+            "Contains index updates should remove the previous searchable text.");
 
         await repository.DeleteAsync(records[1]).ConfigureAwait(false);
         var afterDelete = await CollectAsync(repository.SearchManyAsync(x => x.Country == "ZA")).ConfigureAwait(false);
@@ -769,10 +828,43 @@ static async Task RepositoryDoesNotCacheObjectInstancesByDefaultAsync()
 
         Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope metadata should be cached after save.");
         Assert(cached!.ObjectInstance is null, "Default cache should retain envelope metadata without the object instance.");
+        Assert(cached.ObjectInstanceWeakReference is null, "Metadata-only cache should not retain a weak object reference.");
 
         var queried = await repository.QueryFirstAsync(x => x.Id == "metadata-only").ConfigureAwait(false);
         AssertNotNull(queried, "Record should still be queryable from storage.");
         Assert(cached.ObjectInstance is null, "Default query hydration should not promote the object into the envelope cache.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static async Task RepositoryWeakObjectCacheUsesWeakReferenceAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        await using var provider = BuildSelectiveObjectCacheProvider(testRoot, StorageObjectCacheMode.WeakObject);
+        var repository = provider.GetRequiredService<IRepository<ILockTestRecord>>();
+        await repository.InitializeAsync().ConfigureAwait(false);
+
+        var saved = await repository.SaveAsync(
+            new LockTestRecord { Id = "weak-cache", Value = "stored" }).ConfigureAwait(false);
+        var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
+        var envelopes = provider.GetRequiredKeyedService<
+            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+
+        Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope metadata should be cached after save.");
+        Assert(cached!.ObjectInstance is null, "Weak cache should not retain a strong object reference.");
+        var weakReference = AssertNotNull(cached.ObjectInstanceWeakReference, "Weak cache should store a weak object reference.");
+        Assert(weakReference.TryGetTarget(out var weakTarget), "Weak target should be alive while the caller still holds the saved object.");
+        Assert(ReferenceEquals(saved, weakTarget), "Weak cache should point at the saved object while it remains alive.");
+
+        var queried = await repository.QueryFirstAsync(x => x.Id == "weak-cache").ConfigureAwait(false);
+        queried = AssertNotNull(queried, "Weak-cached record should still be queryable.");
+        Assert(cached.ObjectInstance is null, "Weak-cache query should not promote the object to a strong cache reference.");
+        Assert(cached.ObjectInstanceWeakReference?.TryGetTarget(out _) == true, "Weak cache should keep a weak target after query while the result is alive.");
     }
     finally
     {
@@ -2265,9 +2357,11 @@ static ServiceProvider BuildProvider(string dataRoot)
     return services.BuildServiceProvider();
 }
 
-static ServiceProvider BuildSelectiveObjectCacheProvider(string dataRoot)
+static ServiceProvider BuildSelectiveObjectCacheProvider(
+    string dataRoot,
+    StorageObjectCacheMode cacheMode = StorageObjectCacheMode.MetadataOnly)
 {
-    var options = new SelectiveObjectCacheOptions(dataRoot);
+    var options = new SelectiveObjectCacheOptions(dataRoot, cacheMode);
     var services = new ServiceCollection();
     services.AddRepository<ILockTestRecord>(options);
     return services.BuildServiceProvider();
@@ -2593,7 +2687,7 @@ public sealed class LockTestOptions : IDbContractConfigDto<ILockTestRecord>
     {
         DurabilityMode = StorageDurabilityMode.Durable,
         HydrateOnInitialize = true,
-        KeepObjectInstanceInCacheOnWrite = true,
+        ObjectCacheMode = StorageObjectCacheMode.StrongObject,
         MaxConcurrency = 4,
         RaiseNotifications = true,
         UseSidecarWriteLocks = true,
@@ -2608,9 +2702,19 @@ public sealed class LockTestOptions : IDbContractConfigDto<ILockTestRecord>
 
 public sealed class SelectiveObjectCacheOptions : IDbContractConfigDto<ILockTestRecord>
 {
-    public SelectiveObjectCacheOptions(string dataRoot)
+    public SelectiveObjectCacheOptions(
+        string dataRoot,
+        StorageObjectCacheMode cacheMode = StorageObjectCacheMode.MetadataOnly)
     {
         DataRoot = dataRoot;
+        StoragePolicy = StoragePolicy.Default with
+        {
+            HydrateOnInitialize = false,
+            ObjectCacheMode = cacheMode,
+            RaiseNotifications = false,
+            UseSidecarWriteLocks = true,
+            WatchStorageChanges = false
+        };
     }
 
     public string EnvelopeDICacheKey { get; } = "ObjectCacheTest";
@@ -2624,14 +2728,7 @@ public sealed class SelectiveObjectCacheOptions : IDbContractConfigDto<ILockTest
     public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
     public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
-    public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
-    {
-        HydrateOnInitialize = false,
-        KeepObjectInstanceInCacheOnWrite = false,
-        RaiseNotifications = false,
-        UseSidecarWriteLocks = true,
-        WatchStorageChanges = false
-    };
+    public StoragePolicy? StoragePolicy { get; }
 }
 
 public sealed class IndexedTestOptions : IDbContractConfigDto<IIndexedTestRecord>
@@ -2656,7 +2753,7 @@ public sealed class IndexedTestOptions : IDbContractConfigDto<IIndexedTestRecord
     {
         DurabilityMode = StorageDurabilityMode.Durable,
         HydrateOnInitialize = true,
-        KeepObjectInstanceInCacheOnWrite = true,
+        ObjectCacheMode = StorageObjectCacheMode.StrongObject,
         MaxConcurrency = 4,
         RaiseNotifications = true,
         UseSidecarWriteLocks = true,
@@ -2708,7 +2805,7 @@ public sealed class WatcherLockTestOptions : IDbContractConfigDto<ILockTestRecor
         {
             DurabilityMode = StorageDurabilityMode.Durable,
             HydrateOnInitialize = true,
-            KeepObjectInstanceInCacheOnWrite = true,
+            ObjectCacheMode = StorageObjectCacheMode.StrongObject,
             RaiseNotifications = true,
             UseSidecarWriteLocks = true,
             UseSingleWriteBuffer = true,
@@ -2925,9 +3022,12 @@ public sealed class EncryptedFieldTestRecord : IEncryptedFieldTestRecord
 public interface IIndexedTestRecord : IStoredContract<IIndexedTestRecord>
 {
     string Id { get; set; }
+    [SearchIndex(SearchIndexMode.Exact | SearchIndexMode.Prefix | SearchIndexMode.Suffix | SearchIndexMode.Contains)]
     string Name { get; set; }
     int Age { get; set; }
     string Country { get; set; }
+
+    [SearchIndex(SearchIndexMode.Exact | SearchIndexMode.Prefix | SearchIndexMode.Suffix)]
     string Phone { get; set; }
 
     [SearchIndex]

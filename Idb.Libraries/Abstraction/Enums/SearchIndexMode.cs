@@ -7,5 +7,7 @@ public enum SearchIndexMode
     Exact = 1,
     Range = 2,
     Prefix = 4,
-    All = Exact | Range | Prefix
+    Suffix = 8,
+    Contains = 16,
+    All = Exact | Range | Prefix | Suffix | Contains
 }

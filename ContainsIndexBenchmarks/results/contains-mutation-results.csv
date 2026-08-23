@@ -1,0 +1,11 @@
+Dataset,Index,Operation,ItemCount,TotalMilliseconds,MicrosecondsPerItem,PostMutationQueryMicroseconds,Status
+"random-100000x64",".NET string.Contains scan","incremental-upsert",1000,0.096,0.096,1472.417,"OK"
+"random-100000x64","Packed 48-bit trigram / sorted postings","full-rebuild-after-upserts",1000,1481.716,1481.716,40.621,"OK"
+"random-100000x64","Packed trigram / adaptive sparse+bitmap","full-rebuild-after-upserts",1000,1501.938,1501.938,38.33,"OK"
+"random-100000x64","Bit-sliced signature 256-bit/3h","incremental-upsert",1000,6.038,6.038,83.544,"OK"
+"random-100000x64","Bit-sliced signature 1024-bit/3h","incremental-upsert",1000,11.849,11.849,83.8,"OK"
+"random-100000x64","NLibSais native suffix array","full-rebuild-after-upserts",1000,294.291,294.291,50.316,"OK"
+"random-100000x64","Segmented NLibSais SA + delta (4096)","incremental-upsert",1000,0.174,0.174,27.266,"OK"
+"random-100000x64","Segmented NLibSais SA + delta (4096)","segment-compaction",100000,240.758,2.408,60.135,"OK"
+"random-100000x64","LIFTI whole-token wildcard","incremental-upsert",1000,12796.494,12796.494,386527.2,"OK"
+"random-100000x64","Lucene.Net exact trigram terms","full-rebuild-after-upserts",1000,2865.815,2865.815,4405,"OK"

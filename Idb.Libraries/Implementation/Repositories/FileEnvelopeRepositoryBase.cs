@@ -374,7 +374,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             cancellationToken.ThrowIfCancellationRequested();
 
             var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
-            if (currentEnvelope?.ObjectInstance is null)
+            if (currentEnvelope is null
+                || !StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out _))
             {
                 continue;
             }
@@ -405,7 +406,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             cancellationToken.ThrowIfCancellationRequested();
 
             var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
-            if (currentEnvelope?.ObjectInstance is null)
+            if (currentEnvelope is null
+                || !StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out _))
             {
                 continue;
             }
@@ -440,7 +442,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             }
 
             var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
-            if (currentEnvelope?.ObjectInstance is not TImplementation)
+            if (currentEnvelope is null
+                || !StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance)
+                || instance is not TImplementation)
             {
                 continue;
             }
@@ -460,7 +464,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         }
 
         var currentEnvelope = envelope;
-        var instance = currentEnvelope.ObjectInstance;
+        StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance);
         if (instance is null
             && _migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
             && !string.Equals(
@@ -494,13 +498,14 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 }
             }
 
-            if (StorageObjectCachePolicy.ShouldRetainObjectInstance(hydrated, _storagePolicy))
+            var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(hydrated, _storagePolicy);
+            if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
             {
-                envelope.ObjectInstance = hydrated;
                 envelope.ImplementationTypeName = hydrated.Envelope?.ImplementationTypeName;
                 envelope.EncryptedFields = hydrated.Envelope?.EncryptedFields
                     ?? envelope.EncryptedFields;
                 envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
+                StorageObjectCachePolicy.StoreObjectReference(envelope, hydrated, _storagePolicy);
                 currentEnvelope = envelope;
             }
         }
@@ -605,7 +610,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         {
             try
             {
-                if (envelope is null || envelope.ObjectInstance is not null || string.IsNullOrWhiteSpace(envelope.Location))
+                if (envelope is null
+                    || StorageObjectCachePolicy.TryGetObjectInstance(envelope, out _)
+                    || string.IsNullOrWhiteSpace(envelope.Location))
                 {
                     return;
                 }
@@ -654,6 +661,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             env.Location = file.FullName;
             env.VersionTag = string.IsNullOrWhiteSpace(version) ? (_contractConfig.ActiveVersion ?? "1.0.0") : version!;
             env.ObjectInstance = null;
+            env.ObjectInstanceWeakReference = null;
             env.ImplementationTypeName = null;
             env.EncryptedFields = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
             return env;

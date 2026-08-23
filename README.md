@@ -36,7 +36,8 @@ InterfaceDB stores enough metadata to recover the correct concrete type later, m
 - Single and multiple object cardinality models.
 - Configurable storage identity factories, including GUID v7 and sequential factories.
 - `SaveAsync`, `SaveManyAsync`, streaming queries, first/single query helpers, delete, and existence checks.
-- Opt-in search indexes for equality, range, and string prefix queries.
+- Opt-in search indexes for equality, range, ordinal prefix/suffix, and literal ordinal substring queries.
+- Cost-aware query planning with bounded ranges, selective intersections, safe unions, residual predicates, and plan diagnostics.
 - Concrete-type-specific query overloads.
 - Cross-process file write coordination with sidecar locks and last-write-wins proposal commits.
 - File-system watcher reconciliation for external create, update, rename, and delete events.
@@ -54,6 +55,8 @@ InterfaceDB stores enough metadata to recover the correct concrete type later, m
 - [Architecture](documentation/architecture.md)
 - [Security And Encryption](documentation/security.md)
 - [Storage, Indexing, And Performance](documentation/storage-indexing-performance.md)
+- [Query Planning](documentation/query-planning.md)
+- [Search Index Strategies](documentation/search-index-strategies.md)
 - [Product Positioning And Benchmarks](documentation/product-positioning.md)
 - [Performance Profiling](documentation/performance-profiling.md)
 - [Roadmap](documentation/roadmaps.md)
@@ -137,6 +140,8 @@ $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER="true"
 
 dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --run-all
 ```
+
+The full suite includes InterfaceDB query benchmarks for all three object-cache modes: metadata-only, weak object cache, and strong object cache. This makes the time/allocation tradeoff visible in the result table.
 
 The current file provider is not the final performance ceiling. It is one storage pattern. InterfaceDB has already shown strong indexed-read potential while doing more storage-model work than a scalar row benchmark: envelopes, concrete type metadata, migrations, encryption hooks, file coordination, and object materialization. Future memory-backed and single-file storage engines are intended to push the same repository model into higher-throughput profiles.
 

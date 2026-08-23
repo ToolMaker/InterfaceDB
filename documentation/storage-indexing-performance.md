@@ -69,17 +69,29 @@ Indexes are above the envelope catalog. They are used for property predicates:
 
 - `Age >= 18`
 - `Role == "Student"`
-- `Phone.StartsWith("+27")`
+- `Phone.StartsWith("+27", StringComparison.Ordinal)`
+- `Email.EndsWith("@example.com", StringComparison.Ordinal)`
+- `Name.Contains("ann")`
 
 The first index manager supports:
 
 - exact equality;
 - comparable range;
 - string prefix;
-- `AND` intersection;
+- reversed string suffix;
+- adaptive-gram literal substring containment;
+- cost-aware `AND` candidate selection and conditional intersection;
 - `OR` union.
 
 Index results store physical envelope keys, not object copies. The repository then materializes exact envelopes.
+
+The planner uses live per-path cardinality estimates. It begins with the least
+expensive candidate source and adds an intersection only when the projected
+reduction pays for building and intersecting another key set. Object-load cost
+is weighted more heavily in metadata-only mode than in strong-object mode.
+Unsupported and negative terms can remain residual filters behind a positive
+index anchor. An `OR` falls back to a scan if any branch cannot safely produce
+candidates.
 
 ## Why File Storage Can Still Compete
 
@@ -119,7 +131,11 @@ Future providers:
 
 ## Selective Object Caching
 
-Object caching can improve read-heavy scenarios.
+Object caching can improve read-heavy scenarios. InterfaceDB supports three repository object-cache modes:
+
+- `MetadataOnly`: retain envelope metadata only.
+- `WeakObject`: retain a `WeakReference<TContract>` so live objects can be reused without InterfaceDB keeping them alive.
+- `StrongObject`: retain the object instance strongly until cache update/removal.
 
 Example:
 
@@ -130,7 +146,9 @@ public sealed class Employee : IPerson
 }
 ```
 
-If employees are marked as cached, the repository can skip file reads for those instances and return the retained object. Future storage engines can use object pointers and page/catalog metadata to move the read head past cached objects and avoid unnecessary object payload reads.
+If employees are marked as cached, the repository can skip file reads for those instances and return the retained object. Weak cache mode provides a middle ground: if the application still holds the object, InterfaceDB can reuse it; if the application releases it, the .NET GC can collect it and InterfaceDB will fall back to storage on the next read.
+
+Future storage engines can use object pointers and page/catalog metadata to move the read head past cached objects and avoid unnecessary object payload reads.
 
 This is one reason the current file provider should not be treated as the final performance ceiling.
 
@@ -147,11 +165,30 @@ $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER="true"
 dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --run-all
 ```
 
+The full suite includes metadata-only, weak object-cache, and strong object-cache InterfaceDB query benchmarks. The metadata-only tests repeatedly materialize objects from file storage; those numbers are useful for storage-engine analysis, but they are not the normal hot indexed-query performance profile.
+
 InterfaceDB-only file tests:
 
 ```powershell
 dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --filter *FileSystem*
 ```
+
+Validate and benchmark the isolated query planner and substring index:
+
+```powershell
+dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --planner-validate
+dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --planner-quick
+dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --planner-benchmark --filter "*" --job short
+```
+
+On the recorded 100,000-item .NET 10 ShortRun, adaptive-gram `Contains` took
+44.36 microseconds versus 3,173.83 microseconds for a full ordinal scan. For a
+broad in-memory conjunction, always intersecting took 5,480.59 microseconds
+versus 2,426.34 microseconds for the best single index plus residual filtering;
+the cost-aware strong-cache plan correctly retained the single path at
+2,503.28 microseconds. These isolated numbers measure index/set work, not file
+materialization, which is why the planner applies a higher avoided-load value
+to metadata-only repositories.
 
 ## Profiling
 

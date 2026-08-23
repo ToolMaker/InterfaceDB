@@ -396,7 +396,7 @@ public class PersonStorageBenchmark : IDisposable
                 BulkWriteBatchSize = bulkBatchSize,
                 FileWriteBufferSize = 16 * 1024,
                 RaiseNotifications = false,
-                KeepObjectInstanceInCacheOnWrite = false,
+                ObjectCacheMode = StorageObjectCacheMode.MetadataOnly,
                 UseSingleWriteBuffer = useSingleWriteBuffer,
                 UseWriterSemaphore = false
             }
