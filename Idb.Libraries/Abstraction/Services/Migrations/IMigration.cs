@@ -1,4 +1,4 @@
-namespace Idb.Libraries.Abstraction.Services.Migrations;
+namespace Idb.Libraries.Abstractions.Services.Migrations;
 
 /// <summary>
 /// Represents a contract that can migrate its current state between schema versions.

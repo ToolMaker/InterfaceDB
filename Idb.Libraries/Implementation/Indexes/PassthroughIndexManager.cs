@@ -1,6 +1,6 @@
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
-using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Serialization;

@@ -9,7 +9,7 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
@@ -25,6 +25,24 @@ using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
 try
 {
+    if (args.Any(argument => string.Equals(argument, "--file-protocol-probe", StringComparison.OrdinalIgnoreCase)))
+    {
+        FileProtocolProbe.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--production-gate-crash-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        ProductionGateRunner.RunCrashWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--production-gate", StringComparison.OrdinalIgnoreCase)))
+    {
+        ProductionGateRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
     if (args.Any(argument => string.Equals(argument, "--planner-validate", StringComparison.OrdinalIgnoreCase)))
     {
         QueryPlannerBenchmarks.Validate();
@@ -152,6 +170,15 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-validate");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-quick");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --planner-benchmark");
+        Console.WriteLine();
+        Console.WriteLine("Run the production benchmark, stress, correctness, and crash-recovery gate:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --production-gate --quick");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --production-gate --records=10000,100000 --duration=00:30:00 --concurrency=1,4,16 --cache=strong,weak,metadata --durability=performance,durable");
+        Console.WriteLine("  Add --include-sqlserver to include the configured SQL Server alongside InterfaceDB and SQLite.");
+        Console.WriteLine("  Add --include-write-ablations to isolate search-index and sidecar-lock write costs.");
+        Console.WriteLine();
+        Console.WriteLine("Run the low-level durable file-protocol probe:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --file-protocol-probe --probe-records=200 --probe-payload-bytes=262");
     }
 
     public static void SmokeTestSqlConnection()
@@ -1133,8 +1160,6 @@ public class TransactionBenchmarks : IDisposable
             ContractPath = string.Empty,
             MigrationsPath = string.Empty,
             ActiveVersion = "1.0.0",
-            Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
-            IndexProvisioningMode = IndexProvisioningModeType.None,
             RepositoryType = ContractRepositoryType.FileSystem,
             StoragePolicy = StoragePolicy.Default with
             {
@@ -1174,8 +1199,6 @@ public class TransactionBenchmarks : IDisposable
         {
             DataRoot = dataRoot,
             ActiveVersion = "1.0.0",
-            Indexes = Array.Empty<IIndex<IIndexedBenchmarkPerson>>(),
-            IndexProvisioningMode = IndexProvisioningModeType.None,
             RepositoryType = ContractRepositoryType.FileSystem,
             StoragePolicy = StoragePolicy.Default with
             {
@@ -1561,8 +1584,6 @@ public sealed class IndexedBenchmarkPersonOptions : IDbContractConfigDto<IIndexe
     public string FileExtension { get; set; } = ".mpk";
     public string? DataRoot { get; set; } = "Data";
     public string? ActiveVersion { get; set; } = "1.0.0";
-    public IIndex<IIndexedBenchmarkPerson>[]? Indexes { get; set; } = Array.Empty<IIndex<IIndexedBenchmarkPerson>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;
     public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;
     public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; set; } =

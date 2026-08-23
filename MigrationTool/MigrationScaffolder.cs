@@ -58,7 +58,7 @@ public static class MigrationScaffolder
             MergeProperties(propertyMap, currentInterfacePath);
 
             builder.AppendLine("using MessagePack;");
-            builder.AppendLine("using Idb.Libraries.Abstraction.Services.Migrations;");
+            builder.AppendLine("using Idb.Libraries.Abstractions.Services.Migrations;");
             builder.AppendLine("using Idb.Libraries.Abstractions.Dtos;");
             builder.AppendLine("using Idb.Libraries.Abstractions.Services.Serialization;");
             builder.AppendLine($"using {previousNamespace};");

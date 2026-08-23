@@ -1,9 +1,8 @@
-using Idb.Libraries.Abstraction.Services.Cache;
-using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Migrations;
-using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -16,7 +15,7 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
     public FileEnvelopeRepository(
         IDbContractConfigDto<TContract> contractConfig,
         IReaderAndWriter<TContract> readerAndWriter,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
         IFileWriteCoordinator fileWriteCoordinator,
         StoragePolicy storagePolicy,
         Func<IObjectEnvelope<TContract>> envelopeFactory,

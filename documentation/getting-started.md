@@ -39,7 +39,7 @@ Multiple classes can implement the same contract. InterfaceDB stores the concret
 
 ## 3. Configure The Repository
 
-Your options object supplies the database name, data root, active version, file extension, indexes, repository type, and storage policy.
+Your options object supplies the database name, data root, active version, file extension, repository type, identity cardinality, and storage policy. Search indexes are declared on contract members with `[SearchIndex]`, not through a second configuration collection.
 
 ```csharp
 public sealed class PersonOptions : IDbContractConfigDto<IPerson>
@@ -50,9 +50,8 @@ public sealed class PersonOptions : IDbContractConfigDto<IPerson>
     public string? DataRoot { get; } = @"C:\Data\People";
     public string? ActiveVersion { get; } = "1.0.0";
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
-    public IIndex<IPerson>[]? Indexes { get; } = Array.Empty<IIndex<IPerson>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default;
+    public StorageObjectCardinality ObjectCardinality { get; } = StorageObjectCardinality.Multiple;
     public string? ImplementationsPath { get; } = null;
     public string? ContractPath { get; } = null;
     public string? MigrationsPath { get; } = null;
@@ -62,6 +61,8 @@ public sealed class PersonOptions : IDbContractConfigDto<IPerson>
 Register it:
 
 ```csharp
+using Idb.Libraries.Implementation.Extensions;
+
 services.AddRepository<IPerson>(new PersonOptions());
 ```
 
@@ -91,6 +92,17 @@ await foreach (var person in people.QueryManyAsync(x => x.Role == "Student"))
 ```
 
 `QueryManyAsync(Func<T,bool>)` is a predicate scan. Use `SearchManyAsync(Expression<Func<T,bool>>)` when you want the index manager to inspect the expression and use configured indexes.
+
+```csharp
+await foreach (var person in people.SearchManyAsync(
+    person => person.Age >= 18 &&
+              person.Name.StartsWith("Ja", StringComparison.Ordinal)))
+{
+    Console.WriteLine(person.Name);
+}
+```
+
+For `StartsWith` and `EndsWith`, use `StringComparison.Ordinal` so the expression semantics match the radix index. Unsupported or culture-sensitive expressions safely fall back to candidate validation or a scan.
 
 ## 5. Save Many
 
@@ -122,3 +134,27 @@ dotnet run -c Release --project InterfaceDb.ConsoleApp
 ```
 
 The demo uses the `IdbDemoStorage` project and writes sample people through `IRepository<IPerson>`.
+
+## 8. Choose Durability Deliberately
+
+`StoragePolicy.Default` uses `StorageDurabilityMode.Performance`. It writes canonical object files directly for low local latency. Select Durable mode when proposal recovery and cross-process coordination are required:
+
+```csharp
+var policy = StoragePolicy.Default with
+{
+    DurabilityMode = StorageDurabilityMode.Durable,
+    MaxConcurrency = Environment.ProcessorCount
+};
+
+services.AddRepository<IPerson>(new PersonOptions(), storagePolicy: policy);
+```
+
+Durable mode protects InterfaceDB's tested process-crash and multi-process protocol. It is not a substitute for backups, filesystem permissions, or platform-level power-loss testing.
+
+## 9. Continue
+
+- Add indexes with the [Feature Guide](features.md).
+- Choose a cache mode in [Storage, Indexing, And Performance](storage-indexing-performance.md).
+- Configure encryption with [Security And Encryption](security.md).
+- Introduce new contract versions with [Contract Versioning And Migrations](migrations.md).
+- Tune repository behavior with [Configuration](configuration.md).

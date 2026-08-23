@@ -1,10 +1,9 @@
-﻿using Idb.Libraries.Abstraction.Services;
-using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
-using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
 using System.Collections.Concurrent;
@@ -14,22 +13,24 @@ namespace Idb.Libraries.Implementation.Serialization
     public class FileObjectWriter<TContract> : IObjectWriter<TContract>
         where TContract : class, IStoredContract<TContract>
     {
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _ensuredDirs = new();
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _identitySemaphores = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, byte> _ensuredDirs = new();
+        private static readonly ConcurrentDictionary<string, IdentitySemaphoreEntry> _identitySemaphores = new(
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         private IObjectSerializer<TContract> _serializer;
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
         private readonly SemaphoreSlim? _writeSemaphore;
         private readonly StoragePolicy _storagePolicy;
-        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+        private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
         private readonly IEnvelopeStorageIdentityFactory<TContract> _storageIdentityFactory;
+        private readonly string _identityLockScope;
 
         public FileObjectWriter(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
             IDbContractConfigDto<TContract> contractConfig,
             StoragePolicy storagePolicy,
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+            IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
             IFileWriteCoordinator fileWriteCoordinator,
             IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory)
         {
@@ -40,6 +41,8 @@ namespace Idb.Libraries.Implementation.Serialization
             _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
             _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
             _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+            _identityLockScope = Path.GetFullPath(_contractConfig.DataRoot
+                ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
                 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
@@ -67,7 +70,7 @@ namespace Idb.Libraries.Implementation.Serialization
             .WrapAsync(objectInstance)
             .ConfigureAwait(false);
 
-            var identitySemaphore = isNewStorageObject
+            var identityLease = isNewStorageObject
                 ? await AcquireIdentitySemaphoreAsync(envelope, cancellationToken).ConfigureAwait(false)
                 : null;
             var semaphore = _writeSemaphore;
@@ -116,7 +119,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     {
                         if (_storagePolicy.UseSingleWriteBuffer)
                         {
-                            // Publish only after a complete payload has been flushed to disk.
+                            // WriteThrough already directs the write through intermediate caches.
                             var payload = _serializer.Serialize(envelope);
                             using var handle = File.OpenHandle(
                                 proposalPath,
@@ -125,7 +128,6 @@ namespace Idb.Libraries.Implementation.Serialization
                                 FileShare.None,
                                 options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
                             await RandomAccess.WriteAsync(handle, payload, 0, token).ConfigureAwait(false);
-                            RandomAccess.FlushToDisk(handle);
                         }
                         else
                         {
@@ -141,7 +143,6 @@ namespace Idb.Libraries.Implementation.Serialization
                             await using var stream = new FileStream(proposalPath, fso);
                             await _serializer.SerializeAsync(envelope, stream, token).ConfigureAwait(false);
                             await stream.FlushAsync(token).ConfigureAwait(false);
-                            stream.Flush(flushToDisk: true);
                         }
                     },
                     cancellationToken).ConfigureAwait(false);
@@ -161,7 +162,7 @@ namespace Idb.Libraries.Implementation.Serialization
             finally
             {
                 semaphore?.Release();
-                identitySemaphore?.Release();
+                identityLease?.Dispose();
             }
 
         }
@@ -248,17 +249,31 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 var start = batchStart + (worker * chunkSize);
                 var end = Math.Min(start + chunkSize, batchEnd);
-                workers[worker] = Task.Run(async () =>
-                {
-                    for (var index = start; index < end; index++)
-                    {
-                        await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                }, cancellationToken);
+                workers[worker] = WriteBatchRangeAsync(
+                    materialized,
+                    results,
+                    failures,
+                    start,
+                    end,
+                    cancellationToken);
             }
 
             await Task.WhenAll(workers).ConfigureAwait(false);
+        }
+
+        private async Task WriteBatchRangeAsync(
+            IReadOnlyList<TContract> materialized,
+            TContract?[] results,
+            ConcurrentBag<StorageBulkOperationFailure> failures,
+            int start,
+            int end,
+            CancellationToken cancellationToken)
+        {
+            for (var index = start; index < end; index++)
+            {
+                await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
 
         private async ValueTask TryWriteBatchItemAsync(
@@ -297,7 +312,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 exception);
         }
 
-        private async ValueTask<SemaphoreSlim?> AcquireIdentitySemaphoreAsync(
+        private async ValueTask<IdentitySemaphoreLease?> AcquireIdentitySemaphoreAsync(
             IObjectEnvelope<TContract> envelope,
             CancellationToken cancellationToken)
         {
@@ -307,11 +322,67 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
-            var semaphoreKey = typeof(TContract).FullName + "|" + logicalKey;
-            var semaphore = _identitySemaphores.GetOrAdd(semaphoreKey, static _ => new SemaphoreSlim(1, 1));
-            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return semaphore;
+            var semaphoreKey = _identityLockScope + "|" + typeof(TContract).FullName + "|" + logicalKey;
+
+            while (true)
+            {
+                var entry = _identitySemaphores.GetOrAdd(
+                    semaphoreKey,
+                    static _ => new IdentitySemaphoreEntry());
+                var ownsReference = false;
+                lock (entry.Gate)
+                {
+                    if (!entry.Retired)
+                    {
+                        entry.References++;
+                        ownsReference = true;
+                    }
+                }
+
+                if (!ownsReference)
+                {
+                    TryRemoveIdentitySemaphore(semaphoreKey, entry);
+                    continue;
+                }
+
+                try
+                {
+                    await entry.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    return new IdentitySemaphoreLease(semaphoreKey, entry);
+                }
+                catch
+                {
+                    ReleaseIdentityReference(semaphoreKey, entry);
+                    throw;
+                }
+            }
         }
+
+        internal static int RetainedIdentitySemaphoreCount => _identitySemaphores.Count;
+
+        private static void ReleaseIdentityReference(string key, IdentitySemaphoreEntry entry)
+        {
+            var retire = false;
+            lock (entry.Gate)
+            {
+                entry.References--;
+                if (entry.References == 0)
+                {
+                    entry.Retired = true;
+                    retire = true;
+                }
+            }
+
+            if (retire)
+            {
+                TryRemoveIdentitySemaphore(key, entry);
+                entry.Semaphore.Dispose();
+            }
+        }
+
+        private static void TryRemoveIdentitySemaphore(string key, IdentitySemaphoreEntry entry)
+            => ((ICollection<KeyValuePair<string, IdentitySemaphoreEntry>>)_identitySemaphores)
+                .Remove(new KeyValuePair<string, IdentitySemaphoreEntry>(key, entry));
 
         private void ResolveNewStorageIdentity(IObjectEnvelope<TContract> envelope)
         {
@@ -470,6 +541,38 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             throw new IOException($"Unable to read canonical payload '{path}' after coalescing.");
+        }
+
+        private sealed class IdentitySemaphoreEntry
+        {
+            public object Gate { get; } = new();
+            public SemaphoreSlim Semaphore { get; } = new(1, 1);
+            public int References { get; set; }
+            public bool Retired { get; set; }
+        }
+
+        private sealed class IdentitySemaphoreLease : IDisposable
+        {
+            private readonly string _key;
+            private readonly IdentitySemaphoreEntry _entry;
+            private int _disposed;
+
+            public IdentitySemaphoreLease(string key, IdentitySemaphoreEntry entry)
+            {
+                _key = key;
+                _entry = entry;
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                _entry.Semaphore.Release();
+                ReleaseIdentityReference(_key, _entry);
+            }
         }
 
     }

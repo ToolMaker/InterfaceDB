@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 using MessagePack;
-using Idb.Libraries.Abstraction.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using MigrationTool.Contracts.Person.v1_0_0;
@@ -41,13 +41,14 @@ public sealed partial class Person_v1_0_0_To_v1_0_1_Migration : MigrationTool.Co
 
     public bool Up()
     {
-        // TODO: Map legacy state to the new schema. Return false when migration cannot be completed.
+        // v1.0.1 adds Surname. Preserve all shared members and initialize the new value.
+        Surname = string.IsNullOrWhiteSpace(Surname) ? "Unknown" : Surname;
         return true;
     }
 
     public bool Down()
     {
-        // TODO: Map current state back to the legacy schema. Return false when rollback cannot be completed.
+        // v1.0.0 has no Surname member; the shared members already represent the legacy shape.
         return true;
     }
 }

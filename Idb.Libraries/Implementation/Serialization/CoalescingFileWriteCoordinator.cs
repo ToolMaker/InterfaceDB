@@ -409,8 +409,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
                     FileAccess.ReadWrite,
                     FileShare.None,
                     bufferSize: 1,
-                    FileOptions.WriteThrough);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    FileOptions.None);
                 return new FileLease(lockPath, stream);
             }
             catch (IOException)

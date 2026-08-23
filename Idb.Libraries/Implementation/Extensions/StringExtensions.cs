@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Idb.Libraries.Implementation.Extentions
+namespace Idb.Libraries.Implementation.Extensions
 {
     public static class StringExtensions
     {

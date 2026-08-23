@@ -4,7 +4,7 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 
 public class FlatFileStorageIdentityFactory<TContract, TKey> : IEnvelopeStorageIdentityFactory<TContract>
     where TContract : class, IStoredContract<TContract>

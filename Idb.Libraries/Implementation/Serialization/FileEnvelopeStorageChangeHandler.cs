@@ -1,10 +1,10 @@
-using Idb.Libraries.Abstraction.Services.Cache;
-using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstractions.Services.Cache;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 
 namespace Idb.Libraries.Implementation.Serialization;
 
@@ -17,7 +17,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IObjectSerializer<TContract> _serializer;
     private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
-    private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+    private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
     private readonly StoragePolicy _storagePolicy;
     private readonly string _dataRoot;
     private readonly string _fileExtension;
@@ -27,7 +27,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
         StoragePolicy storagePolicy,
         IObjectSerializer<TContract> serializer,
         IEnvelopeLifecycle<TContract> envelopeLifecycle,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes)
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));

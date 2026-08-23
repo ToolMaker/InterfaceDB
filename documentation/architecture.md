@@ -80,7 +80,7 @@ The main application entry point is `IRepository<TContract>`:
 - `QueryAsync`
 - `ExistsAsync`
 
-`InterfaceRepositryDb<TContract>` validates that `TContract` is an interface and has `[StorageScope]`, then delegates work to `IIndexManager<TContract>`.
+`InterfaceRepositoryDb<TContract>` validates that `TContract` is an interface and has `[StorageScope]`, then delegates work to `IIndexManager<TContract>`.
 
 The active `IIndexManager<TContract>` is selected per registered contract:
 
@@ -95,7 +95,7 @@ The intended query routing boundary is:
 - range predicates belong to secondary indexes;
 - the envelope cache must not become a range-query engine.
 
-For `StorageObjectCardinality.Multiple`, one logical key can resolve to multiple physical envelopes. Equality lookup is therefore constant-time to the logical group plus the cost of returning the matching group members. Range lookup is planned through per-field indexes.
+For `StorageObjectCardinality.Multiple`, one logical key can resolve to multiple physical envelopes. Equality lookup is therefore constant-time to the logical group plus the cost of returning the matching group members. Property ranges use the attribute-discovered per-field range index and return matching physical envelope keys.
 
 ## Dependency Injection
 
@@ -345,7 +345,7 @@ For backward compatibility, unkeyed services resolve to the first database regis
 The cache is currently an in-memory concurrent dictionary abstraction:
 
 ```csharp
-IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>
+IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>
 ```
 
 Conceptually, it is the primary equality catalog for envelopes. The logical storage identity is the lookup key, and the result can contain one or more physical envelopes depending on `StorageObjectCardinality`.
@@ -428,14 +428,14 @@ loading objects. See [Query Planning](query-planning.md).
 
 `FileObjectWriter<TContract>` performs the physical file write.
 
-Current write flow:
+Performance mode writes the canonical payload directly. Durable mode uses this flow:
 
 1. Wrap object into envelope.
 2. Resolve target payload path.
 3. Ensure target directory exists.
 4. Register an active writer lease for migration coordination.
 5. Write serialized bytes to a unique `.writing` proposal.
-6. Flush the complete proposal and atomically rename it to `.ready`.
+6. Write the proposal through intermediate caches and atomically rename it to `.ready`.
 7. Acquire the payload sidecar lock.
 8. Select the newest ready proposal and atomically move it over the canonical payload.
 9. Remove superseded proposals and repeat until no ready proposal remains.
@@ -460,12 +460,7 @@ the lock is:
 
 Lock acquisition uses `FileMode.CreateNew`, which is atomic across processes. Only one process can create the lock file. The lock file is held open with `FileShare.None`.
 
-The lock file stores small owner metadata:
-
-- process-level owner GUID
-- machine name
-- process ID
-- creation timestamp
+The lock file is intentionally empty. Its exclusive open handle is the synchronization primitive; persisting diagnostic metadata in every ephemeral lock added measurable latency without contributing to ownership or recovery correctness.
 
 Lock policy lives in `StoragePolicy`:
 
@@ -484,7 +479,7 @@ Concurrent writers do not wait before serializing their replacement payload. Eac
 <key>.mpk.pending.<guid>.writing
 ```
 
-After the bytes are complete and flushed, the proposal is published atomically as:
+After the write-through payload is complete and its handle is closed, the proposal is published atomically as:
 
 ```text
 <key>.mpk.pending.<published-ticks>.<guid>.ready
@@ -724,7 +719,7 @@ Migration failures use:
 
 Lazy migration begins from the skeleton envelope and provider locator. It reads the raw stored payload, applies the complete chain, and only then materializes the active contract. Legacy envelopes are deliberately excluded from startup cache hydration under the lazy strategy.
 
-Runtime migrations still need broader production hardening, particularly complete version-chain validation, tolerant-mode diagnostics, rollback behavior, and generated-contract compatibility coverage.
+Runtime migration chains, strict rollback, tolerant retention, lazy conversion, and generated adjacent-version contracts have executable coverage. Remaining production work is operational: richer per-record diagnostics, a dry-run/report mode, backup integration, and longer multi-platform upgrade/rollback soaks.
 
 ## Demo Storage
 
@@ -752,11 +747,13 @@ The console app writes 500 sample records, then queries and streams results thro
 
 Benchmarks compare InterfaceDB file writes against:
 
+- embedded SQLite through direct `Microsoft.Data.Sqlite` commands;
+- embedded SQLite through Dapper;
 - SQL Server raw commands;
 - Dapper;
 - EF Core.
 
-The benchmark projects are not zero-config. They expect SQL Server connection settings and use local file paths configured in code/settings.
+The embedded SQLite production gate is zero-service and runs by default. SQL Server comparisons remain opt-in because they require an external connection.
 
 ## Current Guarantees
 
@@ -767,22 +764,26 @@ The current system provides:
 - flat versioned file layout;
 - MessagePack payloads;
 - envelope cache;
-- sidecar write locking;
-- temp-file atomic commit;
-- low-level file change watching;
+- exact, range, prefix, suffix, and ordinal contains indexes;
+- cost-aware expression query planning;
+- sidecar write locking and migration writer leases;
+- recoverable proposal-file commit;
+- external file create/update/delete/rename reconciliation;
 - in-process pub/sub notifications;
-- baseline/migration scaffolding;
+- baseline/migration scaffolding and eager/lazy runtime migration;
+- AES-GCM envelope and selected-field encryption with key rotation;
+- contract baseline analyzer diagnostics;
 - clean solution build.
 
 ## Current Non-Goals / Roadmap Boundaries
 
 The current system does not yet provide:
 
-- full secondary indexing;
 - distributed event bus;
-- fully production-hardened runtime migrations;
 - stable type alias serialization;
 - transactional multi-record commits;
+- persistent full-text, fuzzy, or vector indexes;
+- replication, remote query transport, or distributed transactions;
 - automatic replacement of all object references held by user code after external file changes.
 
 See `documentation/roadmaps.md` for roadmap and gap tracking.
@@ -796,11 +797,14 @@ Current practical verification:
 - Visual Studio / `dotnet test` tests through `InterfaceDb.Tests`
 - integration harness scenarios through `InterfaceDb.IntegrationTests`
 
-`InterfaceDb.Tests` is the VS-discoverable MSTest project. It invokes `InterfaceDb.IntegrationTests`, which is a no-external-package console harness. The harness currently verifies:
+`InterfaceDb.Tests` and `Idb.Analyzers.Tests` are VS-discoverable MSTest projects. `InterfaceDb.IntegrationTests` is an executable end-to-end harness. Together they verify:
 
 - a single save creates a readable payload and leaves no lock or pending-write artifacts;
 - two child processes can publish writes to the same payload and leave one readable last-write-wins result;
 - initialization commits the newest abandoned ready proposal and removes superseded proposals;
 - eager migration drains old-version proposals, migrates the newest value, preserves the key, and writes to the active version directory.
-
-The test suite should still be expanded for file watcher change/delete/rename behavior and longer migration chains.
+- watcher create/update/delete/rename and rescan behavior;
+- exact/range/prefix/suffix/contains index correctness and maintenance;
+- multi-step, strict, tolerant, and lazy migration behavior;
+- encrypted round trips, tamper rejection, field proxies, and key rotation;
+- keyed database isolation, cardinality, bulk failure reporting, and object cache modes.

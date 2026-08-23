@@ -9,7 +9,7 @@ namespace Idb.Libraries.Abstractions.Options;
 public sealed record StoragePolicy
 {
     /// <summary>
-    /// Singleton instance representing the default policy (sequential writes, notifications enabled).
+    /// Singleton instance representing the default bounded-concurrency, metadata-cache, Performance-mode policy.
     /// </summary>
     public static StoragePolicy Default { get; } = new();
 

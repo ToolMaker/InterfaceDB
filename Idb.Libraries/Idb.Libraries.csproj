@@ -9,72 +9,7 @@
   <ItemGroup>
     <PackageReference Include="MessagePack" Version="3.1.7" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
     <PackageReference Include="RadixForge" Version="1.1.0" />
-    <PackageReference Include="System.IO.Hashing" Version="10.0.9" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\Contracts\**\*" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Remove="Abstraction\Services\Caching\**" />
-    <Compile Remove="Implementation\**" />
-    <Compile Remove="Demo\**" />
-    <EmbeddedResource Remove="Abstraction\Services\Caching\**" />
-    <EmbeddedResource Remove="Implementation\**" />
-    <EmbeddedResource Remove="Demo\**" />
-    <None Remove="Abstraction\Services\Caching\**" />
-    <None Remove="Implementation\**" />
-    <None Remove="Demo\**" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Include="Implementation\Cache\EnvelopeConcurrentDictionary.cs" />
-    <Compile Include="Implementation\DefaultFileNameFactory.cs" />
-    <Compile Include="Implementation\Encryption\AesGcmEncryptor.cs" />
-    <Compile Include="Implementation\Encryption\EncryptedStorageDispatchProxy.cs" />
-    <Compile Include="Implementation\Encryption\EncryptedStorageFieldProcessor.cs" />
-    <Compile Include="Implementation\Encryption\EncryptionNone.cs" />
-    <Compile Include="Implementation\Encryption\FileSystemEncryptionRotationOperation.cs" />
-    <Compile Include="Implementation\Encryption\WindowsCredentialEncryptionKeyStore.cs" />
-    <Compile Include="Implementation\FlatFileNameFactory.cs" />
-    <Compile Include="Implementation\FlatFileStorageIdentityFactory.cs" />
-    <Compile Include="Implementation\Extentions\RepositoryServiceCollectionExtensions.cs" />
-    <Compile Include="Implementation\Extentions\StringExtensions.cs" />
-    <Compile Include="Implementation\InMemoryGuidV7EnvelopeKeyFactory.cs" />
-    <Compile Include="Implementation\InMemorySequentialBigIntegerEnvelopeKeyFactory.cs" />
-    <Compile Include="Implementation\InMemorySequentialIntEnvelopeKeyFactory.cs" />
-    <Compile Include="Implementation\InMemorySequentialLongEnvelopeKeyFactory.cs" />
-    <Compile Include="Implementation\Indexes\EnvelopeLifecycle.cs" />
-    <Compile Include="Implementation\Indexes\PassthroughIndexManager.cs" />
-    <Compile Include="Implementation\Indexes\SearchIndexManager.cs" />
-    <Compile Include="Implementation\Indexes\SearchQueryPlanning.cs" />
-    <Compile Include="Implementation\Indexes\SearchIndexStructures.cs" />
-    <Compile Include="Implementation\Indexes\SearchIndexDefinition.cs" />
-    <Compile Include="Implementation\Indexes\SearchIndexDiscovery.cs" />
-    <Compile Include="Implementation\Indexes\SearchIndexStore.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemEagerMigrationStrategy.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemLazyMigrationStrategy.cs" />
-    <Compile Include="Implementation\Migrations\FileSystemMigrationStrategyBase.cs" />
-    <Compile Include="Implementation\Repositories\FileEnvelopeRepositoryBase.cs" />
-    <Compile Include="Implementation\Repositories\FileEnvelopeRepository.cs" />
-    <Compile Include="Implementation\Repositories\InterfaceRepositryDb.cs" />
-    <Compile Include="Implementation\Serialization\BinaryObjectSerializer.cs" />
-    <Compile Include="Implementation\Serialization\CoalescingFileWriteCoordinator.cs" />
-    <Compile Include="Implementation\Serialization\EncryptingObjectSerializer.cs" />
-    <Compile Include="Implementation\Serialization\EnvelopeCacheKey.cs" />
-    <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeHandler.cs" />
-    <Compile Include="Implementation\Serialization\FileEnvelopeStorageChangeSource.cs" />
-    <Compile Include="Implementation\Serialization\FileObjectEnvelope.cs" />
-    <Compile Include="Implementation\Serialization\FileObjectReader.cs" />
-    <Compile Include="Implementation\Serialization\FileObjectWriter.cs" />
-    <Compile Include="Implementation\Serialization\ObjectReaderAndWriter.cs" />
-    <Compile Include="Implementation\Serialization\SidecarFileWriteLock.cs" />
-    <Compile Include="Implementation\Serialization\StorageObjectCachePolicy.cs" />
   </ItemGroup>
 
 </Project>
