@@ -20,6 +20,9 @@ public sealed class LockingIntegrationTests
 
         Assert.IsTrue(File.Exists(harnessProject), $"Integration test harness project was not found at '{harnessProject}'.");
 
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
+            ?? throw new InvalidOperationException("Unable to determine the active test build configuration.");
+
         var startInfo = new ProcessStartInfo("dotnet")
         {
             UseShellExecute = false,
@@ -29,7 +32,10 @@ public sealed class LockingIntegrationTests
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(harnessProject);
+        startInfo.ArgumentList.Add("--configuration");
+        startInfo.ArgumentList.Add(configuration);
         startInfo.ArgumentList.Add("--no-build");
+        startInfo.ArgumentList.Add("--no-restore");
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start integration test harness.");
