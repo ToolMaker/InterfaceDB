@@ -1,7 +1,7 @@
 using System.Linq.Expressions;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
-using Idb.Libraries.Abstraction.Services;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;

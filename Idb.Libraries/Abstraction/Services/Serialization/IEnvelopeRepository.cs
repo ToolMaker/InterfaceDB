@@ -1,4 +1,4 @@
-using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.PubSub;
 

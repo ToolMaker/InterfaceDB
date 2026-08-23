@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Idb.Libraries.Abstraction.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Indexes;
@@ -101,7 +101,7 @@ internal static class Program
 
         if (string.IsNullOrWhiteSpace(options.ContractName))
         {
-            Console.WriteLine("Unable to determine the contract name. Supply it explicitly or ensure the options file exposes a Key value.");
+            Console.WriteLine("Unable to determine the contract name. Supply it explicitly or ensure the options file exposes an EnvelopeDICacheKey value.");
             return 1;
         }
 
@@ -453,7 +453,7 @@ internal static class Program
     }
 
     private sealed record ContractOptionsConfig(
-        string? Key,
+        string? RegistrationKey,
         string? ContractName,
         string ContractPath,
         string ImplementationsPath,
@@ -464,7 +464,8 @@ internal static class Program
     private static bool TryParseContractOptions(string optionsFilePath, out ContractOptionsConfig config, out string? error)
     {
         var lines = File.ReadAllLines(optionsFilePath);
-        var key = ExtractStringLiteral(lines, "Key");
+        var registrationKey = ExtractStringLiteral(lines, "EnvelopeDICacheKey")
+            ?? ExtractStringLiteral(lines, "Key");
         var contractName = ExtractStringLiteral(lines, "ContractName");
         var contractPath = ExtractStringLiteral(lines, "ContractPath");
         var implementationsPath = ExtractStringLiteral(lines, "ImplementationsPath");
@@ -479,7 +480,7 @@ internal static class Program
             return false;
         }
 
-        config = new ContractOptionsConfig(key, contractName, contractPath, implementationsPath, migrationsPath, activeVersion, dataRoot);
+        config = new ContractOptionsConfig(registrationKey, contractName, contractPath, implementationsPath, migrationsPath, activeVersion, dataRoot);
         error = null;
         return true;
     }
@@ -591,7 +592,7 @@ internal static class Program
             return resolvedFromContract;
         }
 
-        var resolvedFromKey = NormalizeContractIdentifier(config.Key);
+        var resolvedFromKey = NormalizeContractIdentifier(config.RegistrationKey);
         if (!string.IsNullOrWhiteSpace(resolvedFromKey))
         {
             return resolvedFromKey;
@@ -739,15 +740,13 @@ internal static class Program
             $"// TODO: Update the generic argument if your runtime contract type differs from {contractInterface}.",
             $"public sealed class {className} : IDbContractConfigDto<{contractInterface}>",
             "{",
-            $"    public string Key {{ get; set; }} = \"{sanitizedKey}\";",
+            $"    public string EnvelopeDICacheKey {{ get; set; }} = \"{sanitizedKey}\";",
             $"    public string ContractName {{ get; set; }} = \"{sanitizedContractName}\";",
             $"    public string? ImplementationsPath {{ get; set; }} = {ToVerbatimLiteral(exeBaseFull, implementationsRoot)};",
             $"    public string? ContractPath {{ get; set; }} = {ToVerbatimLiteral(exeBaseFull, contractRoot)};",
             $"    public string? MigrationsPath {{ get; set; }} = {ToVerbatimLiteral(exeBaseFull, migrationsRoot)};",
             "    public string? DataRoot { get; set; } = \"Data\";",
             $"    public string? ActiveVersion {{ get; set; }} = \"{result.NewVersion}\";",
-            $"    public IIndex<{contractInterface}>[]? Indexes {{ get; set; }} = Array.Empty<IIndex<{contractInterface}>>();",
-            "    public IndexProvisioningModeType IndexProvisioningMode { get; set; } = IndexProvisioningModeType.Dynamic;",
             "    public ContractRepositoryType RepositoryType { get; set; } = ContractRepositoryType.FileSystem;",
             "    public StorageObjectCardinality ObjectCardinality { get; set; } = StorageObjectCardinality.Multiple;",
             "    public StoragePolicy? StoragePolicy { get; set; } = StoragePolicy.Default;",

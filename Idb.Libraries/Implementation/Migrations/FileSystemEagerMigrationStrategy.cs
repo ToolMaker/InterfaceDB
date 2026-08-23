@@ -1,4 +1,4 @@
-using Idb.Libraries.Abstraction.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;

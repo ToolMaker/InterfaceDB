@@ -8,11 +8,9 @@ using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Implementation.Cache;
-using Idb.Libraries.Abstraction.Services;
-using Idb.Libraries.Abstraction.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Indexes;
 using Idb.Libraries.Implementation.Repositories;
 using Idb.Libraries.Implementation.Serialization;
@@ -385,8 +383,6 @@ public class PersonStorageBenchmark : IDisposable
             ContractPath = string.Empty,
             MigrationsPath = string.Empty,
             ActiveVersion = "1.0.0",
-            Indexes = Array.Empty<IIndex<ContractPerson.IPerson>>(),
-            IndexProvisioningMode = IndexProvisioningModeType.None,
             RepositoryType = ContractRepositoryType.FileSystem,
             StoragePolicy = StoragePolicy.Default with
             {

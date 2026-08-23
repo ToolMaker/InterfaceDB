@@ -1,114 +1,97 @@
 # Security And Encryption
 
-InterfaceDB security is layered. The current implementation supports whole-envelope encryption and property-level encryption through interface contracts.
+InterfaceDB can encrypt complete envelopes or selected contract properties. Encryption is opt-in; the default `EncryptionNone` provider writes plaintext `IDB4` payloads.
 
-## Security Goals
+## Security Boundary
 
-InterfaceDB aims to protect stored object data while preserving the interface-first programming model.
+The implemented controls protect persisted payload contents against offline inspection and detect ciphertext/header modification when AES-GCM is configured. They do not provide:
 
-Current security capabilities:
+- operating-system account isolation or file ACL management;
+- protection after an attacker can execute code in the application process;
+- secure deletion from SSDs, backups, snapshots, or synchronized copies;
+- encrypted filenames, directory names, file sizes, or modification times;
+- distributed authorization, audit logging, or remote access control;
+- automatic key escrow or recovery;
+- a formal third-party cryptographic audit.
 
-- encrypted files at rest;
-- authenticated AES-GCM payloads;
-- key IDs for historical key lookup;
-- key rotation;
-- Windows Credential Manager key storage;
-- selected field encryption inside the envelope;
-- plaintext backing-field clearing after encrypted-field save;
-- interface proxy decryption on property access.
+Use normal OS permissions, backup controls, process hardening, and secret-management practices around the library.
 
 ## Whole-Envelope Encryption
 
-Whole-envelope encryption runs after serialization:
+Whole-envelope encryption is applied after MessagePack serialization:
 
 ```text
-object -> envelope -> MessagePack bytes -> encrypt -> storage
-storage -> decrypt -> MessagePack bytes -> envelope -> object
+object -> envelope -> IDB4 bytes -> AES-GCM -> IDBE file
+IDBE file -> AES-GCM -> IDB4 bytes -> envelope -> object
 ```
 
-Plain files use internal `IDB*` envelope headers. AES-GCM encrypted files use an outer `IDBE` frame.
+`AesGcmEncryptor` uses:
 
-Register encryption before the repository:
+- a cryptographically random nonce for every encryption;
+- a 16-byte authentication tag;
+- 128-, 192-, or 256-bit AES keys;
+- authenticated header bytes, including framing and key ID;
+- `IDBE` framing with keyed and legacy formats.
+
+Authentication failures throw `CryptographicException`; corrupted ciphertext is not returned as an object.
+
+Register a key provider before the repository:
 
 ```csharp
 services.AddInterfaceDbAesGcmEncryption(keyProvider);
 services.AddRepository<IPerson>(personOptions);
 ```
 
-Custom encryption can implement `IEncryptor`.
-
-## Key Storage
-
-The attribute should not contain secrets. Attribute parameters should be profile names only:
+For keyed databases, use the same registration key for encryption and repository registration:
 
 ```csharp
-[EncryptedStorage("PeopleSecure")]
-public interface IPerson : IStoredContract<IPerson>
-{
-    [EncryptedStorageField("NationalId")]
-    string NationalIdentifier { get; set; }
-}
+services.AddInterfaceDbAesGcmEncryption("SecurePeople", keyProvider);
+services.AddRepository<IPerson>(secureOptions, "SecurePeople");
 ```
 
-The profile name points to configuration or DI:
+## Key Providers
 
-```json
-{
-  "InterfaceDb": {
-    "EncryptionProfiles": {
-      "PeopleSecure": {
-        "Provider": "WindowsCredentialManager",
-        "KeyName": "InterfaceDb.People.Active"
-      },
-      "NationalId": {
-        "Provider": "WindowsCredentialManager",
-        "KeyName": "InterfaceDb.People.NationalId"
-      }
-    }
-  }
-}
-```
+`IKeyProvider` supplies one current key. `IRotatingKeyProvider` additionally supplies:
 
-Current implementation stores the profile name with encrypted field metadata. A full profile resolver is a roadmap item.
+- the active key identifier;
+- historical keys by identifier;
+- the active key material.
+
+InterfaceDB stores a non-secret key ID in keyed `IDBE` headers. It does not store the encryption key in the data file.
+
+Keys must remain available while any file references them. Removing a historical key before all files have been rotated makes those files unreadable.
 
 ## Windows Credential Manager
 
-`WindowsCredentialEncryptionKeyStore` stores active and historical keys for the current Windows user.
+`WindowsCredentialEncryptionKeyStore` implements rotating key storage with Generic Credentials for the current Windows user.
 
 ```csharp
 var keyStore = new WindowsCredentialEncryptionKeyStore("People");
-keyStore.AddOrUpdateKey("key-2025", oldKey);
-keyStore.AddOrUpdateKey("key-2026", currentKey);
+keyStore.AddOrUpdateKey("key-2026", RandomNumberGenerator.GetBytes(32));
 keyStore.SetActiveKey("key-2026");
+
+services.AddInterfaceDbWindowsCredentialEncryption("People");
+services.AddRepository<IPerson>(personOptions);
 ```
 
-Then register:
+This provider is Windows-specific. Other operating systems currently require a custom `IKeyProvider`/`IRotatingKeyProvider`; platform keychain, vault, and HSM providers remain roadmap work.
 
-```csharp
-services.AddInterfaceDbWindowsCredentialEncryption(
-    "People",
-    new AesGcmEncryptorOptions
-    {
-        LegacyKeyId = "key-2025",
-        RotationMode = EncryptionRotationMode.ReencryptOnRead
-    });
-```
+Do not place key bytes, passwords, or tokens in attributes, source control, `appsettings.json`, command-line arguments, or filenames.
 
 ## Key Rotation
 
-Key-aware encrypted payloads store a non-secret key ID. That lets InterfaceDB select the correct historical key directly.
+Key-aware payloads record the key ID used for encryption. Two rotation paths are implemented:
 
-Rotation modes:
+- `EncryptionRotationMode.ReencryptOnRead` rewrites an old payload after successfully reading it with a historical key. Replacement uses compare-before-replace behavior so a concurrent write is not overwritten.
+- `IEncryptionRotationOperation<TContract>.RotateAllAsync` acquires the migration/write scope and rewrites every payload that does not use the active key.
 
-- `ReadHistoricalOnly`: read old payloads without rewriting.
-- `ReencryptOnRead`: decrypt with the historical key and write once with the active key.
-- forced rotation through `IEncryptionRotationOperation<TContract>.RotateAllAsync`.
+Legacy version-1 `IDBE` payloads do not contain a key ID. Configure `LegacyKeyId` when a rotating provider must read them.
 
-Historical keys must remain available until every payload that references them has been rewritten.
+Keep a verified backup and every referenced historical key until a full rotation and reopen validation have succeeded.
 
 ## Field-Level Encryption
 
-Field-level encryption is declared on interface properties:
+Mark selected properties on the interface:
 
 ```csharp
 [StorageScope(VersionTag = "1.0.0")]
@@ -122,45 +105,50 @@ public interface IPerson : IStoredContract<IPerson>
 }
 ```
 
-Write behavior:
+Before serialization, InterfaceDB serializes and encrypts each marked value into `Envelope.EncryptedFields`, then clears the concrete backing property. On read, a `DispatchProxy` decrypts an encrypted getter on demand and encrypts setter values back into the envelope.
 
-1. InterfaceDB detects encrypted properties from the contract.
-2. The property value is serialized and encrypted.
-3. Ciphertext is stored in `Envelope.EncryptedFields`.
-4. The concrete backing property is cleared to its default value.
-5. The object payload is serialized without the plaintext field value.
+Current limitations:
 
-Read behavior:
+- marked properties must have public get and set accessors;
+- callers must use the returned interface/proxy instance to obtain encrypted values;
+- profile names are persisted as labels, but a per-profile encryptor resolver is not implemented yet;
+- the currently registered repository encryptor performs the actual field encryption;
+- plaintext necessarily exists in application memory while a value is being used.
 
-1. The object and envelope are loaded.
-2. InterfaceDB returns an interface proxy.
-3. Normal properties delegate to the concrete object.
-4. Encrypted property getters decrypt the envelope field value on demand.
-5. Encrypted property setters encrypt the new value and clear the concrete backing property.
+## Plaintext Rollout
 
-This reduces long-lived plaintext in memory. It does not make process memory impossible to inspect. Any value that application code reads must briefly exist as plaintext.
+`AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old plaintext `IDB*` files to be read during an encryption rollout. New writes still use `IDBE`.
 
-## Tamper Detection Direction
+This option weakens enforcement because any syntactically valid plaintext envelope is accepted. Enable it only for a controlled migration window, rotate/rewrite the complete store, verify the result, and then disable it.
 
-AES-GCM already authenticates encrypted payloads. Future non-encrypted or mixed-mode stores should add envelope integrity signatures/HMACs so external edits can be detected before materialization.
+## Visible Metadata
 
-Potential future features:
+Whole-envelope encryption protects the serialized envelope body, including concrete type and encrypted-field dictionary. The file provider still reveals:
 
-- envelope HMAC/signature for plaintext storage;
-- device/user-bound keys;
-- profile-based unlock policies;
-- app-mediated file opening with passphrase or external approval;
-- secure document viewer flow for double-clicked encrypted objects;
-- field-level provider selection through encryption profiles.
+- the data root and active-version directory;
+- object filenames/storage identities;
+- file count, size, and timestamps;
+- temporary lock/proposal names while writes are active.
 
-## Secure File Access Concept
+Use opaque identity factories when meaningful identifiers must not appear in filenames.
 
-A future secure-file mode can use InterfaceDB as the registered file handler:
+## Security Verification
 
-1. User opens an encrypted InterfaceDB-backed file.
-2. The app reads non-secret metadata.
-3. The app asks for passphrase, device approval, or external key release.
-4. The key provider unlocks the active key.
-5. InterfaceDB decrypts and displays the object/document.
+The integration harness covers:
 
-This is a good fit for sensitive document storage. It is separate from runtime anti-cheat and should be positioned as app-mediated encrypted object access.
+- encrypted round trips;
+- authentication failure after payload tampering;
+- lazy direct-to-active-key rotation;
+- selected-field proxy encryption/decryption;
+- forced full-store rotation;
+- legacy encrypted payload lookup;
+- Windows Credential Manager active and historical keys;
+- encrypted eager migration.
+
+The repository dependency audit reported no known vulnerable direct or transitive NuGet packages on 2026-08-23. Re-run the advisory check before every public release:
+
+```powershell
+dotnet list InterfaceDB.sln package --vulnerable --include-transitive --no-restore
+```
+
+See the root [Security Policy](../SECURITY.md) for vulnerability reporting.

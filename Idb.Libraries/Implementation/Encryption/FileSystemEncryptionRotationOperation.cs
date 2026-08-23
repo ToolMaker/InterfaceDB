@@ -1,7 +1,7 @@
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 
 namespace Idb.Libraries.Implementation.Encryption;
 

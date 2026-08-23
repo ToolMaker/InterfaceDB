@@ -126,8 +126,6 @@ internal static class EncryptionRotationCommand
         public string? MigrationsPath => null;
         public string? DataRoot { get; }
         public string? ActiveVersion => null;
-        public IIndex<MaintenanceContract>[]? Indexes => [];
-        public IndexProvisioningModeType IndexProvisioningMode => IndexProvisioningModeType.None;
         public ContractRepositoryType RepositoryType => ContractRepositoryType.FileSystem;
         public StoragePolicy? StoragePolicy => Idb.Libraries.Abstractions.Options.StoragePolicy.Default;
     }

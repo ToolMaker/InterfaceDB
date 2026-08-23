@@ -138,7 +138,7 @@ The trace should tell us which direction is worth pursuing:
 
 | Finding | Likely Action |
 |-------- |-------------- |
-| File IO dominates | Defer large gains to a future storage engine provider. Keep file provider simple. |
+| File I/O dominates | Remove proven redundant barriers, then move structural gains to another provider. |
 | Serialization dominates | Keep `IObjectSerializer<TContract>` stable and consider optional serializer providers later. |
 | Index update allocation dominates | Optimize `SearchIndexStore<TContract>` value tracking and candidate set handling. |
 | Expression planning dominates | Profile and tune the cost-aware query-plan layer, expression-shape compilation cache, and candidate materialization. |
@@ -201,4 +201,8 @@ The hot selective indexed query trace confirms that the query path is small comp
 
 This suggests a possible future micro-optimization: cache or avoid compiled predicate validation for expressions that are fully satisfied by supported indexes. That should be handled carefully because the current validation step is a safety net against stale or incorrectly planned index results.
 
-Current conclusion: do not spend the next optimization pass on serializer replacement or IL tricks. The likely large write gains require either reducing per-file filesystem overhead in the existing provider or designing a new storage-engine provider. The existing file provider should stay focused on simple, reliable local object storage.
+The first provider-level pass removed redundant ephemeral-lock persistence and an overlapping proposal flush. Durable p50 improved from 15.299 ms to 5.626 ms in the local quick gate while recovery and cross-process tests remained green. See [InterfaceDB And SQLite Performance Diagnosis](interfacedb-sqlite-performance-diagnosis.md).
+
+Current conclusion: serializer replacement and IL tricks are not the next write priority. The remaining large write gain requires changing the physical lifecycle—most plausibly an append-only provider—while the existing provider stays focused on reliable, independently inspectable object files.
+
+Raw `.nettrace` and SpeedScope captures are generated evidence and are intentionally ignored. Record commands, runtime, environment, and reviewed conclusions in documentation rather than committing large machine-specific traces.

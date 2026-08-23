@@ -16,14 +16,14 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// Repository facade that delegates persistence operations to the injected <see cref="IIndexManager{TContract}"/>.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class InterfaceRepositryDb<TContract> : IRepository<TContract>
+public sealed class InterfaceRepositoryDb<TContract> : IRepository<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
     private readonly ContractRepositoryType _repositoryType;
     private readonly StoragePolicy _storagePolicy;
 
-    public InterfaceRepositryDb(
+    public InterfaceRepositoryDb(
         IIndexManager<TContract> indexManager,
         IDbContractConfigDto<TContract> contractConfig,
         StoragePolicy storagePolicy)

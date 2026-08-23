@@ -5,16 +5,17 @@ using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
-using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Encryption.Options;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Abstraction.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Implementation.Encryption;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Indexes;
+using Idb.Libraries.Implementation.Serialization;
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
 using System.Numerics;
@@ -757,6 +758,9 @@ static async Task RepositoryBulkSavePersistsInInputOrderAsync()
         }
 
         Assert(queried.Count == records.Length, "Every bulk-saved object should be queryable.");
+        Assert(
+            FileObjectWriter<ILockTestRecord>.RetainedIdentitySemaphoreCount == 0,
+            "Completed writes should not retain per-identity semaphores.");
         AssertNoSidecarArtifacts(testRoot);
     }
     finally
@@ -824,7 +828,7 @@ static async Task RepositoryDoesNotCacheObjectInstancesByDefaultAsync()
             new LockTestRecord { Id = "metadata-only", Value = "stored" }).ConfigureAwait(false);
         var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
         var envelopes = provider.GetRequiredKeyedService<
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+            IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
 
         Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope metadata should be cached after save.");
         Assert(cached!.ObjectInstance is null, "Default cache should retain envelope metadata without the object instance.");
@@ -853,7 +857,7 @@ static async Task RepositoryWeakObjectCacheUsesWeakReferenceAsync()
             new LockTestRecord { Id = "weak-cache", Value = "stored" }).ConfigureAwait(false);
         var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
         var envelopes = provider.GetRequiredKeyedService<
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+            IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
 
         Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope metadata should be cached after save.");
         Assert(cached!.ObjectInstance is null, "Weak cache should not retain a strong object reference.");
@@ -885,7 +889,7 @@ static async Task RepositoryCachesStorageCachedObjectsAsync()
             new CachedLockTestRecord { Id = "type-cache", Value = "stored" }).ConfigureAwait(false);
         var storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
         var envelopes = provider.GetRequiredKeyedService<
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+            IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
 
         Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after save.");
         Assert(ReferenceEquals(saved, cached!.ObjectInstance), "StorageCached concrete types should retain the object instance.");
@@ -914,7 +918,7 @@ static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
             await repository.SaveAsync(saved).ConfigureAwait(false);
 
             var envelopes = writerProvider.GetRequiredKeyedService<
-                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+                IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
             Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after flagged save.");
             Assert(ReferenceEquals(saved, cached!.ObjectInstance), "Envelope cache flag should retain the current object instance.");
         }
@@ -925,7 +929,7 @@ static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
             await repository.InitializeAsync().ConfigureAwait(false);
 
             var envelopes = readerProvider.GetRequiredKeyedService<
-                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
+                IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
             Assert(envelopes.TryGetValue(storageKey, out var coldEnvelope), "Cold start should seed envelope metadata.");
             Assert(coldEnvelope!.ObjectInstance is null, "Cold start should not hydrate the object before query.");
 
@@ -1579,7 +1583,7 @@ static async Task LosingProposalReturnsAndCachesCanonicalWinnerAsync()
             ?? throw new InvalidOperationException("Seed envelope location was not initialized.");
 
         var serializer = provider.GetRequiredService<IObjectSerializer<ILockTestRecord>>();
-        var lifecycle = provider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<ILockTestRecord>>();
+        var lifecycle = provider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<ILockTestRecord>>();
         await WriteReadyProposalAsync(
             serializer,
             lifecycle,
@@ -1622,7 +1626,7 @@ static async Task InitializationCommitsNewestAbandonedProposalAsync()
                 ?? throw new InvalidOperationException("Seed envelope location was not initialized.");
 
             var serializer = seedProvider.GetRequiredService<IObjectSerializer<ILockTestRecord>>();
-            var lifecycle = seedProvider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<ILockTestRecord>>();
+            var lifecycle = seedProvider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<ILockTestRecord>>();
 
             await WriteReadyProposalAsync(
                 serializer,
@@ -1665,7 +1669,7 @@ static async Task EagerMigrationDrainsProposalsBeforeMigratingAsync()
         await using (var writerProvider = BuildMigrationProvider(testRoot))
         {
             var serializer = writerProvider.GetRequiredService<IObjectSerializer<IVersionedTestRecord>>();
-            var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
+            var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
 
             await WriteVersionedReadyProposalAsync(
                 serializer,
@@ -1904,7 +1908,7 @@ static async Task<string> SeedVersionedLegacyPayloadAsync(string testRoot, strin
 
     await using var writerProvider = BuildMigrationProvider(testRoot);
     var serializer = writerProvider.GetRequiredService<IObjectSerializer<IVersionedTestRecord>>();
-    var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
+    var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
     await WriteVersionedReadyProposalAsync(
         serializer,
         lifecycle,
@@ -2176,7 +2180,7 @@ static async Task EncryptedEagerMigrationDrainsAndMigratesProposalsAsync()
         await using (var writerProvider = BuildEncryptedMigrationProvider(testRoot))
         {
             var serializer = writerProvider.GetRequiredService<IObjectSerializer<IVersionedTestRecord>>();
-            var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
+            var lifecycle = writerProvider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
             await WriteVersionedReadyProposalAsync(
                 serializer,
                 lifecycle,
@@ -2206,7 +2210,7 @@ static async Task EncryptedEagerMigrationDrainsAndMigratesProposalsAsync()
 
 static async Task WriteReadyProposalAsync(
     IObjectSerializer<ILockTestRecord> serializer,
-    Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<ILockTestRecord> lifecycle,
+    Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<ILockTestRecord> lifecycle,
     string payloadPath,
     string value,
     string order,
@@ -2224,7 +2228,7 @@ static async Task WriteReadyProposalAsync(
 
 static async Task WriteVersionedReadyProposalAsync(
     IObjectSerializer<IVersionedTestRecord> serializer,
-    Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<IVersionedTestRecord> lifecycle,
+    Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord> lifecycle,
     string payloadPath,
     string value,
     string order)
@@ -2301,7 +2305,7 @@ static async Task RunChildAbandonedMigrationProposalAsync(
 
     await using var provider = BuildMigrationProvider(dataRoot);
     var serializer = provider.GetRequiredService<IObjectSerializer<IVersionedTestRecord>>();
-    var lifecycle = provider.GetRequiredService<Idb.Libraries.Abstraction.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
+    var lifecycle = provider.GetRequiredService<Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord>>();
     await WriteVersionedReadyProposalAsync(
         serializer,
         lifecycle,
@@ -2680,8 +2684,6 @@ public sealed class LockTestOptions : IDbContractConfigDto<ILockTestRecord>
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {
@@ -2725,8 +2727,6 @@ public sealed class SelectiveObjectCacheOptions : IDbContractConfigDto<ILockTest
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; }
 }
@@ -2746,8 +2746,6 @@ public sealed class IndexedTestOptions : IDbContractConfigDto<IIndexedTestRecord
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<IIndexedTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<IIndexedTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {
@@ -2781,8 +2779,6 @@ public sealed class SingleLockTestOptions : IDbContractConfigDto<ILockTestRecord
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StorageObjectCardinality ObjectCardinality { get; } = StorageObjectCardinality.Single;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
@@ -2826,8 +2822,6 @@ public sealed class WatcherLockTestOptions : IDbContractConfigDto<ILockTestRecor
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; }
 }
@@ -2847,8 +2841,6 @@ public sealed class ShortTimeoutLockTestOptions : IDbContractConfigDto<ILockTest
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {
@@ -2880,8 +2872,6 @@ public sealed class NamedLockTestOptions : IDbContractConfigDto<ILockTestRecord>
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<ILockTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<ILockTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StorageObjectCardinality ObjectCardinality { get; } = StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
@@ -2907,8 +2897,6 @@ public sealed class EncryptedFieldTestOptions : IDbContractConfigDto<IEncryptedF
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public IIndex<IEncryptedFieldTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<IEncryptedFieldTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {
@@ -3197,8 +3185,6 @@ public sealed class VersionedTestOptions : IDbContractConfigDto<IVersionedTestRe
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; }
-    public IIndex<IVersionedTestRecord>[]? Indexes { get; } = Array.Empty<IIndex<IVersionedTestRecord>>();
-    public IndexProvisioningModeType IndexProvisioningMode { get; } = IndexProvisioningModeType.None;
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {

@@ -1,4 +1,3 @@
-using System.Text;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -11,7 +10,6 @@ namespace Idb.Libraries.Implementation.Serialization;
 public sealed class SidecarFileWriteLock<TContract> : IStorageWriteLock
     where TContract : class, IStoredContract<TContract>
 {
-    private static readonly string ProcessOwnerId = Guid.NewGuid().ToString("N");
     private readonly StoragePolicy _storagePolicy;
 
     public SidecarFileWriteLock(StoragePolicy storagePolicy)
@@ -53,10 +51,9 @@ public sealed class SidecarFileWriteLock<TContract> : IStorageWriteLock
                     FileMode.CreateNew,
                     FileAccess.ReadWrite,
                     FileShare.None,
-                    bufferSize: 256,
-                    FileOptions.WriteThrough);
+                    bufferSize: 1,
+                    FileOptions.None);
 
-                await WriteOwnerMetadataAsync(lockStream, cancellationToken).ConfigureAwait(false);
                 return new SidecarWriteLock(lockPath, lockStream);
             }
             catch (IOException)
@@ -81,22 +78,6 @@ public sealed class SidecarFileWriteLock<TContract> : IStorageWriteLock
         }
 
         return remaining < configuredDelay ? remaining : configuredDelay;
-    }
-
-    private static async ValueTask WriteOwnerMetadataAsync(
-        FileStream lockStream,
-        CancellationToken cancellationToken)
-    {
-        var now = DateTimeOffset.UtcNow;
-        var metadata =
-            $"ownerId={ProcessOwnerId}{Environment.NewLine}" +
-            $"machine={Environment.MachineName}{Environment.NewLine}" +
-            $"processId={Environment.ProcessId}{Environment.NewLine}" +
-            $"createdUtc={now:O}{Environment.NewLine}";
-
-        var bytes = Encoding.UTF8.GetBytes(metadata);
-        await lockStream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        await lockStream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void TryRemoveStaleLock(string lockPath)

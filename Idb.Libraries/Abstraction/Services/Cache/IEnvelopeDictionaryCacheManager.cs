@@ -1,6 +1,6 @@
-namespace Idb.Libraries.Abstraction.Services.Cache;
+namespace Idb.Libraries.Abstractions.Services.Cache;
 
-public interface IEnvelopeDictionaryCaheManager<TKey, TValue> : IDictionary<TKey, TValue>
+public interface IEnvelopeDictionaryCacheManager<TKey, TValue> : IDictionary<TKey, TValue>
     where TKey : notnull
 {
     int GetGroupCount(TKey groupKey);

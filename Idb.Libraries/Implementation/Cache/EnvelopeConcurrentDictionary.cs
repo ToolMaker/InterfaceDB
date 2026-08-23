@@ -1,10 +1,10 @@
 using System.Collections;
 using System.Collections.Concurrent;
-using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Cache;
 
 namespace Idb.Libraries.Implementation.Cache;
 
-public class EnvelopeConcurrentDictionary<TKey, TValue> : IEnvelopeDictionaryCaheManager<TKey, TValue>
+public class EnvelopeConcurrentDictionary<TKey, TValue> : IEnvelopeDictionaryCacheManager<TKey, TValue>
     where TKey : notnull
 {
     private readonly ConcurrentDictionary<TKey, TValue> _items = new();

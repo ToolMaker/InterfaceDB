@@ -1,7 +1,6 @@
-using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
-using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstractions.Services.Migrations;
 
@@ -16,7 +15,9 @@ public interface IMigrationStrategy<TContract>
     /// </summary>
     MigrationStrategyType StrategyType { get; }
 
-    // TODO: Expand parameters once migration pipeline is wired (e.g., include cancellation, logging, context services).
+    /// <summary>
+    /// Streams objects after applying the configured initialization migration behavior.
+    /// </summary>
     IAsyncEnumerable<TContract> OnInitializeAsync(CancellationToken cancellationToken = default);
 
     TContract Migrate(TContract objectInstance, CancellationToken cancellationToken = default);

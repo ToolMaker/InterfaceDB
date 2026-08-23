@@ -1,13 +1,12 @@
-using Idb.Libraries.Abstraction.Services.Cache;
-using Idb.Libraries.Abstraction.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.PubSub;
-using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Serialization;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
@@ -15,7 +14,7 @@ using System.Runtime.CompilerServices;
 namespace Idb.Libraries.Implementation.Repositories;
 
 /// <summary>
-/// Shared file-system backed envelope repository implementation used by both flat and sharded layouts.
+/// Shared implementation for file-system backed envelope repositories.
 /// </summary>
 public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepository<TContract>
     where TContract : class, IStoredContract<TContract>
@@ -32,7 +31,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private Func<EnvelopeStorageChange, ValueTask>? _storageChangeSubscription;
     private int _storageChangeSourceStarted;
 
-    private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+    private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _removedSubscriptions = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _storedSubscriptions = new();
@@ -41,7 +40,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     protected FileEnvelopeRepositoryBase(
         IDbContractConfigDto<TContract> contractConfig,
         IReaderAndWriter<TContract> readerAndWriter,
-        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
         IFileWriteCoordinator fileWriteCoordinator,
         StoragePolicy storagePolicy,
         Func<IObjectEnvelope<TContract>> envelopeFactory,

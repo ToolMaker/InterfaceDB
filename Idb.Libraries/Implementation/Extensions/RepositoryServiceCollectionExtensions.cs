@@ -1,13 +1,10 @@
-namespace Idb.Libraries.Implementation.Extentions
+namespace Idb.Libraries.Implementation.Extensions
 {
-    using Idb.Libraries.Abstraction.Services;
-    using Idb.Libraries.Abstraction.Services.Cache;
-    using Idb.Libraries.Abstraction.Services.Migrations;
-    using Idb.Libraries.Abstraction.Services.Serialization;
     using Idb.Libraries.Abstractions.Dtos;
     using Idb.Libraries.Abstractions.Enums;
     using Idb.Libraries.Abstractions.Options;
     using Idb.Libraries.Abstractions.Services;
+    using Idb.Libraries.Abstractions.Services.Cache;
     using Idb.Libraries.Abstractions.Services.Encryption;
     using Idb.Libraries.Abstractions.Services.Encryption.Options;
     using Idb.Libraries.Abstractions.Services.Indexes;
@@ -270,7 +267,7 @@ namespace Idb.Libraries.Implementation.Extentions
                     sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(key),
                     sp.GetRequiredKeyedService<IEncryptor>(key)));
             services.TryAddKeyedSingleton<
-                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(
+                IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(
                 databaseKey,
                 (_, _) => new EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract>>());
             services.TryAddKeyedTransient<IObjectEnvelope<TContract>>(
@@ -316,13 +313,13 @@ namespace Idb.Libraries.Implementation.Extentions
                     sp.GetRequiredKeyedService<IObjectSerializer<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(key),
                     sp.GetRequiredKeyedService<
-                        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(key)));
+                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key)));
             services.TryAddKeyedTransient<IObjectReader<TContract>>(databaseKey, (sp, key) =>
                 new FileObjectReader<TContract>(
                     sp.GetRequiredKeyedService<IObjectSerializer<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(key),
                     sp.GetRequiredKeyedService<
-                        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(key),
+                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key),
                     contractConfig,
                     sp.GetRequiredKeyedService<StoragePolicy>(key),
                     sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
@@ -334,7 +331,7 @@ namespace Idb.Libraries.Implementation.Extentions
                     contractConfig,
                     sp.GetRequiredKeyedService<StoragePolicy>(key),
                     sp.GetRequiredKeyedService<
-                        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(key),
+                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key),
                     sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
                     sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
             services.TryAddKeyedTransient<IReaderAndWriter<TContract>>(databaseKey, (sp, key) =>
@@ -384,7 +381,7 @@ namespace Idb.Libraries.Implementation.Extentions
                     contractConfig,
                     sp.GetRequiredKeyedService<IReaderAndWriter<TContract>>(key),
                     sp.GetRequiredKeyedService<
-                        IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(key),
+                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key),
                     sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
                     sp.GetRequiredKeyedService<StoragePolicy>(key),
                     () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
@@ -399,7 +396,7 @@ namespace Idb.Libraries.Implementation.Extentions
                         sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key),
                         sp.GetRequiredKeyedService<StoragePolicy>(key)));
             services.TryAddKeyedSingleton<IRepository<TContract>>(databaseKey, (sp, key) =>
-                new InterfaceRepositryDb<TContract>(
+                new InterfaceRepositoryDb<TContract>(
                     sp.GetRequiredKeyedService<IIndexManager<TContract>>(key),
                     sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(key),
                     sp.GetRequiredKeyedService<StoragePolicy>(key)));
@@ -436,9 +433,9 @@ namespace Idb.Libraries.Implementation.Extentions
             services.TryAddSingleton<IObjectSerializer<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IObjectSerializer<TContract>>(databaseKey));
             services.TryAddSingleton<
-                IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(sp =>
+                IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(sp =>
                 sp.GetRequiredKeyedService<
-                    IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>>>(databaseKey));
+                    IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(databaseKey));
             services.TryAddTransient<IObjectEnvelope<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(databaseKey));
             services.TryAddSingleton<IEnvelopeLifecycle<TContract>>(sp =>
@@ -579,10 +576,6 @@ namespace Idb.Libraries.Implementation.Extentions
             public string? DataRoot => _inner.DataRoot;
 
             public string? ActiveVersion => _inner.ActiveVersion;
-
-            public IIndex<TContract>[]? Indexes => _inner.Indexes;
-
-            public IndexProvisioningModeType IndexProvisioningMode => _inner.IndexProvisioningMode;
 
             public ContractRepositoryType RepositoryType => _inner.RepositoryType;
 

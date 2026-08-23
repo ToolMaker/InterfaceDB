@@ -107,7 +107,7 @@ SQL Server is a highly optimized single-engine relational system. InterfaceDB's 
 - serializes object graphs;
 - coordinates cross-process writes.
 
-The current benchmark already shows strong selective indexed reads. That does not mean the file provider beats SQL in every scenario, and it does not mean SQL comparisons are invalid. It means the object database model has real potential when the query shape matches the index model.
+The current object-materialization gate shows competitive cached range, broad-prefix, and broad-conjunction behavior on its development workload. SQLite remains substantially faster for selective exact/suffix queries, reopen, and independently durable writes. The useful conclusion is that the object repository can compete on matching query shapes—not that files beat SQL universally.
 
 ## Performance Direction
 
@@ -123,6 +123,7 @@ Current provider:
 Future providers:
 
 - memory-backed repository for fastest in-process workloads;
+- append-only journal with replay, checkpointing, and compaction;
 - single-file database engine with page/object pointers;
 - memory-mapped storage catalog;
 - SQL-backed envelope provider;
@@ -152,9 +153,17 @@ Future storage engines can use object pointers and page/catalog metadata to move
 
 This is one reason the current file provider should not be treated as the final performance ceiling.
 
-## Benchmark Command
+## Benchmark Commands
 
-Full 50k overnight benchmark:
+Run the fair disk-to-materialized-object quick gate first:
+
+```powershell
+.\Scripts\Test-ProductionGate.ps1 -Quick
+```
+
+See [Current Performance Results](performance-results.md) before interpreting isolated benchmark output.
+
+The older 50k BenchmarkDotNet suite remains useful for targeted microanalysis:
 
 ```powershell
 $env:INTERFACEDB_BENCH_PERSON_COUNT="50000"
@@ -201,3 +210,18 @@ dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --profile fi
 ```
 
 See [Performance Profiling](performance-profiling.md).
+
+## Production Gate
+
+Index microbenchmarks intentionally exclude persistence and object materialization.
+Before drawing product conclusions, run the production gate against embedded SQLite
+and, when configured, SQL Server. It measures complete result materialization,
+cache and durability profiles, mixed concurrent mutations, final data integrity,
+reopen/index-rebuild cost, and terminated-writer recovery.
+
+```powershell
+.\Scripts\Test-ProductionGate.ps1 -Quick
+```
+
+See [Production Benchmark And Stress Gate](production-benchmark-gate.md) for the
+full soak matrix and interpretation constraints.

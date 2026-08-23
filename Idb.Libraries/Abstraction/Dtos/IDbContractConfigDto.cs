@@ -1,6 +1,5 @@
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
-using Idb.Libraries.Abstractions.Services.Indexes;
 
 namespace Idb.Libraries.Abstractions.Dtos;
 
@@ -48,16 +47,6 @@ public interface IDbContractConfigDto<TContract>
     /// Version tag representing the currently active contract baseline (e.g., "1.0.1").
     /// </summary>
     string? ActiveVersion { get; }
-
-    /// <summary>
-    /// Repository index configurations that should be provisioned for this contract during startup.
-    /// </summary>
-    IIndex<TContract>[]? Indexes { get; }
-
-    /// <summary>
-    /// Controls whether indexes are provisioned dynamically, fixed from configuration, or both.
-    /// </summary>
-    IndexProvisioningModeType IndexProvisioningMode { get; }
 
     /// <summary>
     /// Repository implementation used to service this contract.

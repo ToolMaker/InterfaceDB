@@ -1,4 +1,3 @@
-﻿using Idb.Libraries.Abstraction.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Serialization;
 
@@ -18,6 +17,5 @@ namespace Idb.Libraries.Implementation.Serialization
         public IObjectReader<TContract> Reader { get; }
 
         public IObjectWriter<TContract> Writer { get; }
-
     }
 }

@@ -1,5 +1,5 @@
-﻿using Idb.Libraries.Abstraction.Services;
-using Idb.Libraries.Abstraction.Services.Cache;
+using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
@@ -12,7 +12,7 @@ namespace Idb.Libraries.Implementation.Serialization
     {
         private IObjectSerializer<TContract> _serializer;
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
-        private readonly IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> _envelopes;
+        private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
         private readonly IDbContractConfigDto<TContract> _contractConfig;
         private readonly StoragePolicy _storagePolicy;
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
@@ -20,7 +20,7 @@ namespace Idb.Libraries.Implementation.Serialization
 
         public FileObjectReader(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
-            IEnvelopeDictionaryCaheManager<string, IObjectEnvelope<TContract>> envelopes,
+            IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
             IDbContractConfigDto<TContract> contractConfig,
             StoragePolicy storagePolicy,
             IFileWriteCoordinator fileWriteCoordinator,

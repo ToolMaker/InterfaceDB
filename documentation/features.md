@@ -111,7 +111,7 @@ public interface IPerson : IStoredContract<IPerson>
 }
 ```
 
-Supported first-pass index operations:
+Supported index operations:
 
 - exact equality;
 - comparable ranges;
@@ -165,6 +165,14 @@ Opt into object retention with:
 - storage policy override for database-wide object retention.
 
 This lets the application cache hot object categories without hiding full-object memory use by default.
+
+## Durability Modes
+
+`StorageDurabilityMode.Performance` writes canonical files directly and is the default. It is intended for low-latency local data where the application accepts weaker interrupted-write behavior.
+
+`StorageDurabilityMode.Durable` writes a recoverable proposal, publishes it through a ready state, coordinates other processes, and drains abandoned completed proposals at initialization. It is slower because every object remains an independently published file.
+
+Neither mode replaces backups or operating-system access controls. See [Current Performance Results](performance-results.md) for measured tradeoffs.
 
 ## File Change Awareness
 
@@ -224,3 +232,5 @@ See [Security And Encryption](security.md).
 - run encryption rotation.
 
 `Idb.Analyzers` protects versioned contract identities through Roslyn diagnostics.
+
+See [Contract Versioning And Migrations](migrations.md) for the supported workflow and deployment checklist.

@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
-using Idb.Libraries.Implementation.Extentions;
+using Idb.Libraries.Implementation.Extensions;
 
 namespace Idb.Libraries.Implementation.Serialization;
 
