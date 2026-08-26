@@ -1,0 +1,1139 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services;
+using Idb.Libraries.Abstractions.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Indexes;
+using Idb.Libraries.Abstractions.Services.Encryption;
+using Idb.Libraries.Abstractions.Services.Migrations;
+using Idb.Libraries.Abstractions.Services.PubSub;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Serialization;
+using Idb.Storage.SegmentCore;
+
+namespace Idb.Storage.SegmentCore;
+
+/// <summary>
+/// Stores serialized InterfaceDB envelopes in SegmentCore while preserving the repository,
+/// indexing, encryption, polymorphism, and notification abstractions used by InterfaceDB.
+/// </summary>
+public sealed class SegmentCoreEnvelopeRepository<TContract> :
+    IEnvelopeRepository<TContract>,
+    IEnvelopeRepositoryInitializationStream<TContract>,
+    IPersistentSearchIndexCatalogRepository,
+    ISegmentCoreRepositoryMaintenance<TContract>,
+    IAsyncDisposable
+    where TContract : class, IStoredContract<TContract>
+{
+    private readonly IDbContractConfigDto<TContract> _contractConfig;
+    private readonly StoragePolicy _storagePolicy;
+    private readonly SegmentCoreRepositoryOptions _options;
+    private readonly IObjectSerializer<TContract> _serializer;
+    private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
+    private readonly IEnvelopeStorageIdentityFactory<TContract> _identityFactory;
+    private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
+    private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
+    private readonly IEncryptor _encryptor;
+    private readonly IReadOnlyList<IMigration> _migrations;
+    private readonly ContractPubSubHub<TContract> _pubSub = new();
+    private readonly ConcurrentDictionary<string, byte> _reservedKeys = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SuffixAllocator> _suffixAllocators = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _identityGate = new(1, 1);
+    private readonly object _initializationGate = new();
+    private readonly CancellationTokenSource _maintenanceCancellation = new();
+    private readonly string _storeRoot;
+    private readonly IReaderAndWriter<TContract> _readerAndWriter;
+    private Task? _initializationTask;
+    private Task? _maintenanceTask;
+    private SegmentCoreStore? _store;
+    private Exception? _lastMaintenanceError;
+    private long _totalMutations;
+    private long _checkpointMutationWatermark;
+    private long _compactionMutationWatermark;
+    private long _lastCheckpointUtcTicks;
+    private long _lastCompactionUtcTicks;
+    private int _disposed;
+
+    public SegmentCoreEnvelopeRepository(
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy,
+        SegmentCoreRepositoryOptions options,
+        IObjectSerializer<TContract> serializer,
+        IEnvelopeLifecycle<TContract> envelopeLifecycle,
+        IEnvelopeStorageIdentityFactory<TContract> identityFactory,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IEncryptor encryptor,
+        IEnumerable<IMigration> migrations)
+    {
+        _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+        _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _options.Validate();
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
+        _identityFactory = identityFactory ?? throw new ArgumentNullException(nameof(identityFactory));
+        _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
+        _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
+        _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
+        _migrations = migrations?.ToArray() ?? [];
+        if (string.IsNullOrWhiteSpace(contractConfig.DataRoot))
+        {
+            throw new InvalidOperationException("Contract configuration must supply a DataRoot directory.");
+        }
+
+        _storeRoot = Path.Combine(
+            Path.GetFullPath(contractConfig.DataRoot),
+            options.DirectoryName,
+            string.IsNullOrWhiteSpace(contractConfig.ActiveVersion) ? "1.0.0" : contractConfig.ActiveVersion);
+        _readerAndWriter = new SegmentCoreReaderAndWriter(this);
+    }
+
+    public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
+
+    public string SearchIndexCatalogDirectory => Path.Combine(_storeRoot, "search-indexes");
+
+    public StoragePolicy StoragePolicy => _storagePolicy;
+
+    public SegmentCoreRepositoryOptions Options => _options;
+
+    public SegmentCoreProviderStatus Status
+    {
+        get
+        {
+            var total = Volatile.Read(ref _totalMutations);
+            var store = Volatile.Read(ref _store);
+            return new SegmentCoreProviderStatus(
+                store is not null,
+                Math.Max(0, total - Volatile.Read(ref _checkpointMutationWatermark)),
+                Math.Max(0, total - Volatile.Read(ref _compactionMutationWatermark)),
+                ToTimestamp(Volatile.Read(ref _lastCheckpointUtcTicks)),
+                ToTimestamp(Volatile.Read(ref _lastCompactionUtcTicks)),
+                Volatile.Read(ref _lastMaintenanceError),
+                store?.Statistics)
+            {
+                HardwareProfile = _options.HardwareProfile
+            };
+        }
+    }
+
+    public bool Exists(string storageKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+        EnsureInitializedSynchronously();
+        return _envelopes.GetGroupCount(ToLogicalKey(storageKey)) > 0;
+    }
+
+    public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+        EnsureInitializedSynchronously();
+        return _envelopes.TryGetGroup(ToLogicalKey(storageKey), out envelopes);
+    }
+
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+        => EnsureInitializedAsync(_storagePolicy.HydrateOnInitialize, cancellationToken);
+
+    public ValueTask InitializeForSearchIndexCatalogAsync(CancellationToken cancellationToken = default)
+        => EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken);
+
+    public async ValueTask<SearchIndexStorageIdentity> GetSearchIndexStorageIdentityAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
+        var identity = Store.GetSearchIndexStorageIdentity(cancellationToken);
+        return new SearchIndexStorageIdentity(identity.EntryCount, identity.Fingerprint);
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> InitializeAndEnumerateAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
+        await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return envelope;
+        }
+    }
+
+    private ValueTask EnsureInitializedAsync(
+        bool hydrateOnInitialize,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        Task initialization;
+        lock (_initializationGate)
+        {
+            initialization = _initializationTask ??= InitializeCoreAsync(hydrateOnInitialize);
+        }
+
+        return new ValueTask(initialization.WaitAsync(cancellationToken));
+    }
+
+    public async ValueTask<TContract> WriteAsync(
+        TContract contractInstance,
+        CancellationToken cancellationToken = default)
+    {
+        var saved = await WriteManyAsync([contractInstance], cancellationToken).ConfigureAwait(false);
+        return saved[0];
+    }
+
+    public async ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+        IEnumerable<TContract> contractInstances,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contractInstances);
+        var materialized = contractInstances as IReadOnlyList<TContract> ?? contractInstances.ToArray();
+        if (materialized.Count == 0)
+        {
+            return Array.Empty<TContract>();
+        }
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var prepared = new List<PreparedWrite>(materialized.Count);
+        var batchKeys = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var instance in materialized)
+            {
+                ArgumentNullException.ThrowIfNull(instance);
+                var item = await PrepareWriteAsync(instance, cancellationToken).ConfigureAwait(false);
+                prepared.Add(item);
+                if (!batchKeys.Add(item.Envelope.EnvelopeCacheKey))
+                {
+                    throw new InvalidOperationException(
+                        $"Atomic SegmentCore batch contains duplicate physical key '{item.Envelope.EnvelopeCacheKey}'.");
+                }
+            }
+
+            await using (var transaction = await Store.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
+            {
+                foreach (var item in prepared)
+                {
+                    await transaction.SaveAsync(item.Envelope.EnvelopeCacheKey, item.Payload, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var results = new TContract[prepared.Count];
+            for (var index = 0; index < prepared.Count; index++)
+            {
+                var item = prepared[index];
+                var saved = _envelopeLifecycle.Unwrap(item.Envelope);
+                CacheEnvelope(item.Envelope, saved);
+                ReleaseReservation(item);
+                results[index] = saved;
+            }
+
+            Interlocked.Add(ref _totalMutations, prepared.Count);
+            if (_storagePolicy.RaiseNotifications)
+            {
+                for (var index = 0; index < prepared.Count; index++)
+                {
+                    await ContractStored(prepared[index].Envelope, cancellationToken).ConfigureAwait(false);
+                    if (prepared[index].IsNew)
+                    {
+                        await ContractAdded(prepared[index].Envelope, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            return results;
+        }
+        catch
+        {
+            foreach (var item in prepared)
+            {
+                ReleaseReservation(item);
+                if (item.Envelope.ObjectInstance is not null)
+                {
+                    _ = _envelopeLifecycle.Unwrap(item.Envelope);
+                }
+            }
+
+            throw;
+        }
+    }
+
+    public async ValueTask<bool> DeleteAsync(
+        TContract contractInstance,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contractInstance);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var envelope = contractInstance.Envelope
+            ?? throw new InvalidOperationException("The object has not been persisted by InterfaceDB.");
+        if (envelope.State == StorageObjectState.Deleted)
+        {
+            return false;
+        }
+
+        var key = envelope.EnvelopeCacheKey;
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        await using var transaction = await Store.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await transaction.DeleteAsync(key, cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        envelope.State = StorageObjectState.Deleted;
+        _envelopes.Remove(key);
+        Interlocked.Increment(ref _totalMutations);
+        if (_storagePolicy.RaiseNotifications)
+        {
+            await ContractDeleted(envelope, cancellationToken).ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> GetAsync(
+        string storageKey,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (!_envelopes.TryGetGroup(ToLogicalKey(storageKey), out var group))
+        {
+            yield break;
+        }
+
+        foreach (var envelope in group)
+        {
+            var hydrated = await GetPhysicalAsync(envelope.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false);
+            if (hydrated is not null)
+            {
+                yield return hydrated;
+            }
+        }
+    }
+
+    public async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
+        string physicalStorageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(physicalStorageKey);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_envelopes.TryGetValue(physicalStorageKey, out var cached)
+            && StorageObjectCachePolicy.TryGetObjectInstance(cached, out _))
+        {
+            return cached;
+        }
+
+        var payload = await Store.GetAsync(physicalStorageKey, cancellationToken).ConfigureAwait(false);
+        if (payload is null)
+        {
+            _envelopes.Remove(physicalStorageKey);
+            return null;
+        }
+
+        return MaterializeAndCache(physicalStorageKey, payload);
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        // A complete strong-object cache is already the materialized store. Avoid rereading and
+        // deserializing the object log for warm full scans and index rebuilds after eager hydration.
+        var cachedEnvelopes = _envelopes.Values;
+        var cacheIsCompleteAndStrong = cachedEnvelopes.Count == Store.Count;
+        if (cacheIsCompleteAndStrong)
+        {
+            foreach (var envelope in cachedEnvelopes)
+            {
+                if (envelope.ObjectInstance is null)
+                {
+                    cacheIsCompleteAndStrong = false;
+                    break;
+                }
+            }
+        }
+
+        if (cacheIsCompleteAndStrong)
+        {
+            foreach (var envelope in cachedEnvelopes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return envelope;
+            }
+
+            yield break;
+        }
+
+        await foreach (var record in Store.StreamAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_envelopes.TryGetValue(record.Key, out var cached)
+                && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var cachedInstance))
+            {
+                yield return cached;
+                GC.KeepAlive(cachedInstance);
+                continue;
+            }
+
+            yield return MaterializeAndCache(record.Key, record.Payload);
+        }
+    }
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateByImplementationTypeAsync<TImplementation>(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        where TImplementation : class, TContract
+    {
+        await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (envelope.ObjectInstance is TImplementation)
+            {
+                yield return envelope;
+            }
+        }
+    }
+
+    public async ValueTask<SegmentCoreCheckpointResult> CheckpointAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var mutationWatermark = Volatile.Read(ref _totalMutations);
+        var result = await Store.CheckpointAsync(cancellationToken).ConfigureAwait(false);
+        Volatile.Write(ref _checkpointMutationWatermark, mutationWatermark);
+        Volatile.Write(ref _lastCheckpointUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+        Volatile.Write(ref _lastMaintenanceError, null);
+        return result;
+    }
+
+    public async ValueTask<SegmentCoreCompactionResult> CompactAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var mutationWatermark = Volatile.Read(ref _totalMutations);
+        var result = await Store.CompactAsync(_options.CompactionOptions, cancellationToken).ConfigureAwait(false);
+        Volatile.Write(ref _compactionMutationWatermark, mutationWatermark);
+        Volatile.Write(ref _checkpointMutationWatermark, mutationWatermark);
+        Volatile.Write(ref _lastCompactionUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+        Volatile.Write(ref _lastCheckpointUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+        Volatile.Write(ref _lastMaintenanceError, null);
+        return result;
+    }
+
+    public async ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await Store.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<SegmentCoreBackupResult> BackupAsync(
+        string destinationDirectory,
+        SegmentCoreBackupOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await Store.BackupAsync(destinationDirectory, options, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<SegmentCoreMigrationResult> MigrateFromAsync(
+        string sourceStoreDirectory,
+        string sourceVersion,
+        SegmentCoreMigrationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStoreDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceVersion);
+        options ??= new SegmentCoreMigrationOptions();
+        options.Validate();
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var sourceRoot = Path.GetFullPath(sourceStoreDirectory);
+        if (IsPathWithin(sourceRoot, _storeRoot) || IsPathWithin(_storeRoot, sourceRoot))
+        {
+            throw new ArgumentException(
+                "The source migration store and active SegmentCore store must be separate trees.",
+                nameof(sourceStoreDirectory));
+        }
+
+        var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
+        var stopwatch = Stopwatch.StartNew();
+        var engine = new SegmentCoreMigrationEngine<TContract>(
+            activeVersion,
+            _encryptor,
+            _migrations);
+        var failures = new List<SegmentCoreMigrationFailure>();
+        var pending = new List<TContract>(options.BatchSize);
+        var examined = 0;
+        var migrated = 0;
+        var alreadyPresent = 0;
+        await using var source = await SegmentCoreStore.OpenAsync(
+            sourceRoot,
+            options.SourceStoreOptions ?? _options.StoreOptions,
+            cancellationToken).ConfigureAwait(false);
+        await foreach (var record in source.StreamAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            examined++;
+            if (await Store.ContainsKeyAsync(record.Key, cancellationToken).ConfigureAwait(false))
+            {
+                alreadyPresent++;
+                continue;
+            }
+
+            try
+            {
+                var migratedContract = engine.Migrate(record.Key, sourceVersion, record.Payload);
+                var envelope = await _envelopeLifecycle.WrapAsync(migratedContract).ConfigureAwait(false);
+                envelope.EnvelopeCacheKey = record.Key;
+                envelope.VersionTag = activeVersion;
+                envelope.Location = record.Key;
+                envelope.ImplementationTypeName = migratedContract.GetType().AssemblyQualifiedName
+                    ?? migratedContract.GetType().FullName
+                    ?? migratedContract.GetType().Name;
+                envelope.State = StorageObjectState.Active;
+                pending.Add(_envelopeLifecycle.Unwrap(envelope));
+                if (pending.Count == options.BatchSize)
+                {
+                    _ = await WriteManyAsync(pending, cancellationToken).ConfigureAwait(false);
+                    migrated += pending.Count;
+                    pending.Clear();
+                }
+            }
+            catch (Exception exception) when (
+                options.ContinueOnError && exception is not OperationCanceledException)
+            {
+                failures.Add(new SegmentCoreMigrationFailure(record.Key, exception.Message));
+            }
+        }
+
+        if (pending.Count > 0)
+        {
+            _ = await WriteManyAsync(pending, cancellationToken).ConfigureAwait(false);
+            migrated += pending.Count;
+        }
+
+        SegmentCoreCheckpointResult? checkpoint = null;
+        if (migrated > 0)
+        {
+            checkpoint = await CheckpointAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (options.VerifyAfterMigration)
+        {
+            var integrity = await Store.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
+            if (!integrity.IsValid)
+            {
+                throw new InvalidDataException(
+                    "SegmentCore migration completed but integrity verification failed: "
+                    + string.Join("; ", integrity.Failures));
+            }
+        }
+
+        stopwatch.Stop();
+        return new SegmentCoreMigrationResult(
+            sourceRoot,
+            sourceVersion,
+            activeVersion,
+            examined,
+            migrated,
+            alreadyPresent,
+            failures,
+            checkpoint,
+            stopwatch.Elapsed);
+    }
+
+    public IContractSubscription SubscribeToAdded(
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null) => _pubSub.Subscribe(ContractEvent.Added, handler, keepAlive);
+
+    public IContractSubscription SubscribeToRemoved(
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null) => _pubSub.Subscribe(ContractEvent.Removed, handler, keepAlive);
+
+    public IContractSubscription SubscribeToStored(
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null) => _pubSub.Subscribe(ContractEvent.Stored, handler, keepAlive);
+
+    public IContractSubscription SubscribeToDeleted(
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive = null) => _pubSub.Subscribe(ContractEvent.Deleted, handler, keepAlive);
+
+    public ValueTask ContractAdded(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default) =>
+        _pubSub.PublishAsync(ContractEvent.Added, @event, cancellationToken);
+
+    public ValueTask ContractRemoved(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default) =>
+        _pubSub.PublishAsync(ContractEvent.Removed, @event, cancellationToken);
+
+    public ValueTask ContractStored(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default) =>
+        _pubSub.PublishAsync(ContractEvent.Stored, @event, cancellationToken);
+
+    public ValueTask ContractDeleted(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default) =>
+        _pubSub.PublishAsync(ContractEvent.Deleted, @event, cancellationToken);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        await _maintenanceCancellation.CancelAsync().ConfigureAwait(false);
+        if (_maintenanceTask is not null)
+        {
+            try
+            {
+                await _maintenanceTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_maintenanceCancellation.IsCancellationRequested)
+            {
+            }
+        }
+
+        Task? initialization;
+        lock (_initializationGate)
+        {
+            initialization = _initializationTask;
+        }
+
+        if (initialization is not null)
+        {
+            try
+            {
+                await initialization.ConfigureAwait(false);
+            }
+            catch when (_store is null)
+            {
+                // Initialization already disposed its partially opened store.
+            }
+        }
+
+        if (_store is not null)
+        {
+            if (_options.CheckpointOnDispose
+                && Volatile.Read(ref _totalMutations) > Volatile.Read(ref _checkpointMutationWatermark))
+            {
+                await _store.CheckpointAsync().ConfigureAwait(false);
+            }
+
+            await _store.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _maintenanceCancellation.Dispose();
+        _identityGate.Dispose();
+    }
+
+    private SegmentCoreStore Store => Volatile.Read(ref _store)
+        ?? throw new InvalidOperationException("SegmentCore repository has not been initialized.");
+
+    private async Task InitializeCoreAsync(bool hydrateOnInitialize)
+    {
+        Directory.CreateDirectory(_storeRoot);
+        var store = await SegmentCoreStore.OpenAsync(_storeRoot, _options.StoreOptions).ConfigureAwait(false);
+        try
+        {
+            foreach (var key in store.GetKeysSnapshot())
+            {
+                CacheEnvelopeSkeleton(key);
+            }
+
+            if (hydrateOnInitialize)
+            {
+                var records = await store.ReadAllAsync().ConfigureAwait(false);
+                await Parallel.ForEachAsync(
+                    records,
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = Math.Clamp(_storagePolicy.MaxConcurrency, 1, 256)
+                    },
+                    (record, cancellationToken) =>
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        _ = MaterializeAndCache(record.Key, record.Payload);
+                        return ValueTask.CompletedTask;
+                    }).ConfigureAwait(false);
+            }
+
+            Volatile.Write(ref _store, store);
+            if (_options.EnableBackgroundMaintenance)
+            {
+                _maintenanceTask = RunMaintenanceAsync(_maintenanceCancellation.Token);
+            }
+        }
+        catch
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task RunMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(_options.CheckpointInterval);
+        var lastCompaction = Stopwatch.GetTimestamp();
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                var total = Volatile.Read(ref _totalMutations);
+                if (total - Volatile.Read(ref _checkpointMutationWatermark)
+                    >= _options.MinimumMutationsPerCheckpoint)
+                {
+                    await CheckpointAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                if (Stopwatch.GetElapsedTime(lastCompaction) >= _options.CompactionInterval
+                    && total - Volatile.Read(ref _compactionMutationWatermark)
+                    >= _options.MinimumMutationsPerCompaction)
+                {
+                    await CompactAsync(cancellationToken).ConfigureAwait(false);
+                    lastCompaction = Stopwatch.GetTimestamp();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                Volatile.Write(ref _lastMaintenanceError, exception);
+            }
+        }
+    }
+
+    private async ValueTask<PreparedWrite> PrepareWriteAsync(
+        TContract instance,
+        CancellationToken cancellationToken)
+    {
+        if (instance.Envelope?.State == StorageObjectState.Deleted)
+        {
+            throw new InvalidOperationException("A deleted storage object cannot be written again.");
+        }
+
+        var isNew = instance.Envelope is null;
+        var existingPhysicalKey = instance.Envelope?.EnvelopeCacheKey;
+        var envelope = await _envelopeLifecycle.WrapAsync(instance).ConfigureAwait(false);
+        var reserved = false;
+        try
+        {
+            if (isNew)
+            {
+                reserved = await ResolveAndReserveNewIdentityAsync(envelope, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(existingPhysicalKey))
+                {
+                    throw new InvalidDataException("A persisted SegmentCore envelope has no physical storage key.");
+                }
+
+                envelope.EnvelopeCacheKey = existingPhysicalKey;
+            }
+
+            envelope.Location = envelope.EnvelopeCacheKey;
+            envelope.ImplementationTypeName = instance.GetType().AssemblyQualifiedName
+                ?? instance.GetType().FullName
+                ?? instance.GetType().Name;
+            envelope.State = StorageObjectState.Active;
+            return new PreparedWrite(
+                envelope,
+                _serializer.Serialize(envelope),
+                isNew,
+                reserved);
+        }
+        catch
+        {
+            if (reserved)
+            {
+                _reservedKeys.TryRemove(envelope.EnvelopeCacheKey, out _);
+            }
+
+            if (envelope.ObjectInstance is not null)
+            {
+                _ = _envelopeLifecycle.Unwrap(envelope);
+            }
+
+            throw;
+        }
+    }
+
+    private async ValueTask<bool> ResolveAndReserveNewIdentityAsync(
+        IObjectEnvelope<TContract> envelope,
+        CancellationToken cancellationToken)
+    {
+        var logicalKey = ToLogicalKey(envelope.EnvelopeCacheKey);
+        if (_identityFactory.ObjectCardinality == StorageObjectCardinality.Multiple)
+        {
+            if (!_suffixAllocators.TryGetValue(logicalKey, out var allocator))
+            {
+                var firstSuffix = _envelopes.GetGroupCount(logicalKey);
+                var firstPhysicalKey = ToPhysicalKey(logicalKey, firstSuffix);
+                if (!_envelopes.ContainsKey(firstPhysicalKey)
+                    && _reservedKeys.TryAdd(firstPhysicalKey, 0))
+                {
+                    envelope.EnvelopeCacheKey = firstPhysicalKey;
+                    return true;
+                }
+
+                if (firstSuffix == int.MaxValue)
+                {
+                    throw new InvalidOperationException(
+                        "The logical storage key has exhausted its physical suffix range.");
+                }
+
+                allocator = _suffixAllocators.GetOrAdd(
+                    logicalKey,
+                    static (_, nextSuffix) => new SuffixAllocator(nextSuffix),
+                    firstSuffix + 1);
+            }
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var physicalKey = ToPhysicalKey(logicalKey, allocator.ReserveNext());
+                if (!_envelopes.ContainsKey(physicalKey) && _reservedKeys.TryAdd(physicalKey, 0))
+                {
+                    envelope.EnvelopeCacheKey = physicalKey;
+                    return true;
+                }
+            }
+        }
+
+        await _identityGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_envelopes.GetGroupCount(logicalKey) != 0
+                || !_reservedKeys.TryAdd(logicalKey, 0))
+            {
+                throw new InvalidOperationException(
+                    $"A storage object already exists for single-object key '{logicalKey}'.");
+            }
+
+            envelope.EnvelopeCacheKey = logicalKey;
+            return true;
+        }
+        finally
+        {
+            _identityGate.Release();
+        }
+    }
+
+    private IObjectEnvelope<TContract> MaterializeAndCache(string key, byte[] payload)
+    {
+        var envelope = _serializer.Deserialize(payload);
+        if (!string.Equals(envelope.EnvelopeCacheKey, key, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"SegmentCore key '{key}' does not match serialized envelope key '{envelope.EnvelopeCacheKey}'.");
+        }
+
+        envelope.Location = key;
+        envelope.State = StorageObjectState.Active;
+        var instance = _envelopeLifecycle.Unwrap(envelope);
+        envelope.ImplementationTypeName ??= instance.GetType().AssemblyQualifiedName
+            ?? instance.GetType().FullName
+            ?? instance.GetType().Name;
+        CacheEnvelope(envelope, instance);
+        return envelope;
+    }
+
+    private void CacheEnvelopeSkeleton(string physicalKey)
+    {
+        var envelope = _envelopeFactory();
+        envelope.EnvelopeCacheKey = physicalKey;
+        envelope.VersionTag = string.IsNullOrWhiteSpace(_contractConfig.ActiveVersion)
+            ? "1.0.0"
+            : _contractConfig.ActiveVersion;
+        envelope.Location = physicalKey;
+        envelope.ObjectInstance = null;
+        envelope.ObjectInstanceWeakReference = null;
+        envelope.State = StorageObjectState.Active;
+        _envelopes.AddOrUpdate(physicalKey, ToLogicalKey(physicalKey), envelope);
+        ObservePhysicalKey(physicalKey);
+    }
+
+    private void CacheEnvelope(IObjectEnvelope<TContract> hydrated, TContract instance)
+    {
+        IObjectEnvelope<TContract> cached;
+        if (StorageObjectCachePolicy.ResolveObjectCacheMode(instance, _storagePolicy)
+            == StorageObjectCacheMode.StrongObject)
+        {
+            cached = hydrated;
+            StorageObjectCachePolicy.StoreObjectReference(cached, instance, _storagePolicy);
+        }
+        else
+        {
+            cached = _envelopeFactory();
+            cached.EnvelopeCacheKey = hydrated.EnvelopeCacheKey;
+            cached.VersionTag = hydrated.VersionTag;
+            cached.Location = hydrated.Location;
+            cached.ImplementationTypeName = hydrated.ImplementationTypeName;
+            cached.CacheObjectInstance = hydrated.CacheObjectInstance;
+            cached.EncryptedFields = new Dictionary<string, EncryptedFieldValue>(
+                hydrated.EncryptedFields,
+                StringComparer.Ordinal);
+            cached.State = hydrated.State;
+            StorageObjectCachePolicy.StoreObjectReference(cached, instance, _storagePolicy);
+        }
+
+        _envelopes.AddOrUpdate(
+            cached.EnvelopeCacheKey,
+            ToLogicalKey(cached.EnvelopeCacheKey),
+            cached);
+        ObservePhysicalKey(cached.EnvelopeCacheKey);
+    }
+
+    private void ObservePhysicalKey(string physicalKey)
+    {
+        if (!TrySplitPhysicalKey(physicalKey, out var logicalKey, out var suffix))
+        {
+            return;
+        }
+
+        var nextSuffix = suffix == int.MaxValue ? int.MaxValue : suffix + 1;
+        if (suffix == 0 && !_suffixAllocators.TryGetValue(logicalKey, out _))
+        {
+            // The one-object-per-logical-key case can derive its next suffix from the group count.
+            // Avoid one allocator object and dictionary entry for every default unique identity.
+            return;
+        }
+
+        var allocator = _suffixAllocators.GetOrAdd(
+            logicalKey,
+            static (_, firstSuffix) => new SuffixAllocator(firstSuffix),
+            nextSuffix);
+        allocator.AdvanceToAtLeast(nextSuffix);
+    }
+
+    private void ReleaseReservation(PreparedWrite item)
+    {
+        if (item.Reserved)
+        {
+            _reservedKeys.TryRemove(item.Envelope.EnvelopeCacheKey, out _);
+        }
+    }
+
+    private void EnsureInitializedSynchronously() =>
+        InitializeAsync().AsTask().GetAwaiter().GetResult();
+
+    private static DateTimeOffset? ToTimestamp(long utcTicks) =>
+        utcTicks == 0 ? null : new DateTimeOffset(utcTicks, TimeSpan.Zero);
+
+    private static string ToPhysicalKey(string logicalKey, int index) =>
+        logicalKey + "-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string ToLogicalKey(string physicalKey)
+    {
+        return TrySplitPhysicalKey(physicalKey, out var logicalKey, out _)
+            ? logicalKey
+            : physicalKey;
+    }
+
+    private static bool TrySplitPhysicalKey(
+        string physicalKey,
+        out string logicalKey,
+        out int suffix)
+    {
+        var separator = physicalKey.LastIndexOf('-');
+        if (separator > 0
+            && separator < physicalKey.Length - 1
+            && int.TryParse(
+                physicalKey.AsSpan(separator + 1),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out suffix)
+            && suffix >= 0)
+        {
+            logicalKey = physicalKey[..separator];
+            return true;
+        }
+
+        logicalKey = physicalKey;
+        suffix = -1;
+        return false;
+    }
+
+    private static bool IsPathWithin(string candidatePath, string parentPath)
+    {
+        var candidate = Path.GetFullPath(candidatePath);
+        var parent = Path.GetFullPath(parentPath);
+        if (string.Equals(candidate, parent, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var prefix = parent.EndsWith(Path.DirectorySeparatorChar)
+            ? parent
+            : parent + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed record PreparedWrite(
+        IObjectEnvelope<TContract> Envelope,
+        byte[] Payload,
+        bool IsNew,
+        bool Reserved);
+
+    private sealed class SuffixAllocator
+    {
+        private int _nextSuffix;
+
+        public SuffixAllocator(int nextSuffix)
+        {
+            _nextSuffix = Math.Max(0, nextSuffix);
+        }
+
+        public int ReserveNext()
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref _nextSuffix);
+                if (current == int.MaxValue)
+                {
+                    throw new InvalidOperationException(
+                        "The logical storage key has exhausted its physical suffix range.");
+                }
+
+                if (Interlocked.CompareExchange(ref _nextSuffix, current + 1, current) == current)
+                {
+                    return current;
+                }
+            }
+        }
+
+        public void AdvanceToAtLeast(int nextSuffix)
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref _nextSuffix);
+                if (current >= nextSuffix
+                    || Interlocked.CompareExchange(ref _nextSuffix, nextSuffix, current) == current)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private sealed class SegmentCoreReaderAndWriter : IReaderAndWriter<TContract>
+    {
+        public SegmentCoreReaderAndWriter(SegmentCoreEnvelopeRepository<TContract> owner)
+        {
+            Reader = new SegmentCoreObjectReader(owner);
+            Writer = new SegmentCoreObjectWriter(owner);
+        }
+
+        public IObjectReader<TContract> Reader { get; }
+
+        public IObjectWriter<TContract> Writer { get; }
+    }
+
+    private sealed class SegmentCoreObjectReader(SegmentCoreEnvelopeRepository<TContract> owner)
+        : IObjectReader<TContract>
+    {
+        public async Task<TContract> ReadAsync(
+            FileInfo file,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(file);
+            var envelope = await owner.GetPhysicalAsync(
+                Path.GetFileNameWithoutExtension(file.Name),
+                cancellationToken).ConfigureAwait(false);
+            return envelope?.ObjectInstance
+                ?? throw new FileNotFoundException("SegmentCore object was not found.", file.FullName);
+        }
+    }
+
+    private sealed class SegmentCoreObjectWriter(SegmentCoreEnvelopeRepository<TContract> owner)
+        : IObjectWriter<TContract>
+    {
+        public ValueTask<TContract> WriteAsync(
+            TContract envalope,
+            CancellationToken cancellationToken = default) => owner.WriteAsync(envalope, cancellationToken);
+
+        public ValueTask<IReadOnlyList<TContract>> WriteManyAsync(
+            IEnumerable<TContract> envalopes,
+            CancellationToken cancellationToken = default) => owner.WriteManyAsync(envalopes, cancellationToken);
+    }
+}
+
+internal enum ContractEvent
+{
+    Added,
+    Removed,
+    Stored,
+    Deleted
+}
+
+internal sealed class ContractPubSubHub<TContract>
+    where TContract : class, IStoredContract<TContract>
+{
+    private readonly ConcurrentDictionary<ContractEvent, ConcurrentDictionary<Guid, Subscription>> _subscriptions = new();
+
+    public IContractSubscription Subscribe(
+        ContractEvent eventType,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        var bucket = _subscriptions.GetOrAdd(eventType, static _ => new());
+        var subscription = new Subscription(bucket, handler, keepAlive);
+        bucket[subscription.Id] = subscription;
+        return subscription;
+    }
+
+    public async ValueTask PublishAsync(
+        ContractEvent eventType,
+        IObjectEnvelope<TContract> payload,
+        CancellationToken cancellationToken)
+    {
+        if (!_subscriptions.TryGetValue(eventType, out var bucket))
+        {
+            return;
+        }
+
+        foreach (var subscription in bucket.Values.ToArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (subscription.KeepAlive is not null
+                    && !await subscription.KeepAlive().ConfigureAwait(false))
+                {
+                    subscription.Dispose();
+                    continue;
+                }
+
+                await subscription.Handler(payload).ConfigureAwait(false);
+            }
+            catch
+            {
+                subscription.Dispose();
+            }
+        }
+    }
+
+    private sealed class Subscription(
+        ConcurrentDictionary<Guid, Subscription> bucket,
+        Func<IObjectEnvelope<TContract>, ValueTask> handler,
+        Func<ValueTask<bool>>? keepAlive) : IContractSubscription
+    {
+        private int _disposed;
+
+        public Guid Id { get; } = Guid.NewGuid();
+
+        public Func<IObjectEnvelope<TContract>, ValueTask> Handler { get; } = handler;
+
+        public Func<ValueTask<bool>>? KeepAlive { get; } = keepAlive;
+
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                bucket.TryRemove(Id, out _);
+            }
+        }
+    }
+}

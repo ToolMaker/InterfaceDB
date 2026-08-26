@@ -598,7 +598,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private async ValueTask HydrateCacheAsync(CancellationToken cancellationToken)
     {
         var policy = _storagePolicy;
-        var dop = policy.NormalizedConcurrency;
+        var dop = policy.NormalizedReadConcurrency;
         var snapshot = _envelopes.Values.ToArray();
 
         await Parallel.ForEachAsync(snapshot, new ParallelOptions
@@ -675,7 +675,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             }
 
             yield return CreateSkeleton(file, _contractConfig.ActiveVersion);
-            await Task.Yield();
         }
 
         foreach (var versionDir in root.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
@@ -690,7 +689,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 }
 
                 yield return CreateSkeleton(file, version);
-                await Task.Yield();
             }
         }
     }

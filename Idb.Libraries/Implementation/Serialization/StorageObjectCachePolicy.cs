@@ -6,7 +6,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization;
 
-internal static class StorageObjectCachePolicy
+public static class StorageObjectCachePolicy
 {
     public static bool ShouldRetainObjectInstance<TContract>(
         IObjectEnvelope<TContract> envelope,

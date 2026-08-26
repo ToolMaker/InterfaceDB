@@ -1,13 +1,17 @@
 # InterfaceDB Architecture
 
-InterfaceDB is an interface-first storage stack for storage-aware contract objects. Its current implementation is a file-system-backed repository that persists concrete objects behind versioned C# interfaces, using envelopes as the low-level storage metadata boundary.
+InterfaceDB is an interface-first storage stack for storage-aware contract objects. It persists concrete objects behind versioned C# interfaces, using envelopes as the low-level provider-neutral storage metadata boundary.
 
-The project is currently an active library/product project rather than a fully mature production database engine. The active storage baseline is intentionally simple: a flat file layout aimed at desktop/mobile style local object storage. Additional storage engines such as memory-backed repositories, a single-file database engine, SQL-backed envelope storage, document databases, or object databases are future roadmap work.
+The project has two local storage providers. The flat-file provider favors independently inspectable object files, file watching, and file-oriented migrations. SegmentCore favors dense append-only storage, atomic bulk transactions, checksummed WAL recovery, checkpointed primary locators, and bounded compaction. Both sit under the same repository and query/index layers.
 
 ## Solution Layout
 
 - `Idb.Libraries`
   Core abstractions and file-system implementation.
+- `InterfaceDB.Storage.SegmentCore`
+  Packable append-only SegmentCore engine and InterfaceDB provider integration.
+- `InterfaceDB.Storage.SegmentCore.Tests`
+  Storage-engine recovery, transaction, maintenance, and end-to-end provider tests.
 - `IdbDemoStorage`
   Demo contract/storage project for `Person`. This project is required by the solution and should be tracked as source.
 - `InterfaceDb.ConsoleApp`
@@ -60,7 +64,7 @@ This is intentional. InterfaceDB treats these as storage-aware objects, not pure
 - `Location`
 - `State`
 
-`Location` is an opaque provider locator. The file provider interprets it as a path; future SQL, document, event-stream, or memory providers can assign their own locator semantics. `State` is provider-neutral and prevents a deleted in-memory storage object from being saved accidentally.
+`Location` is an opaque provider locator. The file provider interprets it as a path; SegmentCore uses the physical envelope key. Future SQL, document, event-stream, or memory providers can assign their own locator semantics. `State` is provider-neutral and prevents a deleted in-memory storage object from being saved accidentally.
 
 The envelope is the low-level DB metadata boundary. Upper layers usually receive the object itself, not a separate envelope wrapper, but the object keeps a reference to its envelope.
 
@@ -613,9 +617,10 @@ The original `QueryAsync` method remains as a compatibility alias for first-or-d
 
 ## Storage Policy
 
-`StoragePolicy` controls file repository behavior:
+`StoragePolicy` is the provider-neutral runtime-policy boundary. It supplies a named hardware
+profile plus repository-level behavior:
 
-- write concurrency;
+- write and read concurrency;
 - notification publishing;
 - envelope metadata caching;
 - selective object retention in cache;
@@ -626,7 +631,13 @@ The original `QueryAsync` method remains as a compatibility alias for first-or-d
 - initialization hydration;
 - file watcher behavior.
 
-The policy is supplied through `IDbContractConfigDto<TContract>.StoragePolicy`.
+The policy is supplied through `IDbContractConfigDto<TContract>.StoragePolicy` or overridden at
+registration. The file provider consumes the applicable file, lock, watcher, concurrency, and
+cache members directly. SegmentCore uses the shared concurrency/cache/notification intent and
+resolves the hardware profile into `SegmentCoreRepositoryOptions`, which owns physical stripe,
+queue, read-window, transaction, checkpoint, and compaction settings. Explicit provider options
+take precedence. This keeps the core abstraction independent of SegmentCore's storage format while
+ensuring every effective physical setting is public and observable.
 
 ## Migration Tool
 

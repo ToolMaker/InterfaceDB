@@ -263,9 +263,13 @@ namespace Idb.Libraries.Implementation.Extensions
                     MessagePackSerializerOptions.Standard.WithResolver(
                         MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance)));
             services.TryAddKeyedSingleton<IObjectSerializer<TContract>>(databaseKey, (sp, key) =>
-                new EncryptingObjectSerializer<TContract>(
-                    sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(key),
-                    sp.GetRequiredKeyedService<IEncryptor>(key)));
+            {
+                var serializer = sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(key);
+                var encryptor = sp.GetRequiredKeyedService<IEncryptor>(key);
+                return encryptor is EncryptionNone
+                    ? serializer
+                    : new EncryptingObjectSerializer<TContract>(serializer, encryptor);
+            });
             services.TryAddKeyedSingleton<
                 IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(
                 databaseKey,

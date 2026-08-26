@@ -1,0 +1,38 @@
+using Idb.Storage.SegmentCore;
+using Idb.Storage.SegmentCore.ObjectLog;
+
+if (args.Length != 1)
+{
+    throw new ArgumentException("Expected the store root as the only argument.");
+}
+
+var root = Path.GetFullPath(args[0]);
+var options = new SegmentCoreOptions
+{
+    TransactionProtocol = SegmentCoreTransactionProtocol.MutationWriteAheadLog,
+    CheckpointGenerationsToKeep = 2,
+    PrimaryIndexOptions = new SegmentCorePrimaryIndexOptions
+    {
+        Mode = SegmentCorePrimaryIndexMode.Paged
+    },
+    LogOptions = new StripedObjectLogProbeOptions
+    {
+        StripeCount = 2,
+        DurabilityStrategy = ObjectLogDurabilityStrategy.ExplicitFlush
+    }
+};
+
+await using var store = await SegmentCoreStore.OpenAsync(root, options);
+await using var transaction = await store.BeginTransactionAsync();
+await transaction.SaveAsync("baseline-key", new byte[] { 1, 3, 5, 7, 9, 11 });
+await transaction.CommitAsync();
+_ = await store.CheckpointAsync();
+var integrity = await store.VerifyIntegrityAsync();
+if (!integrity.IsValid || store.Count != 1)
+{
+    throw new InvalidDataException(
+        "Baseline package failed to create a valid qualification store: " +
+        string.Join("; ", integrity.Failures));
+}
+
+Console.WriteLine($"Baseline store created by {typeof(SegmentCoreStore).Assembly.GetName().Version}: {root}");

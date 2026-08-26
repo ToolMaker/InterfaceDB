@@ -11,17 +11,20 @@ internal sealed class SqliteGateStore : IProductionGateStore
     private readonly string _connectionString;
     private readonly StorageDurabilityMode _durabilityMode;
     private readonly SqliteClientKind _clientKind;
+    private readonly bool _createSecondaryIndexes;
     private readonly ConcurrentBag<SqliteConnection> _pool = [];
     private int _disposed;
 
     public SqliteGateStore(
         string databasePath,
         StorageDurabilityMode durabilityMode,
-        SqliteClientKind clientKind)
+        SqliteClientKind clientKind,
+        bool createSecondaryIndexes = true)
     {
         _databasePath = databasePath;
         _durabilityMode = durabilityMode;
         _clientKind = clientKind;
+        _createSecondaryIndexes = createSecondaryIndexes;
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
@@ -32,9 +35,10 @@ internal sealed class SqliteGateStore : IProductionGateStore
         }.ToString();
     }
 
-    public string EngineName => _clientKind == SqliteClientKind.Dapper
+    public string EngineName => (_clientKind == SqliteClientKind.Dapper
         ? "SQLite Dapper"
-        : "SQLite Microsoft.Data.Sqlite";
+        : "SQLite Microsoft.Data.Sqlite")
+        + (_createSecondaryIndexes ? string.Empty : " (no secondary indexes)");
     public string CacheModeName => "PageCache";
     public string DurabilityModeName => _durabilityMode == StorageDurabilityMode.Durable ? "Full" : "Normal";
 
@@ -55,10 +59,16 @@ internal sealed class SqliteGateStore : IProductionGateStore
                     Content TEXT NOT NULL,
                     Revision INTEGER NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS IX_Records_Role_Age ON Records(Role, Age);
-                CREATE INDEX IF NOT EXISTS IX_Records_Name ON Records(Name);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (_createSecondaryIndexes)
+            {
+                command.CommandText = """
+                    CREATE INDEX IF NOT EXISTS IX_Records_Role_Age ON Records(Role, Age);
+                    CREATE INDEX IF NOT EXISTS IX_Records_Name ON Records(Name);
+                    """;
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -246,6 +256,79 @@ internal sealed class SqliteGateStore : IProductionGateStore
         Return(connection);
     }
 
+    public async ValueTask CheckpointWalAsync(
+        bool truncate,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = truncate
+                ? "PRAGMA wal_checkpoint(TRUNCATE);"
+                : "PRAGMA wal_checkpoint(FULL);";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Return(connection);
+        }
+    }
+
+    public async ValueTask VacuumAsync(CancellationToken cancellationToken = default)
+    {
+        DisposePool();
+        var connection = await RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "VACUUM;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Return(connection);
+        }
+    }
+
+    public async ValueTask<bool> VerifyAtomicRollbackAsync(
+        GateRecord first,
+        GateRecord second,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using (var transaction = (SqliteTransaction)await connection
+                             .BeginTransactionAsync(cancellationToken)
+                             .ConfigureAwait(false))
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = InsertSql;
+                AddRecordParameters(command);
+                BindRecord(command, first);
+                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                BindRecord(command, second);
+                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await using var verify = connection.CreateCommand();
+            verify.CommandText = "SELECT COUNT(*) FROM Records WHERE Id IN (@first, @second)";
+            verify.Parameters.AddWithValue("@first", first.Id);
+            verify.Parameters.AddWithValue("@second", second.Id);
+            var count = Convert.ToInt32(
+                await verify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            return count == 0;
+        }
+        finally
+        {
+            Return(connection);
+        }
+    }
+
     public GateStorageStats GetStorageStats()
     {
         long bytes = 0;
@@ -354,6 +437,26 @@ internal sealed class SqliteGateStore : IProductionGateStore
         reader.GetString(3),
         reader.GetString(4),
         reader.GetInt64(5));
+
+    private static void AddRecordParameters(SqliteCommand command)
+    {
+        _ = command.Parameters.Add("@Id", SqliteType.Text);
+        _ = command.Parameters.Add("@Name", SqliteType.Text);
+        _ = command.Parameters.Add("@Age", SqliteType.Integer);
+        _ = command.Parameters.Add("@Role", SqliteType.Text);
+        _ = command.Parameters.Add("@Content", SqliteType.Text);
+        _ = command.Parameters.Add("@Revision", SqliteType.Integer);
+    }
+
+    private static void BindRecord(SqliteCommand command, GateRecord record)
+    {
+        command.Parameters["@Id"].Value = record.Id;
+        command.Parameters["@Name"].Value = record.Name;
+        command.Parameters["@Age"].Value = record.Age;
+        command.Parameters["@Role"].Value = record.Role;
+        command.Parameters["@Content"].Value = record.Content;
+        command.Parameters["@Revision"].Value = record.Revision;
+    }
 
     private async ValueTask<SqliteConnection> RentAsync(CancellationToken cancellationToken)
     {

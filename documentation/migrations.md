@@ -77,6 +77,38 @@ services.AddRepository<Contracts.v1_0_1.IPerson>(
 
 `InitializeAsync()` executes eager strategies. Lazy conversion runs on access. Migration chains must form an unambiguous path from every stored source version to the active version; missing, duplicate, or cyclic definitions are rejected.
 
+## Migrate A SegmentCore Store
+
+SegmentCore migration is an explicit provider maintenance operation. It never scans sibling
+directories automatically, never deletes the source, and requires source and target to be
+different store roots. Register the complete `IMigration` chain, configure the repository at the
+target `ActiveVersion`, initialize it, and then invoke:
+
+```csharp
+var maintenance = provider.GetSegmentCoreMaintenance<IPerson>();
+
+SegmentCoreMigrationResult result = await maintenance.MigrateFromAsync(
+    sourceStoreDirectory: @"D:\Data\People\.segment-core\1.0.0",
+    sourceVersion: "1.0.0",
+    options: new SegmentCoreMigrationOptions
+    {
+        BatchSize = 256,
+        ContinueOnError = false,
+        VerifyAfterMigration = true
+    });
+
+Console.WriteLine(
+    $"Migrated {result.Migrated:N0}; already present {result.AlreadyPresent:N0}; " +
+    $"failures {result.Failures.Count:N0}.");
+```
+
+The operation reads validated `IDB2`, `IDB3`, or `IDB4` envelopes, decrypts them with the
+configured provider encryptor, executes each adjacent migration, writes target envelopes through
+normal atomic SegmentCore batches, publishes a target checkpoint, and optionally runs integrity
+verification. Existing physical keys are skipped, making a stopped run resumable. Strict mode is
+the default; `ContinueOnError = true` records per-object failures and continues. Retain the source
+and its encryption keys until application-level verification and backup promotion are complete.
+
 ## Deployment Checklist
 
 1. Back up the data root and encryption keys.

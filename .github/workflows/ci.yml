@@ -33,5 +33,43 @@ jobs:
       - name: Test analyzers
         run: dotnet test Idb.Analyzers.Tests\Idb.Analyzers.Tests.csproj -c Release --no-build --no-restore
 
+      - name: Test SegmentCore provider
+        run: dotnet test InterfaceDB.Storage.SegmentCore.Tests\InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Run SegmentCore repository production pilot
+        run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --segment-core-production-pilot --quick --output artifacts/segment-core/ci-production-pilot.json
+
+      - name: Pack public packages
+        run: |
+          dotnet pack Idb.Libraries\Idb.Libraries.csproj -c Release --no-build --no-restore
+          dotnet pack InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore
+
+      - name: Run integration harness
+        run: dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationTests
+
+  linux-correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore InterfaceDB.sln
+
+      - name: Build
+        run: dotnet build InterfaceDB.sln -c Release --no-restore
+
+      - name: Test InterfaceDB
+        run: dotnet test InterfaceDb.Tests/InterfaceDb.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Test SegmentCore provider
+        run: dotnet test InterfaceDB.Storage.SegmentCore.Tests/InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
+
       - name: Run integration harness
         run: dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationTests

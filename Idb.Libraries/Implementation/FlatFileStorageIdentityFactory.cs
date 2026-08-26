@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Numerics;
 using Idb.Libraries.Abstractions.Dtos;
@@ -9,6 +10,9 @@ using Idb.Libraries.Implementation.Extensions;
 public class FlatFileStorageIdentityFactory<TContract, TKey> : IEnvelopeStorageIdentityFactory<TContract>
     where TContract : class, IStoredContract<TContract>
 {
+    private static readonly SearchValues<char> InvalidFileNameCharacters =
+        SearchValues.Create(Path.GetInvalidFileNameChars());
+
     private readonly IDbContractConfigDto<TContract> _config;
     private readonly IEnvelopeKeyFactory<TContract, TKey> _keyFactory;
     private readonly Func<TKey, string> _keyFormatter;
@@ -95,8 +99,18 @@ public class FlatFileStorageIdentityFactory<TContract, TKey> : IEnvelopeStorageI
 
     private static string SanitizeFileName(string value)
     {
-        var invalidCharacters = Path.GetInvalidFileNameChars();
-        return string.Concat(value.Select(character =>
-            invalidCharacters.Contains(character) ? '_' : character));
+        if (value.AsSpan().IndexOfAny(InvalidFileNameCharacters) < 0)
+        {
+            return value;
+        }
+
+        return string.Create(value.Length, value, static (destination, source) =>
+        {
+            for (var index = 0; index < source.Length; index++)
+            {
+                var character = source[index];
+                destination[index] = InvalidFileNameCharacters.Contains(character) ? '_' : character;
+            }
+        });
     }
 }

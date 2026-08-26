@@ -15,5 +15,10 @@ public enum ContractRepositoryType
     /// </summary>
     FileSystem,
 
+    /// <summary>
+    /// Uses the append-only, striped SegmentCore storage provider.
+    /// </summary>
+    SegmentCore,
+
 }
 

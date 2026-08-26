@@ -1,6 +1,8 @@
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using Idb.Libraries.Abstractions.Dtos;
 
 namespace Idb.Libraries.Implementation.Indexes;
@@ -12,6 +14,8 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     private readonly IReadOnlyList<SearchIndexDefinition> _definitions;
     private readonly Dictionary<string, PropertySearchIndex> _indexes;
     private readonly PropertySearchIndex[] _indexesByDefinition;
+    private readonly Type[] _valueTypes;
+    private readonly byte[] _schemaFingerprint;
     private readonly ReaderWriterLockSlim _lock = new();
     private readonly SearchQueryPlannerOptions _plannerOptions;
     private readonly Dictionary<string, object?[]> _valuesByPhysicalKey = new(StringComparer.Ordinal);
@@ -21,6 +25,8 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     {
         _plannerOptions = plannerOptions ?? SearchQueryPlannerOptions.MetadataOnly;
         _definitions = SearchIndexDiscovery.Discover(typeof(TContract));
+        _valueTypes = _definitions.Select(static definition => definition.ValueType).ToArray();
+        _schemaFingerprint = ComputeSchemaFingerprint(typeof(TContract), _definitions);
         _indexesByDefinition = new PropertySearchIndex[_definitions.Count];
         _indexes = new Dictionary<string, PropertySearchIndex>(_definitions.Count, StringComparer.Ordinal);
         for (var index = 0; index < _definitions.Count; index++)
@@ -32,6 +38,10 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     }
 
     public bool HasIndexes => _indexes.Count > 0;
+
+    internal IReadOnlyList<Type> ValueTypes => _valueTypes;
+
+    internal ReadOnlyMemory<byte> SchemaFingerprint => _schemaFingerprint;
 
     internal int IndexedObjectCount
     {
@@ -96,27 +106,89 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
             return;
         }
 
+        UpsertValues(physicalKey, ExtractValues(entity));
+    }
+
+    internal object?[] ExtractValues(TContract entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        var values = new object?[_definitions.Count];
+        for (var index = 0; index < _definitions.Count; index++)
+        {
+            values[index] = NormalizeValue(_definitions[index].Getter(entity));
+        }
+
+        return values;
+    }
+
+    internal void UpsertValues(string physicalKey, IReadOnlyList<object?> values)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(physicalKey);
+        ArgumentNullException.ThrowIfNull(values);
+        if (values.Count != _definitions.Count)
+        {
+            throw new ArgumentException("The persisted index value count does not match the index schema.", nameof(values));
+        }
+
+        if (!HasIndexes)
+        {
+            return;
+        }
+
         _lock.EnterWriteLock();
         try
         {
             RemoveCore(physicalKey);
-            var values = new object?[_definitions.Count];
-            for (var index = 0; index < _definitions.Count; index++)
+            var ownedValues = new object?[values.Count];
+            for (var index = 0; index < values.Count; index++)
             {
-                var definition = _definitions[index];
-                var value = NormalizeValue(definition.Getter(entity));
-                values[index] = value;
+                var value = NormalizeValue(values[index]);
+                ownedValues[index] = value;
                 if (value is not null)
                 {
                     _indexesByDefinition[index].Add(value, physicalKey);
                 }
             }
 
-            _valuesByPhysicalKey[physicalKey] = values;
+            _valuesByPhysicalKey[physicalKey] = ownedValues;
         }
         finally
         {
             _lock.ExitWriteLock();
+        }
+    }
+
+    internal IReadOnlyDictionary<string, object?[]> GetValuesSnapshot()
+    {
+        ThrowIfDisposed();
+        _lock.EnterReadLock();
+        try
+        {
+            return _valuesByPhysicalKey.ToDictionary(
+                static pair => pair.Key,
+                static pair => (object?[])pair.Value.Clone(),
+                StringComparer.Ordinal);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    internal object?[]? GetValues(string physicalKey)
+    {
+        ThrowIfDisposed();
+        _lock.EnterReadLock();
+        try
+        {
+            return _valuesByPhysicalKey.TryGetValue(physicalKey, out var values)
+                ? (object?[])values.Clone()
+                : null;
+        }
+        finally
+        {
+            _lock.ExitReadLock();
         }
     }
 
@@ -780,6 +852,24 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
         var type = value.GetType();
         return type.IsEnum ? Convert.ChangeType(value, Enum.GetUnderlyingType(type)) : value;
+    }
+
+    private static byte[] ComputeSchemaFingerprint(
+        Type indexedType,
+        IReadOnlyList<SearchIndexDefinition> definitions)
+    {
+        var builder = new StringBuilder(indexedType.AssemblyQualifiedName ?? indexedType.FullName);
+        foreach (var definition in definitions)
+        {
+            builder.Append('\n')
+                .Append(definition.Path)
+                .Append('|')
+                .Append(definition.ValueType.AssemblyQualifiedName)
+                .Append('|')
+                .Append((int)definition.Mode);
+        }
+
+        return SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
     }
 
     private static double EstimateIndexExecutionCost(

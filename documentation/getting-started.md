@@ -2,6 +2,13 @@
 
 This guide shows the smallest useful InterfaceDB setup: define a contract, implement it, register a repository, save objects, and query them.
 
+Install the pre-release package and the standard DI implementation used by these examples:
+
+```powershell
+dotnet add package InterfaceDB --prerelease
+dotnet add package Microsoft.Extensions.DependencyInjection
+```
+
 ## 1. Define A Storage Contract
 
 Contracts are interfaces. They must inherit `IStoredContract<TContract>` and declare a storage version with `[StorageScope]`.
@@ -19,7 +26,7 @@ public interface IPerson : IStoredContract<IPerson>
 }
 ```
 
-## 2. Implement The Contract
+## 2. Implement The Contract More Than Once
 
 Concrete storage classes expose the envelope with a non-public setter. InterfaceDB sets it internally.
 
@@ -31,11 +38,30 @@ public sealed class Student : IPerson
     public string Name { get; set; } = string.Empty;
     public int Age { get; set; }
     public string Role { get; set; } = "Student";
+    public string Course { get; set; } = string.Empty;
+    public IObjectEnvelope<IPerson>? Envelope { get; private set; }
+}
+
+public sealed class Employee : IPerson
+{
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+    public string Role { get; set; } = "Employee";
+    public string Department { get; set; } = string.Empty;
+    public IObjectEnvelope<IPerson>? Envelope { get; private set; }
+}
+
+public sealed class SeniorCitizen : IPerson
+{
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+    public string Role { get; set; } = "SeniorCitizen";
+    public string DiscountCardNumber { get; set; } = string.Empty;
     public IObjectEnvelope<IPerson>? Envelope { get; private set; }
 }
 ```
 
-Multiple classes can implement the same contract. InterfaceDB stores the concrete implementation type in the envelope so it can reload the right object later.
+These three classes live in the same `IRepository<IPerson>`. InterfaceDB stores the concrete implementation type in each envelope, so a `Student` reloads as a `Student`, an `Employee` as an `Employee`, and a `SeniorCitizen` as a `SeniorCitizen`. Concrete-only properties such as `Course`, `Department`, and `DiscountCardNumber` are preserved too.
 
 ## 3. Configure The Repository
 
@@ -76,12 +102,62 @@ await people.InitializeAsync();
 
 ## 4. Save And Query
 
+Save different implementations through the same repository:
+
 ```csharp
-await people.SaveAsync(new Student
+await people.SaveManyAsync(new IPerson[]
 {
-    Name = "Jane",
-    Age = 22
+    new Student
+    {
+        Name = "Jane",
+        Age = 22,
+        Course = "Physics"
+    },
+    new Employee
+    {
+        Name = "John",
+        Age = 41,
+        Department = "Engineering"
+    },
+    new SeniorCitizen
+    {
+        Name = "Mary",
+        Age = 72,
+        DiscountCardNumber = "SC-1042"
+    }
 });
+```
+
+Read every implementation through the shared interface and inspect its actual runtime type:
+
+```csharp
+await foreach (var person in people.QueryManyAsync(_ => true))
+{
+    var detail = person switch
+    {
+        Student student => student.Course,
+        Employee employee => employee.Department,
+        SeniorCitizen seniorCitizen => seniorCitizen.DiscountCardNumber,
+        _ => string.Empty
+    };
+
+    Console.WriteLine($"{person.GetType().Name}: {person.Name} ({detail})");
+}
+```
+
+Or ask the same repository for only one implementation type:
+
+```csharp
+await foreach (var employee in people.QueryManyAsync<Employee>(
+    employee => employee.Department == "Engineering"))
+{
+    Console.WriteLine(employee.Name);
+}
+```
+
+The non-generic query overloads work across the complete `IPerson` collection:
+
+```csharp
 
 var firstAdult = await people.QueryFirstAsync(x => x.Age >= 18);
 
@@ -104,13 +180,16 @@ await foreach (var person in people.SearchManyAsync(
 
 For `StartsWith` and `EndsWith`, use `StringComparison.Ordinal` so the expression semantics match the radix index. Unsupported or culture-sensitive expressions safely fall back to candidate validation or a scan.
 
+See [Storing Multiple Concrete Types](polymorphic-storage.md) for the complete polymorphic storage model.
+
 ## 5. Save Many
 
 ```csharp
 var saved = await people.SaveManyAsync(new IPerson[]
 {
-    new Student { Name = "Jane", Age = 22 },
-    new Employee { Name = "John", Age = 34 }
+    new Student { Name = "Jane", Age = 22, Course = "Physics" },
+    new Employee { Name = "John", Age = 34, Department = "Engineering" },
+    new SeniorCitizen { Name = "Mary", Age = 72, DiscountCardNumber = "SC-1042" }
 });
 ```
 

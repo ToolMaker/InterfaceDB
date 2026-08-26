@@ -25,6 +25,108 @@ using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
 
 try
 {
+    if (args.Any(argument => string.Equals(argument, "--segment-core-read-worker", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreReadProcessQualificationRunner.RunWorkerAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-read-process", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreReadProcessQualificationRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-qualification", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreQualificationRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-upgrade-validate", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreUpgradeQualificationRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-production-pilot", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreProductionPilotRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-power-loss-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCorePowerLossQualificationRunner.RunWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-power-loss-validate", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCorePowerLossQualificationRunner.RunValidatorAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-scale", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreScaleGateRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-crash-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreTransactionsRunner.RunCrashWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-transactions", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreTransactionsRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-limits", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreLimitsRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-two-crash-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseTwoRunner.RunCrashWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-two", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseTwoRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-one-crash-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseOneRunner.RunCrashWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-one", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseOneRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-zero-crash-writer", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseZeroRunner.RunCrashWriterAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--phase-zero", StringComparison.OrdinalIgnoreCase)))
+    {
+        PhaseZeroRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
     if (args.Any(argument => string.Equals(argument, "--file-protocol-probe", StringComparison.OrdinalIgnoreCase)))
     {
         FileProtocolProbe.RunAsync(args).GetAwaiter().GetResult();
@@ -179,6 +281,27 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine();
         Console.WriteLine("Run the low-level durable file-protocol probe:");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --file-protocol-probe --probe-records=200 --probe-payload-bytes=262");
+        Console.WriteLine();
+        Console.WriteLine("Run the Phase 0 object-log correctness and admission gate:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-zero --quick");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-zero --records=500 --payload-bytes=512 --iterations=9 --crash-cycles=20");
+        Console.WriteLine();
+        Console.WriteLine("Run the NVMe-striped append-log prototype:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-one --quick");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-one --records=2000 --iterations=3 --payload-bytes=512,4096,65536 --concurrency=1,4,16,64 --stripes=1,2,4,8,16");
+        Console.WriteLine();
+        Console.WriteLine("Run the checkpointed primary-index/direct-read prototype:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-two --quick");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --phase-two --records=500 --iterations=3 --payload-bytes=512,4096,65536 --concurrency=1,16,64 --stripes=8,16");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-transactions --records=5000 --iterations=3 --batch-sizes=1,10,100,1000");
+        Console.WriteLine();
+        Console.WriteLine("Run the SegmentCore scale and physical power-loss qualification gates:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-scale --records=1000000 --durability=write-through --primary-index=paged --output=segment-core-scale-1m-paged.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-qualification --duration-seconds=60 --records=100000 --payload-bytes=1024 --output=segment-core-qualification.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-read-process --records=100000 --processes=4 --reads-per-process=25000 --output=segment-core-read-process.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-production-pilot --quick --output=segment-core-production-pilot.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-power-loss-writer --root=E:\\InterfaceDbPowerLoss");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-power-loss-validate --root=E:\\InterfaceDbPowerLoss");
     }
 
     public static void SmokeTestSqlConnection()

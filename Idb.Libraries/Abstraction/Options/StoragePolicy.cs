@@ -11,13 +11,70 @@ public sealed record StoragePolicy
     /// <summary>
     /// Singleton instance representing the default bounded-concurrency, metadata-cache, Performance-mode policy.
     /// </summary>
-    public static StoragePolicy Default { get; } = new();
+    public static StoragePolicy Default { get; } = ForHardwareProfile(StorageHardwareProfile.Portable);
+
+    /// <summary>
+    /// Creates a complete provider-neutral policy for a documented hardware profile.
+    /// Provider packages may use the same profile to resolve their physical I/O defaults.
+    /// </summary>
+    public static StoragePolicy ForHardwareProfile(StorageHardwareProfile profile)
+    {
+        if (!Enum.IsDefined(profile))
+        {
+            throw new ArgumentOutOfRangeException(nameof(profile));
+        }
+
+        var processorCount = Math.Max(1, Environment.ProcessorCount);
+        return profile switch
+        {
+            StorageHardwareProfile.LowMemory => new StoragePolicy
+            {
+                HardwareProfile = profile,
+                MaxConcurrency = Math.Min(2, processorCount),
+                MaxReadConcurrency = Math.Min(2, processorCount),
+                BulkWriteBatchSize = 256,
+                FileWriteBufferSize = 4 * 1024,
+                HydrateOnInitialize = false
+            },
+            StorageHardwareProfile.HighThroughput => new StoragePolicy
+            {
+                HardwareProfile = profile,
+                MaxConcurrency = Math.Clamp(processorCount * 2, 4, 32),
+                MaxReadConcurrency = Math.Clamp(processorCount, 4, 16),
+                BulkWriteBatchSize = 8_192,
+                UseSingleWriteBuffer = true,
+                FileWriteBufferSize = 64 * 1024
+            },
+            StorageHardwareProfile.WindowsNvme => new StoragePolicy
+            {
+                HardwareProfile = profile,
+                MaxConcurrency = Math.Clamp(processorCount * 2, 8, 32),
+                MaxReadConcurrency = Math.Clamp(processorCount, 8, 16),
+                BulkWriteBatchSize = 8_192,
+                UseSingleWriteBuffer = true,
+                FileWriteBufferSize = 64 * 1024
+            },
+            _ => new StoragePolicy { HardwareProfile = profile }
+        };
+    }
+
+    /// <summary>
+    /// Hardware/workload starting point used to resolve provider-specific physical options.
+    /// Use <see cref="ForHardwareProfile"/> to seed the associated provider-neutral values.
+    /// </summary>
+    public StorageHardwareProfile HardwareProfile { get; init; } = StorageHardwareProfile.Portable;
 
     /// <summary>
     /// Maximum number of concurrent write operations. A value of 1 preserves sequential behavior.
     /// Values less than 1 are coerced to 1.
     /// </summary>
     public int MaxConcurrency { get; init; } = 12;
+
+    /// <summary>
+    /// Maximum number of concurrent physical read groups or repository read operations.
+    /// A provider may reduce this further when fewer independent storage groups are available.
+    /// </summary>
+    public int MaxReadConcurrency { get; init; } = 12;
 
     /// <summary>
     /// Controls whether writes favor throughput or durable out-of-process coordination.
@@ -121,6 +178,15 @@ public sealed record StoragePolicy
         get
         {
             var candidate = MaxConcurrency;
+            return candidate < 1 ? 1 : candidate;
+        }
+    }
+
+    internal int NormalizedReadConcurrency
+    {
+        get
+        {
+            var candidate = MaxReadConcurrency;
             return candidate < 1 ? 1 : candidate;
         }
     }

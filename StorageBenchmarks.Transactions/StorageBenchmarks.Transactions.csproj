@@ -17,6 +17,7 @@
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.9" />
+    <PackageReference Include="Microsoft.FASTER.Core" Version="2.6.5" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
 
@@ -24,6 +25,7 @@
     <ProjectReference Include="..\IdbDemoStorage\IdbDemoStorage.csproj" />
     <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
     <ProjectReference Include="..\PerformanceCommon\PerformanceCommon.csproj" />
+    <ProjectReference Include="..\InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>

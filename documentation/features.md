@@ -8,18 +8,30 @@ InterfaceDB stores objects through interfaces instead of requiring a base entity
 
 ```csharp
 [StorageScope(VersionTag = "1.0.0")]
-public interface IOrder : IStoredContract<IOrder>
+public interface IPerson : IStoredContract<IPerson>
 {
-    string Number { get; set; }
+    string Name { get; set; }
 }
 ```
 
-This allows a repository to store multiple concrete implementations:
+This allows one repository to store multiple concrete implementations together:
 
 ```csharp
-public sealed class OnlineOrder : IOrder { ... }
-public sealed class StoreOrder : IOrder { ... }
+public sealed class Student : IPerson { /* Course plus IPerson members */ }
+public sealed class Employee : IPerson { /* Department plus IPerson members */ }
+public sealed class SeniorCitizen : IPerson { /* Discount card plus IPerson members */ }
+
+IRepository<IPerson> people = ...;
+
+await people.SaveManyAsync(new IPerson[]
+{
+    new Student { Name = "Jane", Course = "Physics" },
+    new Employee { Name = "John", Department = "Engineering" },
+    new SeniorCitizen { Name = "Mary", DiscountCardNumber = "SC-1042" }
+});
 ```
+
+Each envelope records its concrete type. Reading through `IRepository<IPerson>` therefore returns a mixed `IPerson` collection whose runtime objects are still `Student`, `Employee`, and `SeniorCitizen`. See [Storing Multiple Concrete Types](polymorphic-storage.md).
 
 ## Envelopes
 
@@ -166,9 +178,22 @@ Opt into object retention with:
 
 This lets the application cache hot object categories without hiding full-object memory use by default.
 
+## Storage Providers
+
+InterfaceDB has two opt-in persistence layouts behind the same repository abstraction:
+
+- The file provider stores each object as an independent file and supports file watching, file-oriented migrations, and cross-process last-operation-wins coordination.
+- The SegmentCore provider stores checksummed frames in append-only striped segments and adds atomic bulk transactions, mutation-WAL recovery, full/delta checkpoints, integrity verification, and bounded automatic compaction.
+
+Provider-neutral `StoragePolicy` hardware profiles resolve into complete, inspectable SegmentCore
+stripe, queue, read, durability, checkpoint, and compaction settings. Explicit
+`SegmentCoreRepositoryOptions` retain final precedence for provider-specific tuning.
+
+Register SegmentCore with `AddSegmentCoreRepository<TContract>`. Existing exact, range, prefix, suffix, contains, query-planning, encryption, cache, notification, and polymorphic behavior remains above the provider boundary. See [SegmentCore Storage Provider](segment-core-storage-provider.md).
+
 ## Durability Modes
 
-`StorageDurabilityMode.Performance` writes canonical files directly and is the default. It is intended for low-latency local data where the application accepts weaker interrupted-write behavior.
+For the file provider, `StorageDurabilityMode.Performance` writes canonical files directly and is the default. It is intended for low-latency local data where the application accepts weaker interrupted-write behavior.
 
 `StorageDurabilityMode.Durable` writes a recoverable proposal, publishes it through a ready state, coordinates other processes, and drains abandoned completed proposals at initialization. It is slower because every object remains an independently published file.
 
