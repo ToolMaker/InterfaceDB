@@ -5,15 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB</PackageId>
-    <Version>1.0.0-preview.3</Version>
+    <Version>1.0.0-preview.4</Version>
     <Authors>ToolMaker</Authors>
     <Description>Interface-first object repository and embedded object database for .NET 10.</Description>
-    <PackageTags>interfacedb;repository;object-database;embedded-database</PackageTags>
+    <PackageTags>interfacedb;repository;object-database;embedded-database;android;ios;maccatalyst</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>First public preview: interface-first repositories, polymorphic object persistence, migrations, encryption, and exact/range/prefix/suffix/contains indexing.</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 4 adds qualified .NET 10 Android file-provider consumption, iOS-safe watcher behavior, and asynchronous index disposal for mobile application lifecycles.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

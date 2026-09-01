@@ -23,7 +23,7 @@ Use the focused guides when needed:
 - [Object-Native Storage NVMe Prototype Results](object-log-nvme-prototype-results.md): hash-striped/write-through and group-commit follow-up, native Windows and virtualized Linux metrics, crash evidence, and the conditional go decision.
 - [SegmentCore Prototype Results](segment-core-prototype-results.md): bounded striped writes, streaming primary-locator checkpoints, direct materialized reads, recovery evidence, Dapper confirmation, scale results, and the production-provider admission decision.
 - [SegmentCore Adversarial Strength And Weakness Results](segment-core-adversarial-results.md): scan/query losses, reopen and full-recovery costs, update/delete space amplification, checkpoint stalls, unsupported capabilities, and the resulting engineering priorities.
-- [SegmentCore Transactions And Performance](segment-core-transactions.md): explicit/implicit transaction API, participant and mutation-WAL protocols, recovery and failure semantics, fair SQLite results, and the future commercial routing boundary.
+- [SegmentCore Transactions And Performance](segment-core-transactions.md): explicit/implicit transaction API, participant and mutation-WAL protocols, recovery and failure semantics, and fair SQLite results.
 - [Production Benchmark And Stress Gate](production-benchmark-gate.md): disk-to-materialized-object methodology and commands.
 - [Performance Profiling](performance-profiling.md): collecting CPU and allocation evidence.
 - [Product Positioning](product-positioning.md): comparison with ORMs, serializers, embedded databases, and repositories.

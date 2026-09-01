@@ -15,7 +15,7 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// In-memory search index implementation that forwards persistence to the envelope repository.
 /// </summary>
 /// <typeparam name="TContract">Contract interface represented by the manager.</typeparam>
-public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, IDisposable
+public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, IDisposable, IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
     private static readonly ConditionalWeakTable<LambdaExpression, Delegate> CompiledPredicates = new();
@@ -586,7 +586,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         }
     }
 
-    public void Dispose()
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
@@ -595,7 +597,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 
         if (Volatile.Read(ref _persistentCatalogDirty) != 0)
         {
-            TryPersistCatalogAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            await TryPersistCatalogAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
         _storedSubscription?.Dispose();

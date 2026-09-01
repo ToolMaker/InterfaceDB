@@ -223,10 +223,3 @@ Keep participant commit as the independent correctness baseline and mutation WAL
 3. Decide whether repository envelope skeletons also need an on-disk/lazy representation.
 4. Decide the next package version and whether the known virtualized-Linux performance miss is accepted for the first stable release.
 5. Treat bare-metal Linux/NVMe and true cold-media runs as lower-priority, hardware-profile-specific characterization.
-
-The proposed commercial separation is clear:
-
-- **InterfaceDB SegmentCore base:** transaction correctness, recovery, integrity, compaction, default hash routing, and public router contracts. Correctness must not be paywalled.
-- **Future commercial Radix routing package:** RadixForge-directed adaptive segment groups, split/merge policy, workload telemetry, tuning, and migration tooling.
-
-The future package is not present today. Before implementing it, the base store needs a versioned router identity in its manifest and an immutable `ISegmentRouter` extension contract. A store must not silently change routers after creation. Commercial admission should require a material end-to-end gain over default hash routing across randomized, sequential, common-prefix, skewed, and large-transaction workloads—not merely a favorable microbenchmark.

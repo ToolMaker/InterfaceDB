@@ -125,24 +125,34 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
         FileStream writerLease;
         try
         {
+            // FileStream.Lock is unsupported on Apple platforms. FileShare.None is still
+            // implemented by .NET as an exclusive advisory flock on Unix and supplies the
+            // cross-process writer lease there. Other qualified platforms retain the
+            // existing byte-range lock in addition to the in-process root guard.
+            var usesExclusiveOpenLease = OperatingSystem.IsMacOS() || OperatingSystem.IsIOS();
             writerLease = new FileStream(
                 Path.Combine(fullRoot, "writer.lock"),
                 FileMode.OpenOrCreate,
                 FileAccess.ReadWrite,
-                FileShare.Read,
+                usesExclusiveOpenLease ? FileShare.None : FileShare.Read,
                 bufferSize: 1,
                 FileOptions.WriteThrough);
             try
             {
-                if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+                if (!usesExclusiveOpenLease)
                 {
-                    throw new PlatformNotSupportedException(
-                        "The Phase 0 writer lease is implemented only for Windows and Linux.");
-                }
+                    if (!OperatingSystem.IsWindows()
+                        && !OperatingSystem.IsLinux()
+                        && !OperatingSystem.IsAndroid())
+                    {
+                        throw new PlatformNotSupportedException(
+                            "The Phase 0 writer lease is implemented only for Windows, Linux, Android, macOS, iOS, and Mac Catalyst.");
+                    }
 
-#pragma warning disable CA1416 // Phase 0 explicitly rejects platforms other than Windows and Linux above.
-                writerLease.Lock(0, 1);
+#pragma warning disable CA1416 // Phase 0 explicitly rejects platforms without FileStream locking above.
+                    writerLease.Lock(0, 1);
 #pragma warning restore CA1416
+                }
             }
             catch
             {

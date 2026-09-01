@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.3`. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.4`. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
@@ -46,6 +46,111 @@ await people.InitializeAsync();
 ```
 
 `AddSegmentCoreRepository` registers the complete stack: envelope serialization, encryption hooks, polymorphic lifecycle, cache, InterfaceDB search indexes, query planner, repository facade, SegmentCore store, and maintenance controls.
+
+## Android Support
+
+The file-per-object provider and SegmentCore support .NET 10 Android applications when their data
+root is an app-owned persistent internal-storage directory. Use `Context.FilesDir` in a .NET for
+Android application or `FileSystem.AppDataDirectory` in .NET MAUI. Do not use the cache directory,
+shared storage, removable storage, or a hard-coded `/data/...` path for an authoritative store.
+
+The Android storage path uses the same managed random-access I/O as desktop builds. SegmentCore
+also uses an Android-enabled byte-range writer lease and POSIX `fsync` for durable directory
+publication. Keep the one-writer-process boundary: two Android processes must not open the same
+live SegmentCore root.
+
+Recommended mobile policy:
+
+```csharp
+var policy = StoragePolicy.ForHardwareProfile(StorageHardwareProfile.LowMemory) with
+{
+    WatchStorageChanges = false,
+    MaxConcurrency = 1,
+    MaxReadConcurrency = 1
+};
+```
+
+`FileSystemWatcher` is not part of the current Android qualification. Leave
+`WatchStorageChanges` disabled unless an application has a tested requirement for another process
+to edit the file-per-object root. Dispose the dependency-injection provider asynchronously so
+pending search-index catalog publication and SegmentCore maintenance can complete without blocking
+the Android UI synchronization context:
+
+```csharp
+await using var provider = services.BuildServiceProvider();
+```
+
+InterfaceDB uses runtime type discovery, reflection-backed indexes, and MessagePack resolvers. It is
+therefore not currently declared trim-safe. A .NET Android application that opts into full trimming
+must preserve its contract implementations and the InterfaceDB serialization path. The following
+configuration was used by the Android Release qualification; omit the SegmentCore root in a
+file-provider-only application:
+
+```xml
+<ItemGroup>
+  <TrimmerRootAssembly Include="$(AssemblyName)" RootMode="All" />
+  <TrimmerRootAssembly Include="Idb.Libraries" RootMode="All" />
+  <TrimmerRootAssembly Include="InterfaceDB.Storage.SegmentCore" RootMode="All" />
+  <TrimmerRootAssembly Include="MessagePack" RootMode="All" />
+</ItemGroup>
+```
+
+This is a preservation boundary, not a claim that InterfaceDB is warning-free under full trimming.
+The current Android gate passed a trimmed .NET 10 Release build with Mono AOT on an Android 15/API
+35 x64 emulator: durable file-provider save/reopen/index lookup, SegmentCore atomic save,
+checkpoint/reopen/index lookup, raw byte save, and raw-store reopen. NativeAOT (`PublishAot`) is not
+qualified. Real arm64 hardware, abrupt process termination, low-storage behavior, and physical
+power-loss durability remain required before making a device-level durability claim.
+
+`WindowsCredentialEncryptionKeyStore` is Windows-only. Android applications that enable encrypted
+fields must provide an application-owned key-store implementation backed by an appropriate Android
+secure-storage facility.
+
+## Apple Platform Support
+
+The file-per-object provider and SegmentCore are prepared for ordinary .NET 10 macOS applications,
+.NET for iOS applications, and Mac Catalyst applications. Apple runtime qualification must still be
+performed on a Mac with the matching Xcode and .NET workload before treating those platforms as a
+release durability claim.
+
+Use an app-owned persistent directory. For .NET MAUI on iPhone or Mac Catalyst,
+`FileSystem.AppDataDirectory` is the portable starting point. Do not use the cache or temporary
+directory for authoritative data, and do not place a live SegmentCore root in iCloud Drive or a
+shared app-group container without separately qualifying the one-writer-process boundary.
+
+.NET marks `FileStream.Lock` unsupported on macOS and iOS. SegmentCore therefore acquires its Apple
+writer lease by opening `writer.lock` with `FileShare.None`; .NET implements that exclusive Unix
+open as an advisory `flock`. The existing in-process root guard remains active. Windows, Linux, and
+Android continue to use the byte-range lock path. Do not disable .NET file locking for a root that
+could be opened by another process.
+
+`FileSystemWatcher` is unsupported on iOS, so InterfaceDB automatically omits it there even if
+`WatchStorageChanges` is `true`. Direct file-provider operations and explicit rescans continue to
+work. The watcher is available on macOS and Mac Catalyst; disabling it is still appropriate when
+all changes come from the current process.
+
+Apple application suspension is a separate lifecycle boundary. .NET file streams use advisory
+locks on Unix, and an iOS application can be terminated if it is suspended while holding a file
+lock. Stop writes and asynchronously dispose the InterfaceDB service provider or repository before
+the application is suspended, then recreate and initialize it after returning to the foreground.
+The file-per-object provider normally holds locks only during writes; SegmentCore intentionally
+keeps its writer lease and active segment open for the lifetime of the store.
+
+The current Apple path uses managed file flushes and atomic same-volume moves, but does not yet
+claim a qualified durable directory barrier or physical power-loss guarantee on APFS. A Mac gate
+must exercise save, checkpoint, abrupt process termination, reopen, duplicate-writer rejection,
+free-space exhaustion, and iPhone background/foreground transitions. Apple documents `fsync`,
+`F_BARRIERFSYNC`, and `F_FULLFSYNC` with different durability and device-wear tradeoffs; selecting
+an Apple-specific barrier is intentionally deferred until those measurements are available.
+
+iOS applications are AOT-compiled and trimmed. InterfaceDB is not currently declared trim-safe, so
+the Android preservation roots above also apply to an iOS Release application. A Mac build must
+confirm the actual linker warnings and preserve application contract implementations. The optional
+.NET Native AOT deployment mode remains unqualified.
+
+`WindowsCredentialEncryptionKeyStore` is not available on Apple platforms. Applications that
+enable encrypted fields must supply an application-owned key-store implementation backed by the
+Keychain or another appropriate Apple secure-storage facility.
 
 ## Normal Repository Use
 

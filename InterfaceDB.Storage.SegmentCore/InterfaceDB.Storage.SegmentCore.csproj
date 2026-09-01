@@ -8,15 +8,15 @@
     <IsPackable>true</IsPackable>
     <AssemblyName>InterfaceDB.Storage.SegmentCore</AssemblyName>
     <PackageId>InterfaceDB.Storage.SegmentCore</PackageId>
-    <Version>1.0.0-preview.3</Version>
+    <Version>1.0.0-preview.4</Version>
     <Authors>ToolMaker</Authors>
     <Description>High-throughput append-only SegmentCore storage provider for InterfaceDB.</Description>
-    <PackageTags>interfacedb;storage;object-database;wal;append-only</PackageTags>
+    <PackageTags>interfacedb;storage;object-database;wal;append-only;android;ios;maccatalyst;macos</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>First public SegmentCore preview: atomic bulk transactions, mutation WAL recovery, checkpoints, persisted secondary-index catalogs, backup/restore, integrity verification, and bounded compaction.</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 4 adds qualified .NET 10 Android writer leasing and durable directory publication, plus Apple-compatible writer leasing and explicit Apple durability boundaries.</PackageReleaseNotes>
     <RootNamespace>Idb.Storage.SegmentCore</RootNamespace>
   </PropertyGroup>
 

@@ -115,6 +115,20 @@ The defaults favor conservative cleanup with a five-minute stale threshold. Reco
 
 `StorageChangeDebounce` coalesces repeated filesystem events. `LocalStorageChangeSuppression` prevents a repository from processing its own write echo. Watchers are reconciliation mechanisms, not distributed event delivery; overflow/error paths rescan the store.
 
+On Android, place `DataRoot` under the application's persistent internal files directory and set
+`WatchStorageChanges = false` unless filesystem notifications have been qualified for the target
+device. Do not place an authoritative InterfaceDB root in Android's cache directory. See
+[SegmentCore Storage Provider](segment-core-storage-provider.md#android-support) for the Android
+storage, trimming, AOT, and durability qualification boundary; the storage-location and watcher
+guidance also applies to the file-per-object provider.
+
+On iOS, place `DataRoot` in the application's persistent private container. InterfaceDB does not
+start a `FileSystemWatcher` on iOS even when `WatchStorageChanges` is `true`, because .NET marks the
+API unsupported there. Explicit rescans remain available. macOS and Mac Catalyst can use the
+watcher, but applications that do not expect another process to edit the root can disable it.
+Apple applications must also coordinate repository lifetime with application suspension; see
+[SegmentCore Storage Provider](segment-core-storage-provider.md#apple-platform-support).
+
 ### Provider Applicability
 
 The shared policy deliberately does not contain provider-format details. File buffering,

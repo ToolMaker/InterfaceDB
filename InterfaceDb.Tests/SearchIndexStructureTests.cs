@@ -11,6 +11,12 @@ namespace InterfaceDb.Tests;
 public sealed class SearchIndexStructureTests
 {
     [TestMethod]
+    public void SearchIndexManagerSupportsAsyncDisposal()
+    {
+        Assert.IsTrue(typeof(IAsyncDisposable).IsAssignableFrom(typeof(SearchIndexManager<>)));
+    }
+
+    [TestMethod]
     public void RadixPrefixIndexUsesOrdinalPrefixesAndMaintainsRemovals()
     {
         var index = new RadixPrefixSearchIndex();

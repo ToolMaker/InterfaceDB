@@ -17,11 +17,13 @@ public sealed class PlatformDurableFileSystem : IDurableFileSystem
     {
     }
 
-    public string DirectoryFlushStrategy => OperatingSystem.IsLinux()
+    public string DirectoryFlushStrategy => OperatingSystem.IsLinux() || OperatingSystem.IsAndroid()
         ? "POSIX fsync(directory)"
         : OperatingSystem.IsWindows()
             ? "Windows file FlushFileBuffers + MoveFileEx(MOVEFILE_WRITE_THROUGH) publication"
-            : "File flush only; directory flush unsupported by Phase 0";
+            : OperatingSystem.IsMacOS() || OperatingSystem.IsIOS()
+                ? "Apple file fsync + atomic move; directory barrier unqualified"
+                : "File flush only; directory flush unsupported by Phase 0";
 
     public void FlushFile(SafeFileHandle handle)
     {
@@ -32,7 +34,7 @@ public sealed class PlatformDurableFileSystem : IDurableFileSystem
     public void FlushDirectory(string directoryPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
         {
             return;
         }

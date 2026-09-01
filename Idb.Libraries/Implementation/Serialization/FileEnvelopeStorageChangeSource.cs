@@ -47,7 +47,10 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
         Directory.CreateDirectory(dataRoot);
         CaptureSnapshot(dataRoot);
 
-        if (!_storagePolicy.WatchStorageChanges)
+        // FileSystemWatcher is unsupported on iOS. IsIOS also returns true for
+        // Mac Catalyst, where the watcher is supported, so preserve it there.
+        if (!_storagePolicy.WatchStorageChanges
+            || (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()))
         {
             return ValueTask.CompletedTask;
         }
@@ -124,7 +127,9 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> : IEnvelopeStorag
 
     public void AcknowledgeLocalChange(string providerLocator)
     {
-        if (!_storagePolicy.WatchStorageChanges || string.IsNullOrWhiteSpace(providerLocator))
+        if (!_storagePolicy.WatchStorageChanges
+            || (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst())
+            || string.IsNullOrWhiteSpace(providerLocator))
         {
             return;
         }

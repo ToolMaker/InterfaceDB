@@ -156,6 +156,16 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Roslyn diagnostics that protect immutable contract baselines.
 - Pluggable SegmentCore append-only storage with atomic bulk transactions, grouped WAL durability, retained-WAL seek boundaries, full/delta checkpoints, automatic paged primary locators, persisted secondary-index catalogs, bounded streaming/integrity verification, provider migration, online backup/restore, and interruption-safe background compaction.
 
+## Mobile And Apple Platforms
+
+The `InterfaceDB` and `InterfaceDB.Storage.SegmentCore` packages can be consumed by .NET 10
+Android, iOS, and Mac Catalyst applications, as well as ordinary .NET 10 macOS processes. Android
+has passed a trimmed Release/Mono AOT emulator qualification covering file-provider and SegmentCore
+save, checkpoint, reopen, and indexed lookup. Apple target-framework consumers compile cleanly;
+final iPhone and Mac runtime durability qualification still requires a Mac with Xcode. See the
+[SegmentCore platform guidance](documentation/segment-core-storage-provider.md#android-support)
+before selecting a mobile data root or application-lifecycle policy.
+
 ## Current Performance Snapshot
 
 On the repository's Windows/NVMe development machine, the final 1,000-object quick gate measured one independent Durable write per object at a 7.060 ms median. The equivalent SQLite FULL autocommit measurements were 3.381 ms through `Microsoft.Data.Sqlite` and 3.330 ms through Dapper. The optimized file protocol is 2.17 times faster than InterfaceDB's earlier 15.299 ms Durable baseline while preserving all forced-process recovery and cross-process tests.
@@ -234,4 +244,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.3`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, paged locators, larger-than-managed-memory execution, observability, production-pilot, and automated mixed/disk-failure gates are complete. The virtualized-Linux 15% lead is an advisory optimization target. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Bare-metal Linux/NVMe characterization is lower priority and only gates claims for that hardware profile. The future RadixForge-directed commercial router experiment remains deliberately separate in the [roadmap](documentation/roadmaps.md).
+The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.4`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview.

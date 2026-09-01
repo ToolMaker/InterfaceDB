@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The `1.0.0-preview.3` public-preview decision is complete. Virtualized Linux correctness remains
+The `1.0.0-preview.4` public-preview decision is complete. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:
@@ -100,7 +100,7 @@ See [SegmentCore Storage Provider](segment-core-storage-provider.md) for the usa
 
 Execute and retain an actual physical power cut. Docker, abrupt process-kill windows, fault
 injection, and the graceful two-boot rehearsal pass but are not substitutes for controller-level
-evidence. This does not block `1.0.0-preview.3`; it blocks the strongest durability claim and stable
+evidence. This does not block `1.0.0-preview.4`; it blocks the strongest durability claim and stable
 `1.0.0`.
 
 ### Deferred Product Decisions
@@ -137,28 +137,6 @@ Required design rules:
 5. Cache the decision for a store and report hardware/profile drift on later startup.
 6. Keep active disk microbenchmarks opt-in; normal startup detection must be bounded and non-destructive.
 7. Require qualification evidence before mapping a device to `WindowsNvme` or any future optimized profile.
-
-### Future: Radix-Directed Physical Buckets
-
-After compaction is proven, prototype a RadixForge directory above SegmentCore's segment groups. This is a research path, not part of the current storage format or implementation.
-
-The first candidate split is **RadixForge encoded byte layer 2**, which completes the first UTF-16 code unit for its ordinal string codec. Layer 1 is usually the common zero high byte for ASCII keys and has poor fan-out. A hot or skewed layer-2 bucket can adaptively refine at **layer 4**, which completes the second UTF-16 code unit; splitting at layer 3 alone again tends to select a common zero high byte. The routed key must be the normalized logical identity, not a shared type/path prefix that would put most records back into one bucket.
-
-Proposed route:
-
-```text
-logical object identity
-    -> versioned RadixForge prefix directory
-    -> adaptive bucket (layer 2, optionally layer 4 or deeper)
-    -> bounded hash stripe within that segment group
-    -> active append segment
-```
-
-The radix tree should map prefixes to a bounded number of segment groups; it must not create one open file per radix node. Cold buckets can share a segment group, while byte size, write pressure, and read locality trigger hot-bucket splits. New records route to child buckets immediately, while old parent records remain readable until background compaction migrates them. A crash-safe routing generation must therefore let reads consult both parent and child generations during a split.
-
-This design could reduce write contention per file, isolate compaction, and improve prefix/range read locality. It can also make common-prefix workloads worse, increase file handles, and amplify metadata writes. Admit it only if randomized GUID, sequential, common-prefix, alphabetical, and numeric-key benchmarks show a material end-to-end gain over hash-only SegmentCore without unacceptable p99, write amplification, recovery, or file-count regressions.
-
-Transaction locality controls add another requirement: one stripe was 21%-30% faster than eight stripes for 10- and 100-object transactions, while eight stripes was about 38% faster for 1,000-object transactions. A Radix-directed router must therefore be adaptive rather than simply minimizing buckets. The proposed package boundary is base SegmentCore correctness/default hash routing versus a future separately licensed Radix routing, telemetry, and migration package. The base manifest now persists and enforces router identity/version; correctness, recovery, compaction, and integrity must remain in the base package.
 
 ## Priority 2: Reopen And Query Fixed Costs
 
