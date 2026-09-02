@@ -114,7 +114,12 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             yield break;
         }
 
-        foreach (var file in root.EnumerateFiles($"*{FileExtension}", SearchOption.TopDirectoryOnly))
+        foreach (var file in root
+                     .EnumerateFiles("*", SearchOption.TopDirectoryOnly)
+                     .Where(file => string.Equals(
+                         file.Extension,
+                         FileExtension,
+                         StringComparison.OrdinalIgnoreCase)))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var current = await _reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
@@ -287,7 +292,9 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
         var targetEnvelope = new FileObjectEnvelope<TContract>(_contractConfig)
         {
-            EnvelopeCacheKey = serializedEnvelope.CacheKey,
+            // File names are the file provider's physical identity. Serialized metadata can be
+            // stale after an external rename or copy and must not redirect the migrated payload.
+            EnvelopeCacheKey = Path.GetFileNameWithoutExtension(legacyFile.Name),
             VersionTag = ActiveVersion,
             Location = null,
             ObjectInstance = migratedInstance

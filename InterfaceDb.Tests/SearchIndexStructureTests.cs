@@ -130,6 +130,101 @@ public sealed class SearchIndexStructureTests
     }
 
     [TestMethod]
+    public void AdaptiveContainsBulkLoadCompactsOnceAndRestoresAutomaticCompaction()
+    {
+        using var index = new AdaptiveContainsSearchIndex();
+        var threshold = AdaptiveGramIndexOptions.DefaultAutomaticCompactionThreshold;
+
+        index.BeginBulkLoad();
+        try
+        {
+            for (var ordinal = 0; ordinal < threshold + 17; ordinal++)
+            {
+                index.Upsert($"bulk value {ordinal:D5} searchable", $"bulk-{ordinal:D5}");
+            }
+
+            Assert.AreEqual(threshold + 17, index.PendingMutationCount);
+            CollectionAssert.AreEquivalent(
+                new[] { "bulk-00042" },
+                index.Search("00042 searchable").ToArray());
+        }
+        finally
+        {
+            index.CompleteBulkLoad();
+        }
+
+        Assert.AreEqual(0, index.PendingMutationCount);
+        CollectionAssert.AreEquivalent(
+            new[] { "bulk-00042" },
+            index.Search("00042 searchable").ToArray());
+
+        index.Upsert("updated post-load value", "bulk-00042");
+        index.Remove("bulk-00043");
+
+        Assert.AreEqual(0, index.Search("00042 searchable").Count);
+        CollectionAssert.AreEquivalent(
+            new[] { "bulk-00042" },
+            index.Search("post-load").ToArray());
+        Assert.AreEqual(0, index.Search("00043 searchable").Count);
+        Assert.AreEqual(3, index.PendingMutationCount);
+
+        index.Compact();
+        for (var ordinal = 0; ordinal < threshold - 1; ordinal++)
+        {
+            index.Upsert($"normal mutation {ordinal:D5}", $"normal-{ordinal:D5}");
+        }
+
+        Assert.AreEqual(threshold - 1, index.PendingMutationCount);
+        index.Upsert("normal mutation threshold", "normal-threshold");
+        Assert.AreEqual(0, index.PendingMutationCount);
+        CollectionAssert.AreEquivalent(
+            new[] { "normal-threshold" },
+            index.Search("mutation threshold").ToArray());
+    }
+
+    [TestMethod]
+    public void SearchStoreBulkLoadInstallsPersistedValuesAndKeepsMutationSemantics()
+    {
+        using var store = new SearchIndexStore<PlannerRecord>();
+        using (store.BeginBulkLoad())
+        {
+            for (var ordinal = 0; ordinal < 64; ordinal++)
+            {
+                var record = CreatePlannerRecord(ordinal);
+                store.UpsertValues(record.Id, store.ExtractValues(record));
+            }
+
+            CollectionAssert.AreEquivalent(
+                new[] { "row-0" },
+                store.TryEvaluate(record => record.Text.Contains("entry-0-needle"))!.ToArray());
+        }
+
+        CollectionAssert.AreEquivalent(
+            new[] { "row-0" },
+            store.TryEvaluate(record => record.Text.Contains("entry-0-needle"))!.ToArray());
+
+        var updated = new PlannerRecord
+        {
+            Id = "row-0",
+            Group = "B",
+            Age = 100,
+            Text = "updated searchable catalog value"
+        };
+        store.UpsertValues(updated.Id, store.ExtractValues(updated));
+        store.Remove("row-1");
+
+        Assert.AreEqual(
+            0,
+            store.TryEvaluate(record => record.Text.Contains("entry-0-needle"))!.Count);
+        CollectionAssert.AreEquivalent(
+            new[] { "row-0" },
+            store.TryEvaluate(record => record.Text.Contains("searchable catalog"))!.ToArray());
+        Assert.AreEqual(
+            0,
+            store.TryEvaluate(record => record.Id == "row-1")!.Count);
+    }
+
+    [TestMethod]
     public void SearchStorePlansOrdinalContainsAndRejectsOtherComparisons()
     {
         using var store = new SearchIndexStore<PlannerRecord>();

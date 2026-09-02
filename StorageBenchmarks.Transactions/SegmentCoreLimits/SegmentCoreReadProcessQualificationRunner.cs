@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
@@ -14,6 +13,21 @@ internal static class SegmentCoreReadProcessQualificationRunner
 {
     private const string SegmentCoreMeterName = "InterfaceDB.Storage.SegmentCore";
     private const string OpenStageInstrumentName = "interfacedb.segmentcore.open.stage.duration";
+    private const string FullMaterializationContract = "GateRecord/PhaseZeroCodec-v1/all-fields";
+    private const string ParallelReadersQualification = "all-processes-materialize";
+    private const string SingleOwnerQualification = "one-materialized-reader-plus-ownership-rejections";
+    private const string MaterializedOutcome = "materialized";
+    private const string OwnershipRejectedOutcome = "ownership-rejected";
+    private const string FailedOutcome = "failed";
+    private const int MinimumPayloadBytes = 77;
+    private static readonly TimeSpan WorkerBarrierTimeout = TimeSpan.FromSeconds(30);
+    private const int PhaseZeroFixedPayloadBytes =
+        sizeof(int) // codec version
+        + (4 * sizeof(int)) // Id, Name, Role, and Content byte lengths
+        + sizeof(int) // Age
+        + sizeof(long); // Revision
+    private const ulong FnvOffsetBasis = 14_695_981_039_346_656_037UL;
+    private const ulong FnvPrime = 1_099_511_628_211UL;
 
     public static async Task RunAsync(string[] args)
     {
@@ -45,19 +59,50 @@ internal static class SegmentCoreReadProcessQualificationRunner
                 0,
                 options.ReadsPerProcess,
                 options.Records,
+                options.PayloadBytes,
                 captureOpenStages: true).ConfigureAwait(false);
             report.FreshProcessSqlite = await RunChildAsync(
-                root, "sqlite", sqlitePath, 0, options.ReadsPerProcess, options.Records).ConfigureAwait(false);
+                root,
+                "sqlite",
+                sqlitePath,
+                0,
+                options.ReadsPerProcess,
+                options.Records,
+                options.PayloadBytes).ConfigureAwait(false);
 
             report.MultiProcessSegmentCore = await RunChildrenAsync(
-                root, "segment-core", segmentRoot, options.Processes, options.ReadsPerProcess, options.Records)
+                root,
+                "segment-core",
+                segmentRoot,
+                options.Processes,
+                options.ReadsPerProcess,
+                options.Records,
+                options.PayloadBytes)
                 .ConfigureAwait(false);
             report.MultiProcessSqlite = await RunChildrenAsync(
-                root, "sqlite", sqlitePath, options.Processes, options.ReadsPerProcess, options.Records)
+                root,
+                "sqlite",
+                sqlitePath,
+                options.Processes,
+                options.ReadsPerProcess,
+                options.Records,
+                options.PayloadBytes)
                 .ConfigureAwait(false);
             report.PostContentionSegmentCore = await RunChildAsync(
-                root, "segment-core", segmentRoot, options.Processes + 1, options.ReadsPerProcess, options.Records)
+                root,
+                "segment-core",
+                segmentRoot,
+                options.Processes + 1,
+                options.ReadsPerProcess,
+                options.Records,
+                options.PayloadBytes)
                 .ConfigureAwait(false);
+
+            EnsurePassed("Fresh process SegmentCore", report.FreshProcessSegmentCore);
+            EnsurePassed("Fresh process SQLite", report.FreshProcessSqlite);
+            EnsurePassed("Multi-process SegmentCore", report.MultiProcessSegmentCore);
+            EnsurePassed("Multi-process SQLite", report.MultiProcessSqlite);
+            EnsurePassed("Post-contention SegmentCore", report.PostContentionSegmentCore);
         }
         finally
         {
@@ -82,17 +127,32 @@ internal static class SegmentCoreReadProcessQualificationRunner
         var output = Path.GetFullPath(Required(args, "--output"));
         var reads = ParseInt(args, "--reads", 10_000, 1, 10_000_000);
         var records = ParseInt(args, "--records", 100_000, 1, 10_000_000);
+        var payloadBytes = ParseInt(args, "--payload-bytes", 256, MinimumPayloadBytes, 1024 * 1024);
         var processIndex = ParseInt(args, "--process-index", 0, 0, 1_000);
         var captureOpenStages = args.Contains("--capture-open-stages", StringComparer.OrdinalIgnoreCase);
+        var synchronizationRoot = PhaseTwoOptions.ParseString(args, "--synchronization-root");
+        var synchronizedWorkers = synchronizationRoot is null
+            ? 0
+            : ParseInt(args, "--synchronized-workers", 0, 2, 32);
         var result = new ReadProcessResult
         {
             Engine = engine,
             ProcessIndex = processIndex,
-            Reads = reads
+            Reads = reads,
+            MaterializationContract = FullMaterializationContract,
+            Outcome = FailedOutcome
         };
 
         try
         {
+            if (synchronizationRoot is not null)
+            {
+                await ArriveAndWaitForReleaseAsync(
+                    synchronizationRoot,
+                    processIndex,
+                    synchronizedWorkers).ConfigureAwait(false);
+            }
+
             if (string.Equals(engine, "segment-core", StringComparison.OrdinalIgnoreCase))
             {
                 await ReadSegmentCoreAsync(
@@ -100,22 +160,39 @@ internal static class SegmentCoreReadProcessQualificationRunner
                     reads,
                     processIndex,
                     records,
+                    payloadBytes,
                     captureOpenStages,
-                    result).ConfigureAwait(false);
+                    result,
+                    synchronizationRoot,
+                    synchronizedWorkers).ConfigureAwait(false);
             }
             else if (string.Equals(engine, "sqlite", StringComparison.OrdinalIgnoreCase))
             {
-                await ReadSqliteAsync(root, reads, processIndex, records, result).ConfigureAwait(false);
+                await ReadSqliteAsync(
+                    root,
+                    reads,
+                    processIndex,
+                    records,
+                    payloadBytes,
+                    result,
+                    synchronizationRoot,
+                    synchronizedWorkers).ConfigureAwait(false);
             }
             else
             {
                 throw new ArgumentOutOfRangeException("--engine", engine, "Expected segment-core or sqlite.");
             }
 
+            result.Outcome = MaterializedOutcome;
             result.Passed = true;
         }
         catch (Exception exception)
         {
+            SignalOpenAttempt(synchronizationRoot, processIndex);
+            result.ExceptionType = exception.GetType().FullName;
+            result.Outcome = IsOwnershipRejection(engine, exception)
+                ? OwnershipRejectedOutcome
+                : FailedOutcome;
             result.Error = $"{exception.GetType().Name}: {exception.Message}";
             Environment.ExitCode = 1;
         }
@@ -195,8 +272,11 @@ internal static class SegmentCoreReadProcessQualificationRunner
         int reads,
         int processIndex,
         int records,
+        int payloadBytes,
         bool captureOpenStages,
-        ReadProcessResult result)
+        ReadProcessResult result,
+        string? synchronizationRoot,
+        int synchronizedWorkers)
     {
         using var stageCollector = captureOpenStages ? new OpenStageCollector() : null;
         ForceGc();
@@ -207,22 +287,31 @@ internal static class SegmentCoreReadProcessQualificationRunner
         result.OpenMilliseconds = open.Elapsed.TotalMilliseconds;
         result.OpenAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - openAllocatedBefore;
         result.OpenStagesMilliseconds = stageCollector?.Snapshot();
+        await SignalOpenAttemptAndWaitAsync(
+            synchronizationRoot,
+            processIndex,
+            synchronizedWorkers).ConfigureAwait(false);
         ForceGc();
         var readAllocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
         var read = Stopwatch.StartNew();
         long checksum = 0;
+        long materializedObjects = 0;
         for (var index = 0; index < reads; index++)
         {
             var ordinal = Ordinal(index, processIndex, records);
-            var payload = await store.GetAsync(Key(ordinal)).ConfigureAwait(false)
+            var key = Key(ordinal);
+            var payload = await store.GetAsync(key).ConfigureAwait(false)
                 ?? throw new InvalidDataException($"Missing SegmentCore key {ordinal:N0}.");
-            Validate(payload, ordinal);
-            checksum += BinaryPrimitives.ReadInt32LittleEndian(payload);
+            var record = PhaseZeroCodec.Decode(payload);
+            Validate(record, ordinal, payloadBytes, key);
+            checksum = unchecked(checksum + MaterializedChecksum(record));
+            materializedObjects++;
         }
 
         read.Stop();
         result.ReadMilliseconds = read.Elapsed.TotalMilliseconds;
         result.ReadAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - readAllocatedBefore;
+        result.MaterializedObjects = materializedObjects;
         result.Checksum = checksum;
     }
 
@@ -231,7 +320,10 @@ internal static class SegmentCoreReadProcessQualificationRunner
         int reads,
         int processIndex,
         int records,
-        ReadProcessResult result)
+        int payloadBytes,
+        ReadProcessResult result,
+        string? synchronizationRoot,
+        int synchronizedWorkers)
     {
         var connectionString = new SqliteConnectionStringBuilder
         {
@@ -248,6 +340,10 @@ internal static class SegmentCoreReadProcessQualificationRunner
         open.Stop();
         result.OpenMilliseconds = open.Elapsed.TotalMilliseconds;
         result.OpenAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - openAllocatedBefore;
+        await SignalOpenAttemptAndWaitAsync(
+            synchronizationRoot,
+            processIndex,
+            synchronizedWorkers).ConfigureAwait(false);
         await using var select = connection.CreateCommand();
         select.CommandText = "SELECT Payload FROM Records WHERE Id = $id";
         var id = select.Parameters.Add("$id", SqliteType.Text);
@@ -256,19 +352,24 @@ internal static class SegmentCoreReadProcessQualificationRunner
         var readAllocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
         var read = Stopwatch.StartNew();
         long checksum = 0;
+        long materializedObjects = 0;
         for (var index = 0; index < reads; index++)
         {
             var ordinal = Ordinal(index, processIndex, records);
-            id.Value = Key(ordinal);
+            var key = Key(ordinal);
+            id.Value = key;
             var value = await select.ExecuteScalarAsync().ConfigureAwait(false) as byte[]
                 ?? throw new InvalidDataException($"Missing SQLite key {ordinal:N0}.");
-            Validate(value, ordinal);
-            checksum += BinaryPrimitives.ReadInt32LittleEndian(value);
+            var record = PhaseZeroCodec.Decode(value);
+            Validate(record, ordinal, payloadBytes, key);
+            checksum = unchecked(checksum + MaterializedChecksum(record));
+            materializedObjects++;
         }
 
         read.Stop();
         result.ReadMilliseconds = read.Elapsed.TotalMilliseconds;
         result.ReadAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - readAllocatedBefore;
+        result.MaterializedObjects = materializedObjects;
         result.Checksum = checksum;
     }
 
@@ -278,23 +379,88 @@ internal static class SegmentCoreReadProcessQualificationRunner
         string storeRoot,
         int processes,
         int reads,
-        int records)
+        int records,
+        int payloadBytes)
     {
+        var synchronizationRoot = Path.Combine(
+            parentRoot,
+            "worker-synchronization",
+            $"{engine}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(synchronizationRoot);
         var stopwatch = Stopwatch.StartNew();
-        var results = await Task.WhenAll(Enumerable.Range(0, processes)
-            .Select(index => RunChildAsync(parentRoot, engine, storeRoot, index, reads, records)))
-            .ConfigureAwait(false);
+        var childTasks = Enumerable.Range(0, processes)
+            .Select(index => RunChildAsync(
+                parentRoot,
+                engine,
+                storeRoot,
+                index,
+                reads,
+                records,
+                payloadBytes,
+                applyParentInvariants: false,
+                synchronizationRoot: synchronizationRoot,
+                synchronizedWorkers: processes))
+            .ToArray();
+        await WaitForMarkerCountAsync(
+            synchronizationRoot,
+            "ready-*.marker",
+            processes,
+            "workers to become ready").ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            Path.Combine(synchronizationRoot, "release.marker"),
+            string.Empty).ConfigureAwait(false);
+        var results = await Task.WhenAll(childTasks).ConfigureAwait(false);
         stopwatch.Stop();
-        return new ReadProcessGroupResult
+        var singleOwnerQualification = IsSegmentCore(engine);
+        for (var processIndex = 0; processIndex < results.Length; processIndex++)
+        {
+            var processResult = results[processIndex];
+            if (singleOwnerQualification
+                && string.Equals(processResult.Outcome, OwnershipRejectedOutcome, StringComparison.Ordinal))
+            {
+                ApplyOwnershipRejectionInvariants(processResult, engine, processIndex, reads);
+            }
+            else
+            {
+                ApplyParentInvariants(
+                    processResult,
+                    engine,
+                    processIndex,
+                    reads,
+                    records,
+                    payloadBytes);
+            }
+        }
+
+        var successfulResults = results
+            .Where(static item => item.Passed && item.QualificationPassed)
+            .ToArray();
+        var ownershipRejections = results.Count(static item =>
+            item.QualificationPassed
+            && string.Equals(item.Outcome, OwnershipRejectedOutcome, StringComparison.Ordinal));
+        var result = new ReadProcessGroupResult
         {
             Engine = engine,
+            MaterializationContract = FullMaterializationContract,
+            QualificationContract = singleOwnerQualification
+                ? SingleOwnerQualification
+                : ParallelReadersQualification,
+            ReportsAggregateReadThroughput = !singleOwnerQualification,
             Processes = processes,
-            SuccessfulProcesses = results.Count(static result => result.Passed),
-            FailedProcesses = results.Count(static result => !result.Passed),
-            SuccessfulReads = results.Where(static result => result.Passed).Sum(static result => result.Reads),
+            ExpectedSuccessfulProcesses = singleOwnerQualification ? 1 : processes,
+            ExpectedOwnershipRejections = singleOwnerQualification ? processes - 1 : 0,
+            SuccessfulProcesses = successfulResults.Length,
+            OwnershipRejectedProcesses = ownershipRejections,
+            QualifiedProcesses = results.Count(static item => item.QualificationPassed),
+            FailedProcesses = results.Length - successfulResults.Length - ownershipRejections,
+            SuccessfulReads = successfulResults.Sum(static item => item.Reads),
+            MaterializedObjects = results.Sum(static result => result.MaterializedObjects),
+            Checksum = AggregateChecksum(results),
             WallMilliseconds = stopwatch.Elapsed.TotalMilliseconds,
             Results = results
         };
+        ApplyParentInvariants(result, engine, processes, reads, records, payloadBytes);
+        return result;
     }
 
     private static async Task<ReadProcessResult> RunChildAsync(
@@ -304,7 +470,11 @@ internal static class SegmentCoreReadProcessQualificationRunner
         int processIndex,
         int reads,
         int records,
-        bool captureOpenStages = false)
+        int payloadBytes,
+        bool captureOpenStages = false,
+        bool applyParentInvariants = true,
+        string? synchronizationRoot = null,
+        int synchronizedWorkers = 0)
     {
         var outputDirectory = Path.Combine(parentRoot, "worker-results");
         Directory.CreateDirectory(outputDirectory);
@@ -325,8 +495,15 @@ internal static class SegmentCoreReadProcessQualificationRunner
         start.ArgumentList.Add($"--root={storeRoot}");
         start.ArgumentList.Add($"--reads={reads.ToString(CultureInfo.InvariantCulture)}");
         start.ArgumentList.Add($"--records={records.ToString(CultureInfo.InvariantCulture)}");
+        start.ArgumentList.Add($"--payload-bytes={payloadBytes.ToString(CultureInfo.InvariantCulture)}");
         start.ArgumentList.Add($"--process-index={processIndex.ToString(CultureInfo.InvariantCulture)}");
         start.ArgumentList.Add($"--output={output}");
+        if (synchronizationRoot is not null)
+        {
+            start.ArgumentList.Add($"--synchronization-root={synchronizationRoot}");
+            start.ArgumentList.Add(
+                $"--synchronized-workers={synchronizedWorkers.ToString(CultureInfo.InvariantCulture)}");
+        }
         if (captureOpenStages)
         {
             start.ArgumentList.Add("--capture-open-stages");
@@ -345,10 +522,12 @@ internal static class SegmentCoreReadProcessQualificationRunner
             result.ExitCode = process.ExitCode;
             result.ProcessOutput = string.Join(Environment.NewLine, new[] { outputText, errorText }
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
+            if (applyParentInvariants)
+                ApplyParentInvariants(result, engine, processIndex, reads, records, payloadBytes);
             return result;
         }
 
-        return new ReadProcessResult
+        var missingResult = new ReadProcessResult
         {
             Engine = engine,
             ProcessIndex = processIndex,
@@ -357,6 +536,9 @@ internal static class SegmentCoreReadProcessQualificationRunner
             Error = "Worker exited without a result file.",
             ProcessOutput = string.Join(Environment.NewLine, outputText, errorText)
         };
+        if (applyParentInvariants)
+            ApplyParentInvariants(missingResult, engine, processIndex, reads, records, payloadBytes);
+        return missingResult;
     }
 
     private static SegmentCoreOptions StoreOptions() => new()
@@ -381,25 +563,370 @@ internal static class SegmentCoreReadProcessQualificationRunner
     private static int Ordinal(int read, int processIndex, int records) =>
         (int)(((long)read * 104_729 + processIndex * 7_919) % records);
 
-    private static string Key(int ordinal) => $"read-{ordinal:D10}";
+    private static string Key(int ordinal) =>
+        "read-" + ordinal.ToString("D10", CultureInfo.InvariantCulture);
 
-    private static byte[] Payload(int ordinal, int bytes)
+    private static string Name(int ordinal) =>
+        "read-record-" + ordinal.ToString("D10", CultureInfo.InvariantCulture);
+
+    private static int Age(int ordinal) => 18 + (ordinal % 63);
+
+    private static string Role(int ordinal) => (ordinal & 1) == 0 ? "student" : "employee";
+
+    private static long Revision(int ordinal) => (ordinal * 17L) + 11L;
+
+    private static byte[] Payload(int ordinal, int payloadBytes) =>
+        PhaseZeroCodec.Encode(CreateRecord(ordinal, payloadBytes));
+
+    private static GateRecord CreateRecord(int ordinal, int payloadBytes)
     {
-        var payload = new byte[bytes];
-        BinaryPrimitives.WriteInt32LittleEndian(payload, ordinal);
-        for (var index = sizeof(int); index < bytes; index++)
-            payload[index] = (byte)((ordinal * 31 + index * 17) & 0xFF);
-        return payload;
+        var id = Key(ordinal);
+        var name = Name(ordinal);
+        var role = Role(ordinal);
+        var contentLength = ContentLength(payloadBytes, id, name, role);
+        var content = string.Create(contentLength, ordinal, static (target, value) =>
+        {
+            for (var index = 0; index < target.Length; index++)
+                target[index] = ContentCharacter(value, index);
+        });
+        return new GateRecord(id, name, Age(ordinal), role, content, Revision(ordinal));
     }
 
-    private static void Validate(byte[] payload, int ordinal)
+    private static int ContentLength(int payloadBytes, string id, string name, string role) =>
+        Math.Max(0, payloadBytes - PhaseZeroFixedPayloadBytes - id.Length - name.Length - role.Length);
+
+    private static char ContentCharacter(int ordinal, int index) =>
+        (char)('a' + (int)(((long)ordinal * 31L + (long)index * 17L) % 26L));
+
+    private static void Validate(GateRecord record, int ordinal, int payloadBytes, string expectedId)
     {
-        if (payload.Length < sizeof(int) || BinaryPrimitives.ReadInt32LittleEndian(payload) != ordinal)
-            throw new InvalidDataException($"Payload {ordinal:N0} has an invalid header.");
-        for (var index = sizeof(int); index < payload.Length; index++)
-            if (payload[index] != (byte)((ordinal * 31 + index * 17) & 0xFF))
-                throw new InvalidDataException($"Payload {ordinal:N0} is corrupt at byte {index:N0}.");
+        if (!string.Equals(record.Id, expectedId, StringComparison.Ordinal))
+            throw new InvalidDataException($"Record {ordinal:N0} has an invalid Id.");
+
+        var expectedName = Name(ordinal);
+        if (!string.Equals(record.Name, expectedName, StringComparison.Ordinal))
+            throw new InvalidDataException($"Record {ordinal:N0} has an invalid Name.");
+
+        if (record.Age != Age(ordinal))
+            throw new InvalidDataException($"Record {ordinal:N0} has an invalid Age.");
+
+        var expectedRole = Role(ordinal);
+        if (!string.Equals(record.Role, expectedRole, StringComparison.Ordinal))
+            throw new InvalidDataException($"Record {ordinal:N0} has an invalid Role.");
+
+        if (record.Revision != Revision(ordinal))
+            throw new InvalidDataException($"Record {ordinal:N0} has an invalid Revision.");
+
+        var expectedContentLength = ContentLength(payloadBytes, expectedId, expectedName, expectedRole);
+        if (record.Content.Length != expectedContentLength)
+        {
+            throw new InvalidDataException(
+                $"Record {ordinal:N0} has content length {record.Content.Length:N0}; "
+                + $"expected {expectedContentLength:N0}.");
+        }
+
+        for (var index = 0; index < record.Content.Length; index++)
+        {
+            if (record.Content[index] != ContentCharacter(ordinal, index))
+                throw new InvalidDataException($"Record {ordinal:N0} has corrupt Content at character {index:N0}.");
+        }
     }
+
+    private static long MaterializedChecksum(GateRecord record)
+    {
+        var hash = FnvOffsetBasis;
+        hash = AppendString(hash, record.Id);
+        hash = AppendString(hash, record.Name);
+        hash = AppendInt64(hash, record.Age);
+        hash = AppendString(hash, record.Role);
+        hash = AppendString(hash, record.Content);
+        hash = AppendInt64(hash, record.Revision);
+        return unchecked((long)hash);
+    }
+
+    private static ulong AppendString(ulong hash, string value)
+    {
+        hash = AppendInt64(hash, value.Length);
+        foreach (var character in value)
+        {
+            hash = AppendByte(hash, (byte)character);
+            hash = AppendByte(hash, (byte)(character >> 8));
+        }
+
+        return hash;
+    }
+
+    private static ulong AppendInt64(ulong hash, long value)
+    {
+        var bits = unchecked((ulong)value);
+        for (var index = 0; index < sizeof(long); index++)
+        {
+            hash = AppendByte(hash, (byte)bits);
+            bits >>= 8;
+        }
+
+        return hash;
+    }
+
+    private static ulong AppendByte(ulong hash, byte value) => unchecked((hash ^ value) * FnvPrime);
+
+    private static long ExpectedChecksum(int reads, int processIndex, int records, int payloadBytes)
+    {
+        long checksum = 0;
+        for (var index = 0; index < reads; index++)
+        {
+            var ordinal = Ordinal(index, processIndex, records);
+            checksum = unchecked(checksum + MaterializedChecksum(CreateRecord(ordinal, payloadBytes)));
+        }
+
+        return checksum;
+    }
+
+    private static long ExpectedGroupChecksum(int processes, int reads, int records, int payloadBytes)
+    {
+        long checksum = 0;
+        for (var processIndex = 0; processIndex < processes; processIndex++)
+            checksum = unchecked(checksum + ExpectedChecksum(reads, processIndex, records, payloadBytes));
+        return checksum;
+    }
+
+    private static long ExpectedSuccessfulChecksum(
+        IEnumerable<ReadProcessResult> results,
+        int reads,
+        int records,
+        int payloadBytes)
+    {
+        long checksum = 0;
+        foreach (var result in results.Where(static item => item.Passed && item.QualificationPassed))
+        {
+            checksum = unchecked(
+                checksum + ExpectedChecksum(reads, result.ProcessIndex, records, payloadBytes));
+        }
+
+        return checksum;
+    }
+
+    private static long AggregateChecksum(IEnumerable<ReadProcessResult> results)
+    {
+        long checksum = 0;
+        foreach (var result in results)
+            checksum = unchecked(checksum + result.Checksum);
+        return checksum;
+    }
+
+    private static bool IsSegmentCore(string engine) =>
+        string.Equals(engine, "segment-core", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOwnershipRejection(string engine, Exception exception)
+    {
+        if (!IsSegmentCore(engine) || exception is not IOException)
+            return false;
+
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current.Message.Contains("mutation-wal.idbwal", StringComparison.OrdinalIgnoreCase)
+                || current.Message.Contains("writer.lock", StringComparison.OrdinalIgnoreCase)
+                || current.Message.Contains("already owns", StringComparison.OrdinalIgnoreCase)
+                || current.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ApplyParentInvariants(
+        ReadProcessResult result,
+        string engine,
+        int processIndex,
+        int reads,
+        int records,
+        int payloadBytes)
+    {
+        var workerPassed = result.Passed;
+        var failures = new List<string>();
+        if (result.ExitCode != 0)
+            failures.Add($"exit code was {result.ExitCode}");
+        if (!workerPassed)
+            failures.Add("worker reported failure");
+        if (!string.Equals(result.Outcome, MaterializedOutcome, StringComparison.Ordinal))
+            failures.Add($"outcome was '{result.Outcome}', expected '{MaterializedOutcome}'");
+        if (!string.Equals(result.Engine, engine, StringComparison.Ordinal))
+            failures.Add($"engine was '{result.Engine}', expected '{engine}'");
+        if (result.ProcessIndex != processIndex)
+            failures.Add($"process index was {result.ProcessIndex}, expected {processIndex}");
+        if (result.Reads != reads)
+            failures.Add($"read count was {result.Reads:N0}, expected {reads:N0}");
+        if (!string.Equals(result.MaterializationContract, FullMaterializationContract, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"materialization contract was '{result.MaterializationContract}', "
+                + $"expected '{FullMaterializationContract}'");
+        }
+
+        if (result.MaterializedObjects != reads)
+        {
+            failures.Add(
+                $"materialized object count was {result.MaterializedObjects:N0}, expected {reads:N0}");
+        }
+
+        var expectedChecksum = ExpectedChecksum(reads, processIndex, records, payloadBytes);
+        if (result.Checksum != expectedChecksum)
+            failures.Add($"checksum was {result.Checksum}, expected {expectedChecksum}");
+
+        result.Passed = failures.Count == 0;
+        result.QualificationPassed = result.Passed;
+        if (failures.Count > 0)
+            result.Error = JoinErrors(result.Error, $"Parent invariant failure: {string.Join("; ", failures)}.");
+    }
+
+    private static void ApplyOwnershipRejectionInvariants(
+        ReadProcessResult result,
+        string engine,
+        int processIndex,
+        int reads)
+    {
+        var failures = new List<string>();
+        if (!IsSegmentCore(engine) || !string.Equals(result.Engine, engine, StringComparison.Ordinal))
+            failures.Add($"engine was '{result.Engine}', expected SegmentCore engine '{engine}'");
+        if (result.ProcessIndex != processIndex)
+            failures.Add($"process index was {result.ProcessIndex}, expected {processIndex}");
+        if (result.Reads != reads)
+            failures.Add($"read count was {result.Reads:N0}, expected {reads:N0}");
+        if (result.ExitCode == 0)
+            failures.Add("ownership rejection returned exit code 0");
+        if (result.Passed)
+            failures.Add("ownership-rejected worker reported a successful read outcome");
+        if (!string.Equals(result.ExceptionType, typeof(IOException).FullName, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"exception type was '{result.ExceptionType}', expected '{typeof(IOException).FullName}'");
+        }
+
+        if (!string.Equals(result.Outcome, OwnershipRejectedOutcome, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"outcome was '{result.Outcome}', expected '{OwnershipRejectedOutcome}'");
+        }
+
+        if (!string.Equals(result.MaterializationContract, FullMaterializationContract, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"materialization contract was '{result.MaterializationContract}', "
+                + $"expected '{FullMaterializationContract}'");
+        }
+
+        if (result.MaterializedObjects != 0)
+            failures.Add($"ownership-rejected worker materialized {result.MaterializedObjects:N0} objects");
+        if (result.Checksum != 0)
+            failures.Add($"ownership-rejected worker reported checksum {result.Checksum}, expected 0");
+
+        result.QualificationPassed = failures.Count == 0;
+        if (failures.Count > 0)
+            result.Error = JoinErrors(result.Error, $"Parent ownership invariant failure: {string.Join("; ", failures)}.");
+    }
+
+    private static void ApplyParentInvariants(
+        ReadProcessGroupResult result,
+        string engine,
+        int processes,
+        int reads,
+        int records,
+        int payloadBytes)
+    {
+        var singleOwnerQualification = IsSegmentCore(engine);
+        var expectedSuccessfulProcesses = singleOwnerQualification ? 1 : processes;
+        var expectedOwnershipRejections = singleOwnerQualification ? processes - 1 : 0;
+        var expectedQualificationContract = singleOwnerQualification
+            ? SingleOwnerQualification
+            : ParallelReadersQualification;
+        var failures = new List<string>();
+        if (!string.Equals(result.Engine, engine, StringComparison.Ordinal))
+            failures.Add($"engine was '{result.Engine}', expected '{engine}'");
+        if (!string.Equals(result.MaterializationContract, FullMaterializationContract, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"materialization contract was '{result.MaterializationContract}', "
+                + $"expected '{FullMaterializationContract}'");
+        }
+
+        if (!string.Equals(result.QualificationContract, expectedQualificationContract, StringComparison.Ordinal))
+        {
+            failures.Add(
+                $"qualification contract was '{result.QualificationContract}', "
+                + $"expected '{expectedQualificationContract}'");
+        }
+
+        if (result.ReportsAggregateReadThroughput == singleOwnerQualification)
+        {
+            failures.Add(
+                $"aggregate-throughput reporting was {result.ReportsAggregateReadThroughput}, "
+                + $"expected {!singleOwnerQualification}");
+        }
+
+        if (result.Processes != processes || result.Results.Length != processes)
+        {
+            failures.Add(
+                $"process/result count was {result.Processes}/{result.Results.Length}, "
+                + $"expected {processes}/{processes}");
+        }
+
+        if (result.ExpectedSuccessfulProcesses != expectedSuccessfulProcesses
+            || result.SuccessfulProcesses != expectedSuccessfulProcesses
+            || result.ExpectedOwnershipRejections != expectedOwnershipRejections
+            || result.OwnershipRejectedProcesses != expectedOwnershipRejections
+            || result.QualifiedProcesses != processes
+            || result.FailedProcesses != 0)
+        {
+            failures.Add(
+                "process outcomes "
+                + $"successful={result.SuccessfulProcesses}/{result.ExpectedSuccessfulProcesses}, "
+                + $"ownership-rejected={result.OwnershipRejectedProcesses}/{result.ExpectedOwnershipRejections}, "
+                + $"qualified={result.QualifiedProcesses}/{processes}, failed={result.FailedProcesses}/0; "
+                + $"expected successful={expectedSuccessfulProcesses}, "
+                + $"ownership-rejected={expectedOwnershipRejections}");
+            foreach (var failedResult in result.Results.Where(static item => !item.QualificationPassed))
+            {
+                failures.Add(
+                    $"process {failedResult.ProcessIndex} failed: {failedResult.Error ?? "no error detail"}");
+            }
+        }
+
+        var expectedObjects = checked((long)expectedSuccessfulProcesses * reads);
+        if (result.SuccessfulReads != expectedObjects)
+            failures.Add($"successful read count was {result.SuccessfulReads:N0}, expected {expectedObjects:N0}");
+        if (result.MaterializedObjects != expectedObjects)
+        {
+            failures.Add(
+                $"materialized object count was {result.MaterializedObjects:N0}, expected {expectedObjects:N0}");
+        }
+
+        var expectedChecksum = singleOwnerQualification
+            ? ExpectedSuccessfulChecksum(result.Results, reads, records, payloadBytes)
+            : ExpectedGroupChecksum(processes, reads, records, payloadBytes);
+        if (result.Checksum != expectedChecksum)
+            failures.Add($"checksum was {result.Checksum}, expected {expectedChecksum}");
+
+        result.Passed = failures.Count == 0;
+        if (failures.Count > 0)
+            result.Error = $"Parent invariant failure: {string.Join("; ", failures)}.";
+    }
+
+    private static void EnsurePassed(string label, ReadProcessResult? result)
+    {
+        if (result is null || !result.Passed)
+            throw new InvalidDataException($"{label} qualification failed: {result?.Error ?? "no result"}");
+    }
+
+    private static void EnsurePassed(string label, ReadProcessGroupResult? result)
+    {
+        if (result is null || !result.Passed)
+            throw new InvalidDataException($"{label} qualification failed: {result?.Error ?? "no result"}");
+    }
+
+    private static string JoinErrors(string? first, string second) =>
+        string.IsNullOrWhiteSpace(first) ? second : $"{first} {second}";
 
     private static void ForceGc()
     {
@@ -419,10 +946,23 @@ internal static class SegmentCoreReadProcessQualificationRunner
     private static void Print(string label, ReadProcessGroupResult? result)
     {
         if (result is null) return;
-        Console.WriteLine(
-            $"  {label}: {result.SuccessfulProcesses}/{result.Processes} processes; "
-            + $"aggregate {result.ReadsPerSecond:N1} reads/s");
-        foreach (var failure in result.Results.Where(static item => !item.Passed))
+        if (result.ReportsAggregateReadThroughput)
+        {
+            Console.WriteLine(
+                $"  {label}: {(result.Passed ? "PASS" : "FAIL")}; "
+                + $"{result.SuccessfulProcesses}/{result.Processes} materialized readers; "
+                + $"aggregate {result.ReadsPerSecond:N1} reads/s");
+        }
+        else
+        {
+            Console.WriteLine(
+                $"  {label}: {(result.Passed ? "PASS" : "FAIL")}; single-owner boundary; "
+                + $"{result.SuccessfulProcesses}/{result.ExpectedSuccessfulProcesses} materialized reader; "
+                + $"{result.OwnershipRejectedProcesses}/{result.ExpectedOwnershipRejections} "
+                + "ownership rejections; aggregate multi-reader throughput not applicable");
+        }
+
+        foreach (var failure in result.Results.Where(static item => !item.QualificationPassed))
             Console.WriteLine($"    process {failure.ProcessIndex}: {failure.Error}");
     }
 
@@ -446,6 +986,81 @@ internal static class SegmentCoreReadProcessQualificationRunner
         var text = PhaseTwoOptions.ParseString(args, name);
         var value = text is null ? fallback : int.Parse(text, CultureInfo.InvariantCulture);
         return value >= minimum && value <= maximum ? value : throw new ArgumentOutOfRangeException(name);
+    }
+
+    private static async Task ArriveAndWaitForReleaseAsync(
+        string synchronizationRoot,
+        int processIndex,
+        int synchronizedWorkers)
+    {
+        Directory.CreateDirectory(synchronizationRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(synchronizationRoot, $"ready-{processIndex:D3}.marker"),
+            string.Empty).ConfigureAwait(false);
+
+        var releasePath = Path.Combine(synchronizationRoot, "release.marker");
+        var started = Stopwatch.StartNew();
+        while (!File.Exists(releasePath))
+        {
+            if (started.Elapsed >= WorkerBarrierTimeout)
+            {
+                throw new TimeoutException(
+                    $"Timed out waiting to release {synchronizedWorkers} synchronized read workers.");
+            }
+
+            await Task.Delay(10).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task SignalOpenAttemptAndWaitAsync(
+        string? synchronizationRoot,
+        int processIndex,
+        int synchronizedWorkers)
+    {
+        if (synchronizationRoot is null)
+        {
+            return;
+        }
+
+        SignalOpenAttempt(synchronizationRoot, processIndex);
+        await WaitForMarkerCountAsync(
+            synchronizationRoot,
+            "open-attempt-*.marker",
+            synchronizedWorkers,
+            "all workers to attempt opening the store").ConfigureAwait(false);
+    }
+
+    private static void SignalOpenAttempt(string? synchronizationRoot, int processIndex)
+    {
+        if (synchronizationRoot is null)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(synchronizationRoot);
+        File.WriteAllText(
+            Path.Combine(synchronizationRoot, $"open-attempt-{processIndex:D3}.marker"),
+            string.Empty);
+    }
+
+    private static async Task WaitForMarkerCountAsync(
+        string synchronizationRoot,
+        string searchPattern,
+        int expectedCount,
+        string purpose)
+    {
+        var started = Stopwatch.StartNew();
+        while (Directory.EnumerateFiles(synchronizationRoot, searchPattern).Take(expectedCount).Count()
+               < expectedCount)
+        {
+            if (started.Elapsed >= WorkerBarrierTimeout)
+            {
+                throw new TimeoutException(
+                    $"Timed out waiting for {purpose}; expected {expectedCount} marker files.");
+            }
+
+            await Task.Delay(10).ConfigureAwait(false);
+        }
     }
 
     private static void TryDeleteOwnedRoot(string root)
@@ -472,7 +1087,7 @@ internal static class SegmentCoreReadProcessQualificationRunner
             var options = new ReadProcessOptions
             {
                 Records = ParseInt(args, "--records", 100_000, 1_000, 10_000_000),
-                PayloadBytes = ParseInt(args, "--payload-bytes", 256, sizeof(int), 1024 * 1024),
+                PayloadBytes = ParseInt(args, "--payload-bytes", 256, MinimumPayloadBytes, 1024 * 1024),
                 BatchSize = ParseInt(args, "--batch-size", 1_000, 1, 16_384),
                 Processes = ParseInt(args, "--processes", 4, 2, 32),
                 ReadsPerProcess = ParseInt(args, "--reads-per-process", 25_000, 1, 10_000_000),
@@ -487,6 +1102,11 @@ internal static class SegmentCoreReadProcessQualificationRunner
         public required string Engine { get; init; }
         public required int ProcessIndex { get; init; }
         public required int Reads { get; init; }
+        public string MaterializationContract { get; init; } = string.Empty;
+        public long MaterializedObjects { get; set; }
+        public string Outcome { get; set; } = FailedOutcome;
+        public string? ExceptionType { get; set; }
+        public bool QualificationPassed { get; set; }
         public bool Passed { get; set; }
         public int ExitCode { get; set; }
         public double OpenMilliseconds { get; set; }
@@ -547,17 +1167,31 @@ internal static class SegmentCoreReadProcessQualificationRunner
     internal sealed record ReadProcessGroupResult
     {
         public required string Engine { get; init; }
+        public string MaterializationContract { get; init; } = string.Empty;
+        public string QualificationContract { get; init; } = string.Empty;
+        public bool ReportsAggregateReadThroughput { get; init; }
+        public bool Passed { get; set; }
+        public string? Error { get; set; }
         public int Processes { get; init; }
+        public int ExpectedSuccessfulProcesses { get; init; }
+        public int ExpectedOwnershipRejections { get; init; }
         public int SuccessfulProcesses { get; init; }
+        public int OwnershipRejectedProcesses { get; init; }
+        public int QualifiedProcesses { get; init; }
         public int FailedProcesses { get; init; }
         public int SuccessfulReads { get; init; }
+        public long MaterializedObjects { get; init; }
+        public long Checksum { get; init; }
         public double WallMilliseconds { get; init; }
-        public double ReadsPerSecond => WallMilliseconds <= 0 ? 0 : SuccessfulReads / (WallMilliseconds / 1000d);
+        public double? ReadsPerSecond => ReportsAggregateReadThroughput
+            ? WallMilliseconds <= 0 ? 0 : SuccessfulReads / (WallMilliseconds / 1000d)
+            : null;
         public required ReadProcessResult[] Results { get; init; }
     }
 
     internal sealed record ReadProcessReport
     {
+        public string MaterializationContract { get; init; } = FullMaterializationContract;
         public required DateTimeOffset StartedUtc { get; init; }
         public DateTimeOffset CompletedUtc { get; set; }
         public required string Runtime { get; init; }

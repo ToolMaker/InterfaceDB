@@ -1,3 +1,5 @@
+using Idb.Storage.SegmentCore;
+
 namespace Idb.Storage.SegmentCore.ObjectLog;
 
 public enum ObjectLogQueueFullBehavior
@@ -17,6 +19,19 @@ public sealed class ObjectLogBackpressureException : IOException
 public sealed record StripedObjectLogProbeOptions
 {
     public int StripeCount { get; init; } = 8;
+
+    /// <summary>
+    /// Stable hash used to place a key on a stripe. This becomes part of the
+    /// durable store identity and cannot be changed after creation.
+    /// </summary>
+    public SegmentCoreHashAlgorithm HashAlgorithm { get; init; } =
+        SegmentCoreHashAlgorithm.Fnv1a32;
+
+    /// <summary>
+    /// Optional persisted seed for the selected hash. Zero preserves the
+    /// original SegmentCore FNV-1a routing exactly.
+    /// </summary>
+    public long HashSeed { get; init; }
 
     public int MaximumBatchRecords { get; init; } = 64;
 
@@ -41,6 +56,11 @@ public sealed record StripedObjectLogProbeOptions
             throw new ArgumentOutOfRangeException(
                 nameof(StripeCount),
                 "The stripe count must be a power of two between 1 and 64.");
+        }
+
+        if (!Enum.IsDefined(HashAlgorithm))
+        {
+            throw new ArgumentOutOfRangeException(nameof(HashAlgorithm));
         }
 
         if (MaximumBatchRecords is < 1 or > 16_384)

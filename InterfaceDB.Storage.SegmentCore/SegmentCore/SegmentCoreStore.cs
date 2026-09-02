@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Numerics;
 using System.Security.Cryptography;
@@ -13,6 +14,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
 {
     private readonly string _rootDirectory;
     private readonly SegmentCoreOptions _options;
+    private readonly SegmentCoreStoreOwnerLease _ownerLease;
     private readonly PrimaryIndexMap _primaryIndex;
     private Dictionary<string, PrimaryIndexChange> _checkpointChanges = new(StringComparer.Ordinal);
     private readonly StripedObjectLogProbeWriter _writer;
@@ -24,6 +26,8 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     private readonly SemaphoreSlim _transactionPreparationGate = new(1, 1);
     private readonly SemaphoreSlim _checkpointGate = new(1, 1);
     private readonly SemaphoreSlim _compactionGate = new(1, 1);
+    private readonly TaskCompletionSource _disposeCompletion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private PrimaryIndexCheckpointState? _latestCheckpoint;
     private long _checkpointGeneration;
     private int _tailRecordsReplayed;
@@ -37,6 +41,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     private long _lastCompactionElapsedTicks;
     private int _activeMutations;
     private int _activeReads;
+    private int _gateAdmissions;
     private int _readerRetirement;
     private int _exclusiveOperation;
     private int _checkpointing;
@@ -47,6 +52,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     private SegmentCoreStore(
         string rootDirectory,
         SegmentCoreOptions options,
+        SegmentCoreStoreOwnerLease ownerLease,
         PrimaryIndexMap primaryIndex,
         StripedObjectLogProbeWriter writer,
         TransactionCommitJournal? transactionJournal,
@@ -60,6 +66,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     {
         _rootDirectory = rootDirectory;
         _options = options;
+        _ownerLease = ownerLease;
         _primaryIndex = primaryIndex;
         _writer = writer;
         _transactionJournal = transactionJournal;
@@ -226,8 +233,38 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         SegmentCoreOptions options,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(fullRoot);
+        var ownerLease = SegmentCoreStoreOwnerLease.Acquire(fullRoot);
+        try
+        {
+            return await OpenOwnedCoreAsync(
+                fullRoot,
+                options,
+                ownerLease,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            await DisposeOpenResourceWithoutMaskingAsync(
+                ownerLease,
+                exception,
+                "owner lease").ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async ValueTask<SegmentCoreStore> OpenOwnedCoreAsync(
+        string fullRoot,
+        SegmentCoreOptions options,
+        SegmentCoreStoreOwnerLease ownerLease,
+        CancellationToken cancellationToken)
+    {
         var stageStarted = SegmentCoreDiagnostics.StartTimestamp();
-        _ = SegmentCoreStorageFormatManifest.ReadOrCreate(fullRoot, options.DurableFileSystem);
+        _ = SegmentCoreStorageFormatManifest.ReadOrCreate(
+            fullRoot,
+            SegmentCoreStorageFormat.For(options.LogOptions),
+            options.DurableFileSystem);
         SegmentCoreDiagnostics.RecordOpenStage(
             "storage_format_manifest",
             stageStarted,
@@ -243,27 +280,35 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             protocol);
         if (protocol == SegmentCoreTransactionProtocol.MutationWriteAheadLog)
         {
-            return await OpenWalStoreAsync(fullRoot, options, cancellationToken).ConfigureAwait(false);
+            return await OpenWalStoreAsync(
+                fullRoot,
+                options,
+                ownerLease,
+                cancellationToken).ConfigureAwait(false);
         }
 
-        stageStarted = SegmentCoreDiagnostics.StartTimestamp();
-        var journal = await TransactionCommitJournal.OpenAsync(
-            fullRoot,
-            options.LogOptions.DurabilityStrategy,
-            options.DurableFileSystem,
-            cancellationToken).ConfigureAwait(false);
-        SegmentCoreDiagnostics.RecordOpenStage(
-            "transaction_journal",
-            stageStarted,
-            protocol);
+        TransactionCommitJournal? journal = null;
+        StripedObjectLogProbeWriter? writer = null;
+        PrimaryIndexMap? primaryIndex = null;
         try
         {
+            stageStarted = SegmentCoreDiagnostics.StartTimestamp();
+            journal = await TransactionCommitJournal.OpenAsync(
+                fullRoot,
+                options.LogOptions.DurabilityStrategy,
+                options.DurableFileSystem,
+                cancellationToken).ConfigureAwait(false);
+            SegmentCoreDiagnostics.RecordOpenStage(
+                "transaction_journal",
+                stageStarted,
+                protocol);
             var commitSnapshot = journal.CreateSnapshot();
             stageStarted = SegmentCoreDiagnostics.StartTimestamp();
             var checkpoint = PrimaryIndexCheckpoint.TryLoadLatest(
                 fullRoot,
                 options.LogOptions.StripeCount,
                 options.PrimaryIndexOptions);
+            primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
             SegmentCoreDiagnostics.RecordOpenStage(
                 "primary_checkpoint",
                 stageStarted,
@@ -276,12 +321,10 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     + $"is ahead of durable commit journal {commitSnapshot.HighestTransactionId:N0}.");
             }
 
-            var primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
             var replayed = 0;
             long fullRecoveryFramesScanned = 0;
             long repairedTailBytes = 0;
             long highestObservedTransactionId = commitSnapshot.HighestTransactionId;
-            StripedObjectLogProbeWriter writer;
             stageStarted = SegmentCoreDiagnostics.StartTimestamp();
 
             if (checkpoint is not null)
@@ -294,32 +337,24 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     (stripe, record) => tailRecords.Add(new StripedObjectLogReplayRecord(stripe, record)),
                     options.DurableFileSystem,
                     cancellationToken).ConfigureAwait(false);
-                try
+                commitSnapshot.ValidateRecoveryRecords(
+                    tailRecords,
+                    checkpoint.TransactionWatermark,
+                    requireEveryCommitAfterWatermark: true);
+                foreach (var item in tailRecords)
                 {
-                    commitSnapshot.ValidateRecoveryRecords(
-                        tailRecords,
-                        checkpoint.TransactionWatermark,
-                        requireEveryCommitAfterWatermark: true);
-                    foreach (var item in tailRecords)
+                    highestObservedTransactionId = Math.Max(
+                        highestObservedTransactionId,
+                        item.Record.TransactionId);
+                    if (item.Record.TransactionId != 0
+                        && (!commitSnapshot.IsCommitted(item.Record.TransactionId)
+                            || item.Record.TransactionId <= checkpoint.TransactionWatermark))
                     {
-                        highestObservedTransactionId = Math.Max(
-                            highestObservedTransactionId,
-                            item.Record.TransactionId);
-                        if (item.Record.TransactionId != 0
-                            && (!commitSnapshot.IsCommitted(item.Record.TransactionId)
-                                || item.Record.TransactionId <= checkpoint.TransactionWatermark))
-                        {
-                            continue;
-                        }
-
-                        ApplyReplayRecord(primaryIndex, item.Stripe, item.Record);
-                        replayed++;
+                        continue;
                     }
-                }
-                catch
-                {
-                    await writer.DisposeAsync().ConfigureAwait(false);
-                    throw;
+
+                    ApplyReplayRecord(primaryIndex, item.Stripe, item.Record);
+                    replayed++;
                 }
             }
             else
@@ -373,6 +408,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             return new SegmentCoreStore(
                 fullRoot,
                 options,
+                ownerLease,
                 primaryIndex,
                 writer,
                 journal,
@@ -383,9 +419,17 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 fullRecoveryFramesScanned,
                 repairedTailBytes + writer.RepairedTailBytesOnOpen);
         }
-        catch
+        catch (Exception exception)
         {
-            await journal.DisposeAsync().ConfigureAwait(false);
+            await DisposeOpenResourceWithoutMaskingAsync(
+                writer,
+                exception,
+                "object-log writer").ConfigureAwait(false);
+            await DisposeOpenResourceWithoutMaskingAsync(
+                journal,
+                exception,
+                "transaction journal").ConfigureAwait(false);
+            DisposeOpenResourceWithoutMasking(primaryIndex, exception, "primary index");
             throw;
         }
     }
@@ -393,36 +437,88 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     private static async ValueTask<SegmentCoreStore> OpenWalStoreAsync(
         string fullRoot,
         SegmentCoreOptions options,
+        SegmentCoreStoreOwnerLease ownerLease,
         CancellationToken cancellationToken)
     {
-        var stageStarted = SegmentCoreDiagnostics.StartTimestamp();
-        var checkpoint = PrimaryIndexCheckpoint.TryLoadLatest(
-            fullRoot,
-            options.LogOptions.StripeCount,
-            options.PrimaryIndexOptions);
-        SegmentCoreDiagnostics.RecordOpenStage(
-            "primary_checkpoint",
-            stageStarted,
-            SegmentCoreTransactionProtocol.MutationWriteAheadLog);
-        stageStarted = SegmentCoreDiagnostics.StartTimestamp();
-        var wal = await TransactionWriteAheadLog.OpenAsync(
-            fullRoot,
-            options.LogOptions.DurabilityStrategy,
-            options.LogOptions.GroupCommitDelay,
-            options.LogOptions.MaximumBatchRecords,
-            options.LogOptions.MaximumCombinedWriteBytes,
-            options.DurableFileSystem,
-            checkpoint?.Generation ?? 0,
-            checkpoint?.TransactionWatermark ?? 0,
-            cancellationToken).ConfigureAwait(false);
-        SegmentCoreDiagnostics.RecordOpenStage(
-            "transaction_wal",
-            stageStarted,
-            SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+        PrimaryIndexCheckpointState? checkpoint = null;
+        TransactionWriteAheadLog? wal = null;
         StripedObjectLogProbeWriter? writer = null;
+        PrimaryIndexMap? primaryIndex = null;
         try
         {
-            var walSnapshot = wal.CreateRecoverySnapshot();
+            var stageStarted = SegmentCoreDiagnostics.StartTimestamp();
+            checkpoint = PrimaryIndexCheckpoint.TryLoadLatest(
+                fullRoot,
+                options.LogOptions.StripeCount,
+                options.PrimaryIndexOptions);
+            primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
+            SegmentCoreDiagnostics.RecordOpenStage(
+                "primary_checkpoint",
+                stageStarted,
+                SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+            IReadOnlyList<StripedObjectLogReplayRecord> replayRecords = [];
+            if (checkpoint is not null)
+            {
+                // WAL recovery and checkpoint-bounded object-log activation read independent
+                // files. Transaction reconciliation still happens only after both complete.
+                // TransactionWriteAheadLog.OpenAsync currently performs its recovery scan
+                // synchronously, so offload that scan to overlap it with stripe activation.
+                // The store-wide owner lease was acquired before recovery and prevents competing
+                // processes from splitting ownership of the WAL and object-log leases.
+                var tailRecords = new List<StripedObjectLogReplayRecord>();
+                var walOpenTask = OpenWalInBackgroundAsync(
+                    fullRoot,
+                    options,
+                    checkpoint.Generation,
+                    checkpoint.TransactionWatermark,
+                    cancellationToken);
+                var writerOpenTask = OpenCheckpointObjectLogAsync(
+                    fullRoot,
+                    options,
+                    checkpoint.Positions,
+                    tailRecords,
+                    cancellationToken);
+                try
+                {
+                    await Task.WhenAll(walOpenTask, writerOpenTask).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Task.WhenAll drains both opens. Capture any successful sibling here so
+                    // the outer failure path can release its handles and writer leases.
+                    if (walOpenTask.IsCompletedSuccessfully)
+                    {
+                        wal = walOpenTask.Result;
+                    }
+
+                    if (writerOpenTask.IsCompletedSuccessfully)
+                    {
+                        writer = writerOpenTask.Result;
+                    }
+                }
+
+                replayRecords = tailRecords;
+            }
+            else
+            {
+                stageStarted = SegmentCoreDiagnostics.StartTimestamp();
+                wal = await TransactionWriteAheadLog.OpenAsync(
+                    fullRoot,
+                    options.LogOptions.DurabilityStrategy,
+                    options.LogOptions.GroupCommitDelay,
+                    options.LogOptions.MaximumBatchRecords,
+                    options.LogOptions.MaximumCombinedWriteBytes,
+                    options.DurableFileSystem,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                SegmentCoreDiagnostics.RecordOpenStage(
+                    "transaction_wal",
+                    stageStarted,
+                    SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+            }
+
+            var openedWal = wal
+                ?? throw new InvalidOperationException("Mutation WAL activation did not return a writer.");
+            var walSnapshot = openedWal.CreateRecoverySnapshot();
             if (checkpoint is null && walSnapshot.BaseTransactionId != 0)
             {
                 throw new ObjectLogCorruptionException(
@@ -446,25 +542,11 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     + $"is ahead of durable mutation WAL {walSnapshot.HighestTransactionId:N0}.");
             }
 
-            var primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
-            IReadOnlyList<StripedObjectLogReplayRecord> replayRecords;
             long fullRecoveryFramesScanned = 0;
             long repairedTailBytes = 0;
-            stageStarted = SegmentCoreDiagnostics.StartTimestamp();
-            if (checkpoint is not null)
+            if (checkpoint is null)
             {
-                var tailRecords = new List<StripedObjectLogReplayRecord>();
-                writer = await StripedObjectLogProbeWriter.OpenFromCheckpointAsync(
-                    fullRoot,
-                    options.LogOptions,
-                    checkpoint.Positions,
-                    (stripe, record) => tailRecords.Add(new StripedObjectLogReplayRecord(stripe, record)),
-                    options.DurableFileSystem,
-                    cancellationToken).ConfigureAwait(false);
-                replayRecords = tailRecords;
-            }
-            else
-            {
+                stageStarted = SegmentCoreDiagnostics.StartTimestamp();
                 var manifestPath = Path.Combine(fullRoot, "striped-log.manifest");
                 if (File.Exists(manifestPath))
                 {
@@ -487,16 +569,18 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     options.LogOptions,
                     options.DurableFileSystem,
                     cancellationToken).ConfigureAwait(false);
+                SegmentCoreDiagnostics.RecordOpenStage(
+                    "object_log_recovery",
+                    stageStarted,
+                    SegmentCoreTransactionProtocol.MutationWriteAheadLog);
             }
 
-            SegmentCoreDiagnostics.RecordOpenStage(
-                "object_log_recovery",
-                stageStarted,
-                SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+            var openedWriter = writer
+                ?? throw new InvalidOperationException("Object-log activation did not return a writer.");
             stageStarted = SegmentCoreDiagnostics.StartTimestamp();
             var recoveryResult = await RecoverWalTransactionsAsync(
                 primaryIndex,
-                writer,
+                openedWriter,
                 walSnapshot,
                 replayRecords,
                 checkpoint,
@@ -509,31 +593,245 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 .Select(static item => item.Record.TransactionId)
                 .Append(walSnapshot.HighestTransactionId)
                 .Max();
-            wal.AdvanceTransactionIdPast(highestObservedTransactionId);
-            wal.ReleaseRecoveryPayloads();
+            openedWal.AdvanceTransactionIdPast(highestObservedTransactionId);
+            openedWal.ReleaseRecoveryPayloads();
             return new SegmentCoreStore(
                 fullRoot,
                 options,
+                ownerLease,
                 primaryIndex,
-                writer,
+                openedWriter,
                 transactionJournal: null,
-                wal,
+                openedWal,
                 checkpoint,
                 checkpoint?.Generation ?? 0,
                 checkpoint is null ? 0 : recoveryResult.RecordsReplayed,
                 fullRecoveryFramesScanned,
-                repairedTailBytes + writer.RepairedTailBytesOnOpen,
+                repairedTailBytes + openedWriter.RepairedTailBytesOnOpen,
                 recoveryResult.DirtyStripeMask);
+        }
+        catch (Exception exception)
+        {
+            await DisposeOpenResourceWithoutMaskingAsync(
+                writer,
+                exception,
+                "object-log writer").ConfigureAwait(false);
+            await DisposeOpenResourceWithoutMaskingAsync(
+                wal,
+                exception,
+                "mutation WAL").ConfigureAwait(false);
+            DisposeOpenResourceWithoutMasking(primaryIndex, exception, "primary index");
+            throw;
+        }
+    }
+
+    private static async Task<TransactionWriteAheadLog> OpenWalInBackgroundAsync(
+        string fullRoot,
+        SegmentCoreOptions options,
+        long checkpointGeneration,
+        long checkpointTransactionWatermark,
+        CancellationToken cancellationToken)
+    {
+        var stageStarted = SegmentCoreDiagnostics.StartTimestamp();
+        var wal = await Task.Run(
+            () => TransactionWriteAheadLog.OpenAsync(
+                fullRoot,
+                options.LogOptions.DurabilityStrategy,
+                options.LogOptions.GroupCommitDelay,
+                options.LogOptions.MaximumBatchRecords,
+                options.LogOptions.MaximumCombinedWriteBytes,
+                options.DurableFileSystem,
+                checkpointGeneration,
+                checkpointTransactionWatermark,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            SegmentCoreDiagnostics.RecordOpenStage(
+                "transaction_wal",
+                stageStarted,
+                SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+            return wal;
+        }
+        catch (Exception exception)
+        {
+            await DisposeOpenResourceWithoutMaskingAsync(
+                wal,
+                exception,
+                "mutation WAL after telemetry failure").ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<StripedObjectLogProbeWriter> OpenCheckpointObjectLogAsync(
+        string fullRoot,
+        SegmentCoreOptions options,
+        IReadOnlyList<ObjectLogWritePosition> checkpointPositions,
+        List<StripedObjectLogReplayRecord> tailRecords,
+        CancellationToken cancellationToken)
+    {
+        var stageStarted = SegmentCoreDiagnostics.StartTimestamp();
+        var writer = await StripedObjectLogProbeWriter.OpenFromCheckpointAsync(
+            fullRoot,
+            options.LogOptions,
+            checkpointPositions,
+            (stripe, record) => tailRecords.Add(new StripedObjectLogReplayRecord(stripe, record)),
+            options.DurableFileSystem,
+            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            SegmentCoreDiagnostics.RecordOpenStage(
+                "object_log_recovery",
+                stageStarted,
+                SegmentCoreTransactionProtocol.MutationWriteAheadLog);
+            return writer;
+        }
+        catch (Exception exception)
+        {
+            await DisposeOpenResourceWithoutMaskingAsync(
+                writer,
+                exception,
+                "object-log writer after telemetry failure").ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async ValueTask DisposeOpenResourceWithoutMaskingAsync(
+        IAsyncDisposable? resource,
+        Exception openException,
+        string resourceName)
+    {
+        if (resource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await resource.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception cleanupException)
+        {
+            RecordOpenCleanupFailure(openException, resourceName, cleanupException);
+        }
+    }
+
+    private static void DisposeOpenResourceWithoutMasking(
+        IDisposable? resource,
+        Exception openException,
+        string resourceName)
+    {
+        if (resource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            resource.Dispose();
+        }
+        catch (Exception cleanupException)
+        {
+            RecordOpenCleanupFailure(openException, resourceName, cleanupException);
+        }
+    }
+
+    private static void RecordOpenCleanupFailure(
+        Exception openException,
+        string resourceName,
+        Exception cleanupException)
+    {
+        try
+        {
+            openException.Data[$"SegmentCore open cleanup failure: {resourceName}"] = cleanupException;
         }
         catch
         {
-            if (writer is not null)
+            // Cleanup diagnostics must never replace the original open failure.
+        }
+    }
+
+    private sealed class SegmentCoreStoreOwnerLease : IAsyncDisposable
+    {
+        // Keep this lexical guard ordinal. Windows can host case-sensitive directories,
+        // while the FileShare.None lease below supplies filesystem-identity contention.
+        private static readonly ConcurrentDictionary<string, byte> ActiveRoots =
+            new(StringComparer.Ordinal);
+        private readonly string _rootDirectory;
+        private readonly FileStream _stream;
+        private int _disposed;
+
+        private SegmentCoreStoreOwnerLease(string rootDirectory, FileStream stream)
+        {
+            _rootDirectory = rootDirectory;
+            _stream = stream;
+        }
+
+        public static SegmentCoreStoreOwnerLease Acquire(string rootDirectory)
+        {
+            var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
+            if (!ActiveRoots.TryAdd(fullRoot, 0))
             {
-                await writer.DisposeAsync().ConfigureAwait(false);
+                throw new IOException($"Another SegmentCore store already owns '{fullRoot}'.");
             }
 
-            await wal.DisposeAsync().ConfigureAwait(false);
-            throw;
+            FileStream? stream = null;
+            try
+            {
+                if (!OperatingSystem.IsWindows()
+                    && !OperatingSystem.IsLinux()
+                    && !OperatingSystem.IsAndroid()
+                    && !OperatingSystem.IsMacOS()
+                    && !OperatingSystem.IsIOS()
+                    && !OperatingSystem.IsMacCatalyst())
+                {
+                    throw new PlatformNotSupportedException(
+                        "The SegmentCore owner lease is implemented only for Windows, Linux, Android, macOS, iOS, and Mac Catalyst.");
+                }
+
+                stream = new FileStream(
+                    Path.Combine(fullRoot, "segment-core.writer.lock"),
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.None);
+                // FileShare.None is deliberate. On Unix, .NET maps this to an open-description
+                // flock, so symlink/bind-mount aliases still contend and closing an unrelated
+                // descriptor cannot release this lease. Deployments must not disable .NET file locking.
+
+                return new SegmentCoreStoreOwnerLease(fullRoot, stream);
+            }
+            catch (Exception exception)
+            {
+                stream?.Dispose();
+                ActiveRoots.TryRemove(fullRoot, out _);
+                if (exception is IOException)
+                {
+                    throw new IOException(
+                        $"Another SegmentCore store already owns '{fullRoot}'.",
+                        exception);
+                }
+
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                ActiveRoots.TryRemove(_rootDirectory, out _);
+            }
         }
     }
 
@@ -546,7 +844,13 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var transactionWatermark = checkpoint?.TransactionWatermark ?? 0;
-        var mutationMaps = walSnapshot.Commits.ToDictionary(
+        var commitsAfterWatermark = walSnapshot.After(transactionWatermark).ToArray();
+        if (replayRecords.Count == 0 && commitsAfterWatermark.Length == 0)
+        {
+            return default;
+        }
+
+        var mutationMaps = commitsAfterWatermark.ToDictionary(
             static commit => commit.TransactionId,
             static commit => commit.Mutations.ToDictionary(
                 static mutation => mutation.Mutation.Key,
@@ -618,7 +922,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         {
             throw new ObjectLogCorruptionException("Recovered autocommit frames contain duplicate logical locators.");
         }
-        foreach (var commit in walSnapshot.After(transactionWatermark))
+        foreach (var commit in commitsAfterWatermark)
         {
             foreach (var walMutation in commit.Mutations)
             {
@@ -750,7 +1054,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         await EnterMutationAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var address = await _writer.AppendAsync(key, payload, cancellationToken).ConfigureAwait(false);
+            var address = await _writer.AppendValidatedAsync(key, payload, cancellationToken).ConfigureAwait(false);
             _indexVisibility.EnterWriteLock();
             try
             {
@@ -796,7 +1100,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 _indexVisibility.ExitReadLock();
             }
 
-            var tombstone = await _writer.DeleteAsync(key, cancellationToken).ConfigureAwait(false);
+            var tombstone = await _writer.DeleteValidatedAsync(key, cancellationToken).ConfigureAwait(false);
             _indexVisibility.EnterWriteLock();
             try
             {
@@ -1044,10 +1348,10 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 "Online segment compaction requires at least two retained checkpoint generations.");
         }
 
-        await _compactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterShutdownSafeGateAsync(_compactionGate, cancellationToken).ConfigureAwait(false);
         try
         {
-            await _checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await EnterShutdownSafeGateAsync(_checkpointGate, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -1303,7 +1607,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         ThrowIfUnavailable();
         cancellationToken.ThrowIfCancellationRequested();
         var operationStopwatch = Stopwatch.StartNew();
-        await _checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterShutdownSafeGateAsync(_checkpointGate, cancellationToken).ConfigureAwait(false);
         var telemetryStarted = SegmentCoreDiagnostics.StartTimestamp();
         Volatile.Write(ref _checkpointing, 1);
         CheckpointCapture? capture = null;
@@ -1381,9 +1685,9 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         var checkpointPublished = false;
         try
         {
-            await _compactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await EnterShutdownSafeGateAsync(_compactionGate, cancellationToken).ConfigureAwait(false);
             compactionGateEntered = true;
-            await _checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await EnterShutdownSafeGateAsync(_checkpointGate, cancellationToken).ConfigureAwait(false);
             checkpointGateEntered = true;
             Volatile.Write(ref _checkpointing, 1);
             await EnterExclusiveOperationAsync(cancellationToken).ConfigureAwait(false);
@@ -1509,7 +1813,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             files.Add(SegmentCoreBackupFiles.DescribeFile(staging, transactionRelative));
             var manifest = new SegmentCoreBackupManifest
             {
-                StorageFormat = SegmentCoreStorageFormat.Current,
+                StorageFormat = SegmentCoreStorageFormat.For(_options.LogOptions),
                 CheckpointGeneration = state.Generation,
                 TransactionWatermark = state.TransactionWatermark,
                 Entries = state.Entries.Count,
@@ -1604,21 +1908,36 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         }
 
         var manifest = SegmentCoreBackupFiles.ReadAndValidateManifest(backup);
+        if (!SegmentCoreHashRouter.TryParseRouterId(
+                manifest.StorageFormat.RouterId,
+                out var backupHashRouting))
+        {
+            throw new SegmentCoreCompatibilityException(
+                $"Backup uses unsupported placement algorithm '{manifest.StorageFormat.RouterId}'.");
+        }
+
         options ??= new SegmentCoreOptions
         {
             TransactionProtocol = manifest.TransactionProtocol,
             LogOptions = new StripedObjectLogProbeOptions
             {
                 StripeCount = manifest.StripeCount,
+                HashAlgorithm = backupHashRouting.Algorithm,
+                HashSeed = backupHashRouting.Seed,
                 DurabilityStrategy = ObjectLogDurabilityStrategy.WriteThrough
             }
         };
         options.Validate();
+        var expectedStorageFormat = SegmentCoreStorageFormat.For(options.LogOptions);
         if (options.TransactionProtocol != manifest.TransactionProtocol
-            || options.LogOptions.StripeCount != manifest.StripeCount)
+            || options.LogOptions.StripeCount != manifest.StripeCount
+            || !string.Equals(
+                expectedStorageFormat.RouterId,
+                manifest.StorageFormat.RouterId,
+                StringComparison.Ordinal))
         {
             throw new SegmentCoreCompatibilityException(
-                "Restore options do not match the backup transaction protocol and stripe count.");
+                "Restore options do not match the backup transaction protocol, stripe count, or hash routing.");
         }
 
         var stopwatch = Stopwatch.StartNew();
@@ -1926,12 +2245,29 @@ public sealed class SegmentCoreStore : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
         {
+            await _disposeCompletion.Task.ConfigureAwait(false);
             return;
         }
 
-        while (Volatile.Read(ref _activeMutations) != 0
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+            _disposeCompletion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            _disposeCompletion.TrySetException(exception);
+            throw;
+        }
+    }
+
+    private async ValueTask DisposeCoreAsync()
+    {
+
+        while (Volatile.Read(ref _gateAdmissions) != 0
+               || Volatile.Read(ref _activeMutations) != 0
                || Volatile.Read(ref _activeReads) != 0
                || Volatile.Read(ref _exclusiveOperation) != 0)
         {
@@ -1940,6 +2276,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
 
         await _compactionGate.WaitAsync().ConfigureAwait(false);
         await _checkpointGate.WaitAsync().ConfigureAwait(false);
+        await _exclusiveGate.WaitAsync().ConfigureAwait(false);
 
         List<Exception>? failures = null;
         if (_transactionWal is not null && Volatile.Read(ref _faulted) == 0)
@@ -1987,13 +2324,46 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             }
         }
 
-        _reader.Dispose();
-        _primaryIndex.Dispose();
-        _indexVisibility.Dispose();
-        _exclusiveGate.Dispose();
-        _transactionPreparationGate.Dispose();
-        _checkpointGate.Dispose();
-        _compactionGate.Dispose();
+        try
+        {
+            _reader.Dispose();
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
+        try
+        {
+            _primaryIndex.Dispose();
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
+        try
+        {
+            _indexVisibility.Dispose();
+            _exclusiveGate.Dispose();
+            _transactionPreparationGate.Dispose();
+            _checkpointGate.Dispose();
+            _compactionGate.Dispose();
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
+        try
+        {
+            await _ownerLease.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
         if (failures is not null)
         {
             throw new AggregateException("SegmentCore failed to dispose one or more durable components.", failures);
@@ -2278,6 +2648,32 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         }
     }
 
+    private async ValueTask EnterShutdownSafeGateAsync(
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _gateAdmissions);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfUnavailable();
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ThrowIfUnavailable();
+            }
+            catch
+            {
+                gate.Release();
+                throw;
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _gateAdmissions);
+        }
+    }
+
     private async ValueTask EnterReadOperationAsync(CancellationToken cancellationToken)
     {
         ThrowIfUnavailable();
@@ -2304,12 +2700,19 @@ public sealed class SegmentCoreStore : IAsyncDisposable
 
     private async ValueTask EnterExclusiveOperationAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        await _exclusiveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _gateAdmissions);
+        var gateEntered = false;
+        var ownerRegistered = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             ThrowIfUnavailable();
-            Volatile.Write(ref _exclusiveOperation, 1);
+            await _exclusiveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
+            Interlocked.Increment(ref _exclusiveOperation);
+            ownerRegistered = true;
+            Interlocked.Decrement(ref _gateAdmissions);
+            ThrowIfUnavailable();
             while (Volatile.Read(ref _activeMutations) != 0)
             {
                 ThrowIfUnavailable();
@@ -2319,16 +2722,28 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         }
         catch
         {
-            Volatile.Write(ref _exclusiveOperation, 0);
-            _exclusiveGate.Release();
+            if (gateEntered)
+            {
+                _exclusiveGate.Release();
+            }
+
+            if (ownerRegistered)
+            {
+                Interlocked.Decrement(ref _exclusiveOperation);
+            }
+            else
+            {
+                Interlocked.Decrement(ref _gateAdmissions);
+            }
+
             throw;
         }
     }
 
     private void ExitExclusiveOperation()
     {
-        Volatile.Write(ref _exclusiveOperation, 0);
         _exclusiveGate.Release();
+        Interlocked.Decrement(ref _exclusiveOperation);
     }
 
     private void ThrowIfUnavailable()

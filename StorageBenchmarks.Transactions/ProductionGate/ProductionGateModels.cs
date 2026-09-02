@@ -68,11 +68,76 @@ internal sealed record GateRecord(
             0);
     }
 
-    public long MaterializedChecksum =>
-        Id.Length + Name.Length + Age + Role.Length + Content.Length + Revision;
+    public long MaterializedChecksum => GateRecordMaterialization.Checksum(
+        Id,
+        Name,
+        Age,
+        Role,
+        Content,
+        Revision);
 }
 
 internal readonly record struct GateQueryResult(int Count, long Checksum);
+
+internal static class GateRecordMaterialization
+{
+    public const string Contract = "GateRecord/FNV1a32-v2/all-six-fields";
+
+    // A stable, inexpensive full-field sink for timed materialization paths. Keeping
+    // the value within UInt32 makes aggregate checksums safe for the benchmark's
+    // supported record counts while still detecting same-length content mistakes.
+    public static long Checksum(
+        string id,
+        string name,
+        int age,
+        string role,
+        string content,
+        long revision)
+    {
+        var hash = 2166136261u;
+        AddString(ref hash, id);
+        AddString(ref hash, name);
+        AddInt32(ref hash, age);
+        AddString(ref hash, role);
+        AddString(ref hash, content);
+        AddInt64(ref hash, revision);
+        return hash;
+    }
+
+    private static void AddString(ref uint hash, string value)
+    {
+        AddInt32(ref hash, value.Length);
+        foreach (var character in value)
+        {
+            AddByte(ref hash, (byte)character);
+            AddByte(ref hash, (byte)(character >> 8));
+        }
+    }
+
+    private static void AddInt32(ref uint hash, int value)
+    {
+        var bits = unchecked((uint)value);
+        AddByte(ref hash, (byte)bits);
+        AddByte(ref hash, (byte)(bits >> 8));
+        AddByte(ref hash, (byte)(bits >> 16));
+        AddByte(ref hash, (byte)(bits >> 24));
+    }
+
+    private static void AddInt64(ref uint hash, long value)
+    {
+        var bits = unchecked((ulong)value);
+        for (var shift = 0; shift < 64; shift += 8)
+        {
+            AddByte(ref hash, (byte)(bits >> shift));
+        }
+    }
+
+    private static void AddByte(ref uint hash, byte value)
+    {
+        hash ^= value;
+        hash *= 16777619u;
+    }
+}
 
 internal readonly record struct GateStorageStats(long Bytes, int Files);
 
@@ -122,6 +187,7 @@ internal sealed record GateRecoveryMetric(
 
 internal sealed class ProductionGateReport
 {
+    public string MaterializationContract { get; init; } = GateRecordMaterialization.Contract;
     public DateTimeOffset StartedUtc { get; init; }
     public DateTimeOffset CompletedUtc { get; set; }
     public string Runtime { get; init; } = string.Empty;

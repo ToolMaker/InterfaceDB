@@ -107,7 +107,7 @@ SQL Server is a highly optimized single-engine relational system. InterfaceDB's 
 - serializes object graphs;
 - coordinates cross-process writes.
 
-The current object-materialization gate shows competitive cached range, broad-prefix, and broad-conjunction behavior on its development workload. SQLite remains substantially faster for selective exact/suffix queries, reopen, and independently durable writes. The useful conclusion is that the object repository can compete on matching query shapes—not that files beat SQL universally.
+The current object-materialization gate shows competitive `StrongObject` hot-cache range, broad-prefix, and broad-conjunction behavior on its development workload. SQLite remains substantially faster for selective exact/suffix queries, provider startup, and independently durable writes. Every timed query returns complete objects, but InterfaceDB's startup index rebuild deserializes the records and populates its strong cache before query timing while SQLite maps new objects from rows. Use `MetadataOnly` for the canonical fresh managed object-materialization comparison. The useful conclusion is that the object repository can compete on matching query shapes—not that files beat SQL universally.
 
 ## Performance Direction
 
@@ -134,9 +134,9 @@ Future providers:
 
 Object caching can improve read-heavy scenarios. InterfaceDB supports three repository object-cache modes:
 
-- `MetadataOnly`: retain envelope metadata only.
+- `MetadataOnly`: retain envelope metadata only; each query result is freshly read and deserialized, making this the canonical storage-to-object benchmark mode.
 - `WeakObject`: retain a `WeakReference<TContract>` so live objects can be reused without InterfaceDB keeping them alive.
-- `StrongObject`: retain the object instance strongly until cache update/removal.
+- `StrongObject`: retain the object instance strongly until cache update/removal; benchmark results in this mode describe a hot InterfaceDB object cache.
 
 Example:
 
@@ -155,10 +155,10 @@ This is one reason the current file provider should not be treated as the final 
 
 ## Benchmark Commands
 
-Run the fair disk-to-materialized-object quick gate first:
+Run the canonical fresh managed object-materialization quick gate first:
 
 ```powershell
-.\Scripts\Test-ProductionGate.ps1 -Quick
+.\Scripts\Test-ProductionGate.ps1 -Quick -Cache metadata
 ```
 
 See [Current Performance Results](performance-results.md) before interpreting isolated benchmark output.
@@ -174,7 +174,7 @@ $env:INTERFACEDB_BENCH_SINGLE_WRITE_BUFFER="true"
 dotnet run -c Release --project .\StorageBenchmarks.Transactions -- --run-all
 ```
 
-The full suite includes metadata-only, weak object-cache, and strong object-cache InterfaceDB query benchmarks. The metadata-only tests repeatedly materialize objects from file storage; those numbers are useful for storage-engine analysis, but they are not the normal hot indexed-query performance profile.
+The full suite includes metadata-only, weak object-cache, and strong object-cache InterfaceDB query benchmarks. The metadata-only tests repeatedly materialize objects from file storage and are canonical when comparing fresh managed objects. Strong-object results are separately useful for the normal hot indexed-query profile. Neither mode is automatically a physical cold-media test because the operating-system page cache may remain warm.
 
 InterfaceDB-only file tests:
 
@@ -215,12 +215,15 @@ See [Performance Profiling](performance-profiling.md).
 
 Index microbenchmarks intentionally exclude persistence and object materialization.
 Before drawing product conclusions, run the production gate against embedded SQLite
-and, when configured, SQL Server. It measures complete result materialization,
-cache and durability profiles, mixed concurrent mutations, final data integrity,
-reopen/index-rebuild cost, and terminated-writer recovery.
+and, when configured, SQL Server. Timed queries return and validate complete objects;
+`MetadataOnly` is the canonical fresh-object profile and `StrongObject` is an explicitly
+hot InterfaceDB cache profile. The separate startup timing includes InterfaceDB object
+deserialization and index rebuilding but stops before a separately issued query; the
+relational counterpart only opens a connection. The gate also measures durability profiles, mixed
+concurrent mutations, final data integrity, and terminated-writer recovery.
 
 ```powershell
-.\Scripts\Test-ProductionGate.ps1 -Quick
+.\Scripts\Test-ProductionGate.ps1 -Quick -Cache metadata
 ```
 
 See [Production Benchmark And Stress Gate](production-benchmark-gate.md) for the

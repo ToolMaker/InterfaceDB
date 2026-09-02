@@ -25,15 +25,22 @@ InterfaceDB can target SQLite on the workload InterfaceDB actually serves:
 
 It cannot honestly claim to beat SQLite at arbitrary SQL, joins, multi-table transactions, concurrent processes, or every hardware and data distribution. A strict independent save still needs a storage barrier. Once that barrier dominates latency, software can reduce bytes and CPU work but cannot remove the device's persistence latency.
 
-The current fair gate is the starting point:
+The historical gate below is the starting point. Its query rows use InterfaceDB
+`StrongObject`: startup deserialization during the index rebuild populated the
+InterfaceDB object cache before timing, while SQLite still mapped complete objects
+from rows. The query numbers are
+therefore hot-cache application results, not canonical fresh storage-to-object rankings.
+Use the gate's `MetadataOnly` profile for that comparison. The standalone startup row
+includes InterfaceDB object deserialization for index reconstruction and ends before
+a separately issued result query; SQLite only opens a connection in that row.
 
 | Operation | InterfaceDB current | SQLite direct | SQLite + Dapper |
 |---|---:|---:|---:|
 | Durable independent object write, p50 | 5.626 ms | 3.019 ms | 3.094 ms |
-| Exact query, p50 | 0.342 ms | 0.025 ms | 0.030 ms |
-| Range query, p50 | 0.161 ms | 0.212 ms | 0.185 ms |
-| Broad prefix query, p50 | 1.326 ms | 1.754 ms | 1.505 ms |
-| Warm reopen, 1,000 objects | 304.289 ms | 8.241 ms | 6.673 ms |
+| `StrongObject` hot-cache exact query, p50 | 0.342 ms | 0.025 ms | 0.030 ms |
+| `StrongObject` hot-cache range query, p50 | 0.161 ms | 0.212 ms | 0.185 ms |
+| `StrongObject` hot-cache broad prefix query, p50 | 1.326 ms | 1.754 ms | 1.505 ms |
+| Provider-specific startup, 1,000 records, before separate query | 304.289 ms (object deserialization plus index rebuild) | 8.241 ms (connection open only) | 6.673 ms (connection open only) |
 
 The earlier low-level probe already put a reused append handle in SQLite's physical cost class. The remaining question is whether that advantage survives serialization, recovery metadata, index publication, and the public InterfaceDB API.
 

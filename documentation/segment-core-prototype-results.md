@@ -63,7 +63,7 @@ The SQLite comparisons use:
 - both `Microsoft.Data.Sqlite` and a separate Dapper confirmation;
 - the same object-at-a-time public acknowledgement boundary as the custom store.
 
-The custom read includes primary lookup, segment I/O through `RandomAccess.ReadAsync`, frame and payload CRC validation, payload extraction, and complete `GateRecord` decoding. Warm and post-reopen results retain the operating-system page cache for every engine. They are end-to-end object-materialization measurements, not claims that every read reached physical media.
+The custom read includes primary lookup, segment I/O through `RandomAccess.ReadAsync`, frame and payload CRC validation, payload extraction, and complete `GateRecord` decoding. Warm and post-reopen results retain the operating-system page cache for every engine. They are end-to-end object-materialization measurements, not claims that every read reached physical media. Standalone `Reopen` rows stop after provider initialization and before the separately timed first materialized read.
 
 The mixed workload is 80% exact reads, 10% updates, 5% inserts, and 5% deletes. Every run ends with a complete materialized snapshot and key/checksum validation.
 

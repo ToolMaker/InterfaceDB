@@ -1,30 +1,39 @@
 using System.Buffers.Binary;
+using Idb.Storage.SegmentCore;
 using Microsoft.Win32.SafeHandles;
 
 namespace Idb.Storage.SegmentCore.ObjectLog;
 
+internal readonly record struct StripedObjectLogManifestInfo(
+    int StripeCount,
+    SegmentCoreHashAlgorithm HashAlgorithm,
+    long HashSeed);
+
 internal static class StripedObjectLogManifest
 {
-    private const int ManifestBytes = 32;
-    private const int FormatVersion = 1;
+    private const int LegacyManifestBytes = 32;
+    private const int CurrentManifestBytes = 64;
+    private const int LegacyFormatVersion = 1;
+    private const int CurrentFormatVersion = 2;
     private const string FileName = "striped-log.manifest";
     private static ReadOnlySpan<byte> Magic => "IDBSTR01"u8;
 
-    public static int ReadOrCreate(
+    public static StripedObjectLogManifestInfo ReadOrCreate(
         string rootDirectory,
-        int requestedStripeCount,
+        StripedObjectLogProbeOptions requestedOptions,
         IDurableFileSystem durableFileSystem)
     {
+        ArgumentNullException.ThrowIfNull(requestedOptions);
         Directory.CreateDirectory(rootDirectory);
         var path = Path.Combine(rootDirectory, FileName);
         if (File.Exists(path))
         {
             var existing = Read(path);
-            RequireMatchingCount(path, existing, requestedStripeCount);
+            RequireMatchingOptions(path, existing, requestedOptions);
             return existing;
         }
 
-        var bytes = Create(requestedStripeCount);
+        var bytes = Create(requestedOptions);
         var temporaryPath = $"{path}.creating-{Guid.NewGuid():N}";
         try
         {
@@ -49,7 +58,7 @@ internal static class StripedObjectLogManifest
             }
 
             var published = Read(path);
-            RequireMatchingCount(path, published, requestedStripeCount);
+            RequireMatchingOptions(path, published, requestedOptions);
             return published;
         }
         catch
@@ -59,7 +68,7 @@ internal static class StripedObjectLogManifest
         }
     }
 
-    public static int ReadRequired(string rootDirectory)
+    public static StripedObjectLogManifestInfo ReadRequired(string rootDirectory)
     {
         var path = Path.Combine(Path.GetFullPath(rootDirectory), FileName);
         if (!File.Exists(path))
@@ -71,54 +80,122 @@ internal static class StripedObjectLogManifest
         return Read(path);
     }
 
-    private static byte[] Create(int stripeCount)
+    private static byte[] Create(StripedObjectLogProbeOptions options)
     {
-        var bytes = new byte[ManifestBytes];
+        if (options.HashAlgorithm == SegmentCoreHashAlgorithm.Fnv1a32
+            && options.HashSeed == 0)
+        {
+            return CreateLegacy(options.StripeCount);
+        }
+
+        var bytes = new byte[CurrentManifestBytes];
         Magic.CopyTo(bytes);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(8), FormatVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(8), CurrentFormatVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(12), CurrentManifestBytes);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(16), options.StripeCount);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(20), (int)options.HashAlgorithm);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(24), options.HashSeed);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(32), DateTimeOffset.UtcNow.UtcTicks);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(60), Crc32C.Compute(bytes.AsSpan(0, 60)));
+        return bytes;
+    }
+
+    private static byte[] CreateLegacy(int stripeCount)
+    {
+        var bytes = new byte[LegacyManifestBytes];
+        Magic.CopyTo(bytes);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(8), LegacyFormatVersion);
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(12), stripeCount);
         BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(16), DateTimeOffset.UtcNow.UtcTicks);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(28), Crc32C.Compute(bytes.AsSpan(0, 28)));
         return bytes;
     }
 
-    private static int Read(string path)
+    private static StripedObjectLogManifestInfo Read(string path)
     {
-        Span<byte> bytes = stackalloc byte[ManifestBytes];
+        var length = new FileInfo(path).Length;
+        if (length is not LegacyManifestBytes and not CurrentManifestBytes)
+        {
+            throw Corrupt(path);
+        }
+
+        Span<byte> bytes = stackalloc byte[CurrentManifestBytes];
         using SafeFileHandle handle = File.OpenHandle(
             path,
             FileMode.Open,
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete,
             FileOptions.RandomAccess);
-        var read = RandomAccess.Read(handle, bytes, 0);
-        if (read != ManifestBytes
-            || !bytes[..Magic.Length].SequenceEqual(Magic)
-            || BinaryPrimitives.ReadInt32LittleEndian(bytes[8..]) != FormatVersion
-            || BinaryPrimitives.ReadUInt32LittleEndian(bytes[28..]) != Crc32C.Compute(bytes[..28]))
+        var manifestBytes = bytes[..(int)length];
+        var read = RandomAccess.Read(handle, manifestBytes, 0);
+        if (read != manifestBytes.Length || !manifestBytes[..Magic.Length].SequenceEqual(Magic))
         {
-            throw new ObjectLogCorruptionException(
-                $"Striped object-log manifest '{path}' is incomplete or corrupt.");
+            throw Corrupt(path);
         }
 
-        var stripeCount = BinaryPrimitives.ReadInt32LittleEndian(bytes[12..]);
+        var version = BinaryPrimitives.ReadInt32LittleEndian(manifestBytes[8..]);
+        if (version == LegacyFormatVersion
+            && length == LegacyManifestBytes
+            && BinaryPrimitives.ReadUInt32LittleEndian(manifestBytes[28..]) == Crc32C.Compute(manifestBytes[..28]))
+        {
+            var legacyStripeCount = BinaryPrimitives.ReadInt32LittleEndian(manifestBytes[12..]);
+            ValidateStripeCount(path, legacyStripeCount);
+            return new StripedObjectLogManifestInfo(
+                legacyStripeCount,
+                SegmentCoreHashAlgorithm.Fnv1a32,
+                0);
+        }
+
+        if (version != CurrentFormatVersion
+            || length != CurrentManifestBytes
+            || BinaryPrimitives.ReadInt32LittleEndian(manifestBytes[12..]) != CurrentManifestBytes
+            || BinaryPrimitives.ReadUInt32LittleEndian(manifestBytes[60..]) != Crc32C.Compute(manifestBytes[..60]))
+        {
+            throw Corrupt(path);
+        }
+
+        var stripeCount = BinaryPrimitives.ReadInt32LittleEndian(manifestBytes[16..]);
+        ValidateStripeCount(path, stripeCount);
+        var algorithm = (SegmentCoreHashAlgorithm)BinaryPrimitives.ReadInt32LittleEndian(manifestBytes[20..]);
+        if (!Enum.IsDefined(algorithm))
+        {
+            throw new ObjectLogCorruptionException(
+                $"Striped object-log manifest '{path}' contains unsupported hash algorithm {(int)algorithm}.");
+        }
+
+        return new StripedObjectLogManifestInfo(
+            stripeCount,
+            algorithm,
+            BinaryPrimitives.ReadInt64LittleEndian(manifestBytes[24..]));
+    }
+
+    private static void ValidateStripeCount(string path, int stripeCount)
+    {
         if (stripeCount is < 1 or > 64 || !System.Numerics.BitOperations.IsPow2((uint)stripeCount))
         {
             throw new ObjectLogCorruptionException(
                 $"Striped object-log manifest '{path}' contains invalid stripe count {stripeCount}.");
         }
-
-        return stripeCount;
     }
 
-    private static void RequireMatchingCount(string path, int actual, int requested)
+    private static void RequireMatchingOptions(
+        string path,
+        StripedObjectLogManifestInfo actual,
+        StripedObjectLogProbeOptions requested)
     {
-        if (actual != requested)
+        if (actual.StripeCount != requested.StripeCount
+            || actual.HashAlgorithm != requested.HashAlgorithm
+            || actual.HashSeed != requested.HashSeed)
         {
             throw new InvalidOperationException(
-                $"Striped object log '{path}' was created with {actual} stripes and cannot be reopened with {requested}.");
+                $"Striped object log '{path}' was created with {actual.StripeCount} stripes, "
+                + $"{actual.HashAlgorithm}, and seed {actual.HashSeed}; it cannot be reopened with "
+                + $"{requested.StripeCount} stripes, {requested.HashAlgorithm}, and seed {requested.HashSeed}.");
         }
     }
+
+    private static ObjectLogCorruptionException Corrupt(string path) =>
+        new($"Striped object-log manifest '{path}' is incomplete, corrupt, or unsupported.");
 
     private static void TryDelete(string path)
     {

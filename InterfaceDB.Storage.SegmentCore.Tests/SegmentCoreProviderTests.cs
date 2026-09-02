@@ -4,6 +4,7 @@ using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Encryption;
+using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -242,6 +243,268 @@ public sealed class SegmentCoreProviderTests
     }
 
     [TestMethod]
+    public async Task Repository_ConcurrentAndRepeatedInitialization_ActivatesAndRebuildsIndexesOnce()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var config = new ProviderConfig(root.Path);
+        var options = ProviderOptions();
+
+        await using (var writerProvider = BuildProvider(config, options))
+        {
+            var envelopes = writerProvider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+            _ = await envelopes.WriteAsync(new ProviderRecord
+            {
+                Id = "record-001",
+                Name = "Alpha",
+                Score = 1
+            });
+            _ = await writerProvider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .CheckpointAsync();
+        }
+
+        var serializer = new CountingObjectSerializer();
+        await using var readerProvider = BuildProvider(config, options, serializer: serializer);
+        var repository = readerProvider.GetRequiredService<IRepository<IProviderRecord>>();
+        var envelopeRepository = readerProvider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+
+        await Task.WhenAll(
+            Enumerable.Range(0, 32)
+                .Select(_ => repository.InitializeAsync().AsTask()));
+        await repository.InitializeAsync();
+        await envelopeRepository.InitializeAsync();
+
+        Assert.AreEqual(
+            1,
+            serializer.DeserializeCount,
+            "Concurrent repository initialization must materialize the stored record for index rebuild only once.");
+
+        var existing = await repository.SearchFirstAsync(record => record.Name == "Alpha");
+        Assert.IsNotNull(existing);
+        Assert.AreEqual("record-001", existing.Id);
+
+        _ = await repository.SaveAsync(new ProviderRecord
+        {
+            Id = "record-002",
+            Name = "Beta",
+            Score = 2
+        });
+        var added = await repository.SearchFirstAsync(record => record.Name == "Beta");
+
+        Assert.IsNotNull(added);
+        Assert.AreEqual("record-002", added.Id);
+        Assert.IsTrue(
+            readerProvider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .Status.IsInitialized);
+    }
+
+    [TestMethod]
+    public async Task EnvelopeRepository_CatalogInitializationCanUpgradeToRequestedHydration()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var policy = StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.StrongObject,
+            HydrateOnInitialize = true,
+            RaiseNotifications = false
+        };
+        var config = new ProviderConfig(root.Path, policy);
+        var options = ProviderOptions();
+
+        await using (var writerProvider = BuildProvider(config, options))
+        {
+            _ = await writerProvider
+                .GetRequiredService<IEnvelopeRepository<IProviderRecord>>()
+                .WriteManyAsync(CreateRecords(12));
+            _ = await writerProvider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .CheckpointAsync();
+        }
+
+        var serializer = new CountingObjectSerializer();
+        await using var readerProvider = BuildProvider(config, options, serializer: serializer);
+        var envelopes = readerProvider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+        var catalog = (IPersistentSearchIndexCatalogRepository)envelopes;
+
+        await catalog.InitializeForSearchIndexCatalogAsync();
+        Assert.AreEqual(0, serializer.DeserializeCount);
+
+        await envelopes.InitializeAsync();
+        Assert.AreEqual(12, serializer.DeserializeCount);
+
+        await envelopes.InitializeAsync();
+        Assert.AreEqual(12, serializer.DeserializeCount);
+    }
+
+    [TestMethod]
+    public async Task EnvelopeRepository_EagerHydration_DoesNotOverwriteConcurrentCommittedUpdate()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var policy = StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.StrongObject,
+            HydrateOnInitialize = true,
+            RaiseNotifications = false
+        };
+        var config = new ProviderConfig(root.Path, policy);
+        var options = ProviderOptions();
+        string physicalKey;
+
+        await using (var writerProvider = BuildProvider(config, options))
+        {
+            var saved = await writerProvider
+                .GetRequiredService<IEnvelopeRepository<IProviderRecord>>()
+                .WriteAsync(new ProviderRecord
+                {
+                    Id = "hydration-update",
+                    Name = "Before hydration",
+                    Score = 1
+                });
+            physicalKey = saved.Envelope!.EnvelopeCacheKey;
+            _ = await writerProvider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .CheckpointAsync();
+        }
+
+        using var serializer = new BlockingObjectSerializer();
+        await using var readerProvider = BuildProvider(config, options, serializer: serializer);
+        var envelopes = readerProvider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+        await ((IPersistentSearchIndexCatalogRepository)envelopes)
+            .InitializeForSearchIndexCatalogAsync();
+
+        serializer.BlockNextDeserialize();
+        var hydration = Task.Run(async () => await envelopes.InitializeAsync());
+        try
+        {
+            await serializer.WaitForBlockedDeserializeAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsFalse(hydration.IsCompleted, "The test must hold stale hydration before its cache update.");
+
+            var currentEnvelope = await envelopes.GetPhysicalAsync(physicalKey);
+            Assert.IsNotNull(currentEnvelope);
+            var current = currentEnvelope.ObjectInstance;
+            Assert.IsNotNull(current);
+            current.Name = "Committed during hydration";
+            current.Score = 2;
+            _ = await envelopes.WriteAsync(current);
+        }
+        finally
+        {
+            serializer.ReleaseBlockedDeserialize();
+        }
+
+        await hydration.WaitAsync(TimeSpan.FromSeconds(10));
+        var cached = await envelopes.GetPhysicalAsync(physicalKey);
+
+        Assert.IsNotNull(cached);
+        Assert.IsNotNull(cached.ObjectInstance);
+        Assert.AreEqual("Committed during hydration", cached.ObjectInstance.Name);
+        Assert.AreEqual(2, cached.ObjectInstance.Score);
+    }
+
+    [TestMethod]
+    public async Task EnvelopeRepository_EagerHydration_DoesNotRestoreConcurrentCommittedDelete()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var policy = StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.StrongObject,
+            HydrateOnInitialize = true,
+            RaiseNotifications = false
+        };
+        var config = new ProviderConfig(root.Path, policy);
+        var options = ProviderOptions();
+        string physicalKey;
+
+        await using (var writerProvider = BuildProvider(config, options))
+        {
+            var saved = await writerProvider
+                .GetRequiredService<IEnvelopeRepository<IProviderRecord>>()
+                .WriteAsync(new ProviderRecord
+                {
+                    Id = "hydration-delete",
+                    Name = "Delete during hydration",
+                    Score = 1
+                });
+            physicalKey = saved.Envelope!.EnvelopeCacheKey;
+            _ = await writerProvider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .CheckpointAsync();
+        }
+
+        using var serializer = new BlockingObjectSerializer();
+        await using var readerProvider = BuildProvider(config, options, serializer: serializer);
+        var envelopes = readerProvider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+        await ((IPersistentSearchIndexCatalogRepository)envelopes)
+            .InitializeForSearchIndexCatalogAsync();
+
+        serializer.BlockNextDeserialize();
+        var hydration = Task.Run(async () => await envelopes.InitializeAsync());
+        try
+        {
+            await serializer.WaitForBlockedDeserializeAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsFalse(hydration.IsCompleted, "The test must hold stale hydration before its cache update.");
+
+            var currentEnvelope = await envelopes.GetPhysicalAsync(physicalKey);
+            Assert.IsNotNull(currentEnvelope);
+            Assert.IsNotNull(currentEnvelope.ObjectInstance);
+            Assert.IsTrue(await envelopes.DeleteAsync(currentEnvelope.ObjectInstance));
+        }
+        finally
+        {
+            serializer.ReleaseBlockedDeserialize();
+        }
+
+        await hydration.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsNull(await envelopes.GetPhysicalAsync(physicalKey));
+        Assert.IsFalse(envelopes.Exists("hydration-delete"));
+    }
+
+    [TestMethod]
+    public async Task EnvelopeRepository_ConcurrentDisposeCheckpointFailure_ReleasesStoreOwnership()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var config = new ProviderConfig(root.Path);
+        var durableFileSystem = new CheckpointFailingDurableFileSystem();
+        var defaults = ProviderOptions();
+        var options = defaults with
+        {
+            StoreOptions = defaults.StoreOptions with
+            {
+                DurableFileSystem = durableFileSystem
+            }
+        };
+        var provider = BuildProvider(config, options);
+        var repository = provider.GetRequiredKeyedService<IEnvelopeRepository<IProviderRecord>>(
+            config.EnvelopeDICacheKey);
+        _ = await repository.WriteAsync(new ProviderRecord
+        {
+            Id = "record-001",
+            Name = "Alpha",
+            Score = 1
+        });
+
+        durableFileSystem.FailCheckpointPublication = true;
+        var firstDisposal = ((IAsyncDisposable)repository).DisposeAsync().AsTask();
+        var concurrentDisposal = ((IAsyncDisposable)repository).DisposeAsync().AsTask();
+
+        Assert.AreSame(firstDisposal, concurrentDisposal);
+        var failure = await Assert.ThrowsExactlyAsync<AggregateException>(() => firstDisposal);
+        Assert.IsTrue(failure.InnerExceptions.Any(exception => exception is IOException));
+        _ = await Assert.ThrowsExactlyAsync<AggregateException>(() => provider.DisposeAsync().AsTask());
+
+        durableFileSystem.FailCheckpointPublication = false;
+        await using var reopenedProvider = BuildProvider(config, options);
+        var reopened = reopenedProvider.GetRequiredService<IRepository<IProviderRecord>>();
+        await reopened.InitializeAsync();
+        var record = await reopened.SearchFirstAsync(item => item.Id == "record-001");
+
+        Assert.IsNotNull(record);
+        Assert.AreEqual("Alpha", record.Name);
+    }
+
+    [TestMethod]
     public async Task Repository_ExplicitProviderNativeMigration_IsTransactionalResumableAndKeepsSource()
     {
         using var root = new ProviderTemporaryDirectory();
@@ -432,6 +695,51 @@ public sealed class SegmentCoreProviderTests
 
         Assert.HasCount(6, matches);
         Assert.AreEqual(6, secondSerializer.DeserializeCount);
+    }
+
+    [TestMethod]
+    [DataRow("repository-maintenance-envelope")]
+    [DataRow("maintenance-envelope-repository")]
+    [DataRow("envelope-repository-maintenance")]
+    public async Task Repository_IndexedCatalog_PersistsWritesMadeAfterEmptyInitialization(
+        string resolutionOrder)
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var policy = StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.MetadataOnly,
+            HydrateOnInitialize = false,
+            RaiseNotifications = false
+        };
+        var config = new ProviderConfig(root.Path, policy);
+        var options = ProviderOptions();
+
+        await using (var writerProvider = BuildProvider(config, options))
+        {
+            var services = ResolveProviderServices(writerProvider, resolutionOrder);
+            var repository = services.Repository;
+            await repository.InitializeAsync();
+            _ = await repository.SaveManyAsync(CreateRecords(36));
+
+            Assert.AreSame<object>(services.Maintenance, services.Envelope);
+            Assert.IsFalse(services.Maintenance is IDisposable or IAsyncDisposable);
+            Assert.IsFalse(services.Envelope is IDisposable or IAsyncDisposable);
+            Assert.IsTrue(
+                writerProvider.GetRequiredKeyedService<IEnvelopeRepository<IProviderRecord>>(
+                    config.EnvelopeDICacheKey) is IAsyncDisposable);
+            _ = await services.Maintenance.CheckpointAsync();
+        }
+
+        var catalog = Directory.EnumerateFiles(
+            Path.Combine(root.Path, options.DirectoryName, "1.0.0", "search-indexes"),
+            "*.idbsidx").Single();
+        Assert.IsGreaterThan(128L, new FileInfo(catalog).Length);
+
+        var serializer = new CountingObjectSerializer();
+        await using var readerProvider = BuildProvider(config, options, serializer: serializer);
+        await readerProvider.GetRequiredService<IRepository<IProviderRecord>>().InitializeAsync();
+
+        Assert.AreEqual(0, serializer.DeserializeCount);
     }
 
     [TestMethod]
@@ -676,6 +984,41 @@ public sealed class SegmentCoreProviderTests
         return services.BuildServiceProvider();
     }
 
+    private static (
+        IRepository<IProviderRecord> Repository,
+        ISegmentCoreRepositoryMaintenance<IProviderRecord> Maintenance,
+        IEnvelopeRepository<IProviderRecord> Envelope) ResolveProviderServices(
+            ServiceProvider provider,
+            string resolutionOrder)
+    {
+        switch (resolutionOrder)
+        {
+            case "repository-maintenance-envelope":
+            {
+                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                return (repository, maintenance, envelope);
+            }
+            case "maintenance-envelope-repository":
+            {
+                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                return (repository, maintenance, envelope);
+            }
+            case "envelope-repository-maintenance":
+            {
+                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                return (repository, maintenance, envelope);
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(resolutionOrder));
+        }
+    }
+
     private static IEnumerable<IProviderRecord> CreateRecords(int count) =>
         Enumerable.Range(0, count).Select(index => (IProviderRecord)new ProviderRecord
         {
@@ -785,11 +1128,91 @@ public sealed class SegmentCoreProviderTests
         public void Reset() => Interlocked.Exchange(ref _deserializeCount, 0);
     }
 
+    private sealed class BlockingObjectSerializer : IObjectSerializer<IProviderRecord>, IDisposable
+    {
+        private readonly BinaryObjectSerializer<IProviderRecord> _inner = new();
+        private readonly ManualResetEventSlim _deserializeRelease = new(initialState: false);
+        private readonly TaskCompletionSource _deserializeBlocked = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _blockNextDeserialize;
+
+        public byte[] Serialize(IObjectEnvelope<IProviderRecord> envalope) => _inner.Serialize(envalope);
+
+        public IObjectEnvelope<IProviderRecord> Deserialize(byte[] data)
+        {
+            BlockIfRequested();
+            return _inner.Deserialize(data);
+        }
+
+        public ValueTask SerializeAsync(
+            IObjectEnvelope<IProviderRecord> envalope,
+            Stream destination,
+            CancellationToken cancellationToken = default)
+            => _inner.SerializeAsync(envalope, destination, cancellationToken);
+
+        public async ValueTask<IObjectEnvelope<IProviderRecord>> DeserializeAsync(
+            Stream source,
+            CancellationToken cancellationToken = default)
+        {
+            BlockIfRequested();
+            return await _inner.DeserializeAsync(source, cancellationToken);
+        }
+
+        public void BlockNextDeserialize() => Volatile.Write(ref _blockNextDeserialize, 1);
+
+        public Task WaitForBlockedDeserializeAsync() => _deserializeBlocked.Task;
+
+        public void ReleaseBlockedDeserialize() => _deserializeRelease.Set();
+
+        public void Dispose() => _deserializeRelease.Dispose();
+
+        private void BlockIfRequested()
+        {
+            if (Interlocked.CompareExchange(ref _blockNextDeserialize, 0, 1) == 0)
+            {
+                return;
+            }
+
+            _deserializeBlocked.TrySetResult();
+            if (!_deserializeRelease.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException("Timed out waiting to release the blocked hydration deserialize.");
+            }
+        }
+    }
+
     private sealed class CopyingEncryptor : IEncryptor
     {
         public byte[] Encrypt(ReadOnlySpan<byte> plain) => plain.ToArray();
 
         public byte[] Decrypt(ReadOnlySpan<byte> cipher) => cipher.ToArray();
+    }
+
+    private sealed class CheckpointFailingDurableFileSystem : IDurableFileSystem
+    {
+        public bool FailCheckpointPublication { get; set; }
+
+        public string DirectoryFlushStrategy => "checkpoint-failure test wrapper";
+
+        public void FlushFile(Microsoft.Win32.SafeHandles.SafeFileHandle handle) =>
+            PlatformDurableFileSystem.Instance.FlushFile(handle);
+
+        public void FlushDirectory(string directoryPath) =>
+            PlatformDurableFileSystem.Instance.FlushDirectory(directoryPath);
+
+        public void PublishFile(string temporaryPath, string finalPath)
+        {
+            if (FailCheckpointPublication
+                && string.Equals(Path.GetExtension(finalPath), ".idbidx", StringComparison.Ordinal))
+            {
+                throw new IOException("Injected dispose-time checkpoint publication failure.");
+            }
+
+            PlatformDurableFileSystem.Instance.PublishFile(temporaryPath, finalPath);
+        }
+
+        public void ReplaceFile(string temporaryPath, string finalPath) =>
+            PlatformDurableFileSystem.Instance.ReplaceFile(temporaryPath, finalPath);
     }
 
     private sealed class ProviderTemporaryDirectory : IDisposable

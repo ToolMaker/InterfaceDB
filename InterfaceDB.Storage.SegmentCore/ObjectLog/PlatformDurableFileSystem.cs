@@ -68,7 +68,10 @@ public sealed class PlatformDurableFileSystem : IDurableFileSystem
         ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
         if (OperatingSystem.IsWindows())
         {
-            if (!MoveFileEx(temporaryPath, finalPath, MoveFileWriteThrough))
+            if (!MoveFileEx(
+                    NormalizeWindowsPath(temporaryPath),
+                    NormalizeWindowsPath(finalPath),
+                    MoveFileWriteThrough))
             {
                 throw new IOException(
                     $"Unable to durably publish '{temporaryPath}' as '{finalPath}'.",
@@ -89,8 +92,8 @@ public sealed class PlatformDurableFileSystem : IDurableFileSystem
         if (OperatingSystem.IsWindows())
         {
             if (!MoveFileEx(
-                    temporaryPath,
-                    finalPath,
+                    NormalizeWindowsPath(temporaryPath),
+                    NormalizeWindowsPath(finalPath),
                     MoveFileReplaceExisting | MoveFileWriteThrough))
             {
                 throw new IOException(
@@ -103,6 +106,19 @@ public sealed class PlatformDurableFileSystem : IDurableFileSystem
 
         File.Move(temporaryPath, finalPath, overwrite: true);
         FlushDirectory(Path.GetDirectoryName(Path.GetFullPath(finalPath))!);
+    }
+
+    private static string NormalizeWindowsPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal))
+        {
+            return fullPath;
+        }
+
+        return fullPath.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\?\UNC\" + fullPath[2..]
+            : @"\\?\" + fullPath;
     }
 
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]

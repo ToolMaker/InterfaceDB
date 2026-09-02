@@ -143,7 +143,9 @@ public sealed record StoragePolicy
     public TimeSpan StorageChangeDebounce { get; init; } = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
-    /// Duration for which watcher events are suppressed after a local repository operation.
+    /// Reserved compatibility setting for revision-aware local watcher-echo suppression.
+    /// The file provider currently favors at-least-once delivery because a path-only
+    /// acknowledgement cannot safely distinguish a local commit from a later external commit.
     /// </summary>
     public TimeSpan LocalStorageChangeSuppression { get; init; } = TimeSpan.FromMilliseconds(750);
 

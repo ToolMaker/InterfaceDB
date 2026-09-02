@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using Idb.Libraries.Abstractions.Dtos;
@@ -57,6 +58,25 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
             {
                 _lock.ExitReadLock();
             }
+        }
+    }
+
+    internal IDisposable BeginBulkLoad()
+    {
+        ThrowIfDisposed();
+        _lock.EnterWriteLock();
+        try
+        {
+            foreach (var index in _indexes.Values)
+            {
+                index.BeginBulkLoad();
+            }
+
+            return new BulkLoadScope(this);
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
         }
     }
 
@@ -923,6 +943,36 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
         }
     }
 
+    private void CompleteBulkLoad()
+    {
+        ThrowIfDisposed();
+        _lock.EnterWriteLock();
+        try
+        {
+            Exception? completionException = null;
+            foreach (var index in _indexes.Values)
+            {
+                try
+                {
+                    index.CompleteBulkLoad();
+                }
+                catch (Exception exception)
+                {
+                    completionException ??= exception;
+                }
+            }
+
+            if (completionException is not null)
+            {
+                ExceptionDispatchInfo.Capture(completionException).Throw();
+            }
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
@@ -930,4 +980,12 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
         SearchIndexAccessPath AccessPath,
         int LeftIndex,
         int RightIndex);
+
+    private sealed class BulkLoadScope(SearchIndexStore<TContract> owner) : IDisposable
+    {
+        private SearchIndexStore<TContract>? _owner = owner;
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _owner, null)?.CompleteBulkLoad();
+    }
 }

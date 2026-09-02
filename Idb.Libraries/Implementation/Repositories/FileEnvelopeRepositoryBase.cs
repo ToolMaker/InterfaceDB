@@ -16,7 +16,11 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// <summary>
 /// Shared implementation for file-system backed envelope repositories.
 /// </summary>
-public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepository<TContract>
+public abstract class FileEnvelopeRepositoryBase<TContract> :
+    IEnvelopeRepository<TContract>,
+    IEnvelopeRepositoryInitializationStream<TContract>,
+    IDisposable,
+    IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
@@ -28,8 +32,15 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private readonly IEnvelopeStorageChangeHandler<TContract>? _storageChangeHandler;
     private readonly IFileWriteCoordinator _fileWriteCoordinator;
     private readonly StoragePolicy _storagePolicy;
+    private readonly object _initializationGate = new();
     private Func<EnvelopeStorageChange, ValueTask>? _storageChangeSubscription;
+    private Task? _initializationTask;
+    private Task? _hydrationTask;
+    private Task? _disposalTask;
     private int _storageChangeSourceStarted;
+    private int _initialized;
+    private int _hydrated;
+    private int _disposed;
 
     private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _addedSubscriptions = new();
@@ -102,15 +113,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         ArgumentNullException.ThrowIfNull(objectInstance);
 
         var isNewStorageObject = objectInstance.Envelope is null;
-        var existingLocator = objectInstance.Envelope?.Location;
-        if (!string.IsNullOrWhiteSpace(existingLocator))
-        {
-            _storageChangeSource?.AcknowledgeLocalChange(existingLocator);
-        }
-
         objectInstance = await ReaderAndWriter.Writer.WriteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         var envelope = objectInstance.Envelope ?? throw new InvalidOperationException("Object instance must have a valid envelope after writing.");
-        _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
 
         var notify = _storagePolicy.RaiseNotifications;
         if (notify)
@@ -143,11 +147,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
             var instance = materialized[index] ?? throw new ArgumentNullException(nameof(objectInstances));
             isNew[index] = instance.Envelope is null;
 
-            var existingLocator = instance.Envelope?.Location;
-            if (!string.IsNullOrWhiteSpace(existingLocator))
-            {
-                _storageChangeSource?.AcknowledgeLocalChange(existingLocator);
-            }
         }
 
         try
@@ -184,8 +183,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         ValidateEnvelopeForDelete(envelope);
         var storageKey = envelope.EnvelopeCacheKey;
         var providerLocator = envelope.Location!;
-        _storageChangeSource?.AcknowledgeLocalChange(providerLocator);
-
         bool removedActiveStorage;
         try
         {
@@ -256,7 +253,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 continue;
             }
 
-            _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
             await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
             if (isNew[index])
             {
@@ -290,7 +286,6 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 continue;
             }
 
-            _storageChangeSource?.AcknowledgeLocalChange(envelope.Location ?? string.Empty);
             await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
             if (isNew[index])
             {
@@ -520,8 +515,54 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private static string GetImplementationTypeName(Type type)
         => type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
 
-    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+        => EnsureInitializedAsync(_storagePolicy.HydrateOnInitialize, cancellationToken);
+
+    public async IAsyncEnumerable<IObjectEnvelope<TContract>> InitializeAndEnumerateAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        // Index construction materializes every live envelope below. Avoid a separate eager
+        // hydration pass, which would deserialize every payload twice for metadata-only caches.
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
+        await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return envelope;
+        }
+    }
+
+    private ValueTask EnsureInitializedAsync(
+        bool hydrateOnInitialize,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (Volatile.Read(ref _initialized) != 0
+            && (!hydrateOnInitialize || Volatile.Read(ref _hydrated) != 0))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        Task initialization;
+        lock (_initializationGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            var storageInitialization = _initializationTask ??= InitializeCoreAsync();
+            if (hydrateOnInitialize)
+            {
+                _hydrationTask ??= HydrateAfterInitializationAsync(storageInitialization);
+            }
+
+            initialization = hydrateOnInitialize ? _hydrationTask! : storageInitialization;
+        }
+
+        // Cancellation belongs to this waiter. Repository activation is shared by every caller
+        // and must not be left partially initialized when the first caller abandons its wait.
+        return new ValueTask(initialization.WaitAsync(cancellationToken));
+    }
+
+    private async Task InitializeCoreAsync()
+    {
+        var cancellationToken = CancellationToken.None;
         if (_migrationStrategy is not null && IsEagerStrategy(_migrationStrategy.StrategyType))
         {
             await using var migrationScope = await _fileWriteCoordinator
@@ -558,17 +599,53 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
                 .ConfigureAwait(false);
         }
 
-        await foreach (var _ in LoadAsync(_dataRoot, cancellationToken).ConfigureAwait(false))
+        // Arm the watcher before walking the files, but buffer its publications until the cache
+        // snapshot is installed. This closes both sides of the classic bootstrap race: changes
+        // before watcher activation are observed by the subsequent walk, while changes during
+        // the walk are replayed after it and therefore cannot be overwritten by a stale skeleton.
+        var bootstrapChangeSource = _storageChangeHandler is not null
+            ? _storageChangeSource as IFileEnvelopeStorageChangeBootstrap
+            : null;
+        if (bootstrapChangeSource is not null)
         {
+            await StartStorageChangeSourceAsync(
+                bufferBootstrapChanges: true,
+                cancellationToken).ConfigureAwait(false);
         }
 
-        var effectivePolicy = _storagePolicy;
-        if (effectivePolicy.HydrateOnInitialize)
+        List<string>? loadedProviderLocators = bootstrapChangeSource is null ? null : [];
+        await foreach (var envelope in LoadAsync(_dataRoot, cancellationToken).ConfigureAwait(false))
         {
-            await HydrateCacheAsync(cancellationToken).ConfigureAwait(false);
+            if (loadedProviderLocators is not null
+                && !string.IsNullOrWhiteSpace(envelope.Location))
+            {
+                loadedProviderLocators.Add(envelope.Location!);
+            }
         }
 
-        await StartStorageChangeSourceAsync(cancellationToken).ConfigureAwait(false);
+        if (bootstrapChangeSource is not null)
+        {
+            // Completion takes the final snapshot, replays every dirty path against current disk
+            // state, and switches to live delivery under the same callback gate.
+            await bootstrapChangeSource
+                .CompleteBootstrapAsync(loadedProviderLocators!, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await StartStorageChangeSourceAsync(
+                bufferBootstrapChanges: false,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        Volatile.Write(ref _initialized, 1);
+    }
+
+    private async Task HydrateAfterInitializationAsync(Task initialization)
+    {
+        await initialization.ConfigureAwait(false);
+        await HydrateCacheAsync(CancellationToken.None).ConfigureAwait(false);
+        Volatile.Write(ref _hydrated, 1);
     }
 
     private async IAsyncEnumerable<IObjectEnvelope<TContract>> LoadAsync(
@@ -696,7 +773,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
     private static bool IsEagerStrategy(MigrationStrategyType strategy)
         => strategy is MigrationStrategyType.EagerStrict or MigrationStrategyType.EagerTolerant;
 
-    private async ValueTask StartStorageChangeSourceAsync(CancellationToken cancellationToken)
+    private async ValueTask StartStorageChangeSourceAsync(
+        bool bufferBootstrapChanges,
+        CancellationToken cancellationToken)
     {
         if (_storageChangeSource is null
             || _storageChangeHandler is null
@@ -707,7 +786,15 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
 
         _storageChangeSubscription = HandleStorageChangeAsync;
         _storageChangeSource.Changed += _storageChangeSubscription;
-        await _storageChangeSource.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (bufferBootstrapChanges
+            && _storageChangeSource is IFileEnvelopeStorageChangeBootstrap bootstrapChangeSource)
+        {
+            await bootstrapChangeSource.StartBufferingAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await _storageChangeSource.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async ValueTask HandleStorageChangeAsync(EnvelopeStorageChange change)
@@ -757,16 +844,60 @@ public abstract class FileEnvelopeRepositoryBase<TContract> : IEnvelopeRepositor
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public ValueTask DisposeAsync()
     {
-        if (_storageChangeSource is not null)
+        Task disposal;
+        lock (_initializationGate)
         {
-            if (_storageChangeSubscription is not null)
+            if (_disposalTask is null)
             {
-                _storageChangeSource.Changed -= _storageChangeSubscription;
+                Volatile.Write(ref _disposed, 1);
+                _disposalTask = DisposeCoreAsync(_initializationTask, _hydrationTask);
             }
 
-            await _storageChangeSource.DisposeAsync().ConfigureAwait(false);
+            disposal = _disposalTask;
+        }
+
+        return new ValueTask(disposal);
+    }
+
+    private async Task DisposeCoreAsync(Task? initialization, Task? hydration)
+    {
+        await ObserveInitializationForDisposalAsync(initialization).ConfigureAwait(false);
+        if (!ReferenceEquals(hydration, initialization))
+        {
+            await ObserveInitializationForDisposalAsync(hydration).ConfigureAwait(false);
+        }
+
+        if (_storageChangeSource is null)
+        {
+            return;
+        }
+
+        if (_storageChangeSubscription is not null)
+        {
+            _storageChangeSource.Changed -= _storageChangeSubscription;
+        }
+
+        await _storageChangeSource.DisposeAsync().ConfigureAwait(false);
+    }
+
+    private static async Task ObserveInitializationForDisposalAsync(Task? initialization)
+    {
+        if (initialization is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await initialization.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The initializing caller observes activation failures. Disposal still owns cleanup.
         }
     }
 

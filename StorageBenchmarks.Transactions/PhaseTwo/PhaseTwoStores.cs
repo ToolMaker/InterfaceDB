@@ -53,7 +53,9 @@ internal sealed class SegmentCorePhaseTwoStore : IPhaseTwoStore
         }
 
         var record = PhaseZeroCodec.Decode(payload);
-        return new GateQueryResult(1, record.MaterializedChecksum);
+        var result = new GateQueryResult(1, record.MaterializedChecksum);
+        GC.KeepAlive(record);
+        return result;
     }
 
     public async ValueTask<bool> UpdateAsync(GateRecord record, CancellationToken cancellationToken = default)

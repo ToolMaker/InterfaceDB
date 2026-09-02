@@ -121,8 +121,11 @@ public static class SegmentCoreServiceCollectionExtensions
                 () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
                 sp.GetRequiredKeyedService<IEncryptor>(key),
                 sp.GetServices<IMigration>()));
+        services.TryAddKeyedSingleton<SegmentCoreRepositoryFacade<TContract>>(databaseKey, (sp, key) =>
+            new SegmentCoreRepositoryFacade<TContract>(
+                sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key)));
         services.TryAddKeyedSingleton<ISegmentCoreRepositoryMaintenance<TContract>>(databaseKey, (sp, key) =>
-            (ISegmentCoreRepositoryMaintenance<TContract>)sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key));
+            sp.GetRequiredKeyedService<SegmentCoreRepositoryFacade<TContract>>(key));
         services.TryAddKeyedSingleton<IReaderAndWriter<TContract>>(databaseKey, (sp, key) =>
             sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key).ReaderAndWriter);
         services.TryAddKeyedSingleton<IIndexManager<TContract>>(databaseKey, (sp, key) =>
@@ -153,7 +156,7 @@ public static class SegmentCoreServiceCollectionExtensions
         services.TryAddSingleton<IEnvelopeLifecycle<TContract>>(sp =>
             sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(databaseKey));
         services.TryAddSingleton<IEnvelopeRepository<TContract>>(sp =>
-            sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(databaseKey));
+            sp.GetRequiredKeyedService<SegmentCoreRepositoryFacade<TContract>>(databaseKey));
         services.TryAddSingleton<ISegmentCoreRepositoryMaintenance<TContract>>(sp =>
             sp.GetRequiredKeyedService<ISegmentCoreRepositoryMaintenance<TContract>>(databaseKey));
         services.TryAddSingleton<IReaderAndWriter<TContract>>(sp =>

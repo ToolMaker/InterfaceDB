@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.4`. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.5`. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
@@ -55,9 +55,9 @@ Android application or `FileSystem.AppDataDirectory` in .NET MAUI. Do not use th
 shared storage, removable storage, or a hard-coded `/data/...` path for an authoritative store.
 
 The Android storage path uses the same managed random-access I/O as desktop builds. SegmentCore
-also uses an Android-enabled byte-range writer lease and POSIX `fsync` for durable directory
-publication. Keep the one-writer-process boundary: two Android processes must not open the same
-live SegmentCore root.
+holds its root-owner lease and object-log writer leases for the store lifetime through exclusive
+`FileShare.None` opens and uses POSIX `fsync` for durable directory publication. Keep the
+one-writer-process boundary: two Android processes must not open the same live SegmentCore root.
 
 Recommended mobile policy:
 
@@ -118,11 +118,12 @@ Use an app-owned persistent directory. For .NET MAUI on iPhone or Mac Catalyst,
 directory for authoritative data, and do not place a live SegmentCore root in iCloud Drive or a
 shared app-group container without separately qualifying the one-writer-process boundary.
 
-.NET marks `FileStream.Lock` unsupported on macOS and iOS. SegmentCore therefore acquires its Apple
-writer lease by opening `writer.lock` with `FileShare.None`; .NET implements that exclusive Unix
-open as an advisory `flock`. The existing in-process root guard remains active. Windows, Linux, and
-Android continue to use the byte-range lock path. Do not disable .NET file locking for a root that
-could be opened by another process.
+SegmentCore acquires its lifetime root-owner lease and its object-log writer leases by opening their
+lock files with `FileShare.None` on every supported platform. On Unix, .NET implements that
+exclusive open as an advisory, open-description `flock`, so symlink or bind-mount aliases still
+contend and closing an unrelated descriptor cannot release the lease. An ordinal in-process path
+guard remains as a fast supplemental check; the filesystem lease is the identity authority. Do not
+disable .NET file locking for a root that could be opened by another process.
 
 `FileSystemWatcher` is unsupported on iOS, so InterfaceDB automatically omits it there even if
 `WatchStorageChanges` is `true`. Direct file-provider operations and explicit rescans continue to
@@ -172,6 +173,26 @@ await foreach (var person in people.SearchManyAsync(
 
 await people.DeleteAsync(saved[0]);
 ```
+
+### Repository Lifetime And Initialization
+
+Treat the built dependency-injection provider, and therefore each registered repository, as an
+application-lifetime service. Do not build a new provider or open the same SegmentCore root for each
+request or query. The keyed envelope repository is the single disposable owner of the store; the
+public repository and maintenance views share that owner.
+
+`InitializeAsync` is concurrency-safe and single-flight. Concurrent first callers share one store
+activation and one index initialization. Later calls use an already-initialized fast path; they do
+not reopen SegmentCore or rebuild the repository. Cancellation stops an individual caller from
+waiting but does not cancel the shared initialization needed by other callers. Catalog-only
+metadata activation also cannot consume a later explicit hydration request: when eager hydration
+is enabled, that later request shares one upgrade pass. Asynchronously
+dispose the service provider once, at the end of the application lifetime, so dirty derived index
+catalogs and final SegmentCore maintenance are completed in the correct order.
+
+A raw-store open benchmark intentionally measures a fresh store lifetime, such as application
+startup or process restart. It is not a per-query connection cost and should not be interpreted as
+one.
 
 One `SaveManyAsync` call is one atomic SegmentCore transaction: either every serialized envelope becomes visible or none does. A normal `SaveAsync` is an atomic one-object transaction. Transactions are scoped to one SegmentCore contract store; they are not ambient or distributed transactions across repository roots.
 
@@ -247,6 +268,8 @@ var segmentOptions = SegmentCoreRepositoryOptions
         LogOptions = new StripedObjectLogProbeOptions
         {
             StripeCount = 8,
+            HashAlgorithm = SegmentCoreHashAlgorithm.Fnv1a32,
+            HashSeed = 0,
             MaximumBatchRecords = 256,
             QueueCapacityPerStripe = 4_096,
             GroupCommitDelay = TimeSpan.FromMilliseconds(1),
@@ -276,7 +299,7 @@ setting is available through `ISegmentCoreRepositoryMaintenance<TContract>.Optio
 - storage directory, hardware-profile identity, and background-maintenance lifecycle;
 - transaction protocol, durable filesystem implementation, checkpoint generations, and WAL recycle bounds;
 - resident/paged/automatic primary-locator mode and the automatic paging threshold;
-- stripe count, queue behavior/capacity, group-commit delay, write batch/coalescing limits,
+- stripe count, persisted hash algorithm/seed, queue behavior/capacity, group-commit delay, write batch/coalescing limits,
   segment size, and flush strategy;
 - physical read parallelism, read-window size, read-gap coalescing, point-read threshold, and streaming batch size;
 - checkpoint/compaction intervals and mutation thresholds;
@@ -305,6 +328,8 @@ setting is available through `ISegmentCoreRepositoryMaintenance<TContract>.Optio
 | `PrimaryIndexOptions.Mode` | `Automatic` |
 | `PrimaryIndexOptions.AutomaticPagingMinimumEntries` | 100,000 |
 | `StripeCount` | 8 |
+| `HashAlgorithm` | `Fnv1a32` |
+| `HashSeed` | 0 |
 | `MaximumBatchRecords` | 64 |
 | `QueueCapacityPerStripe` | 1,024 |
 | `QueueFullBehavior` | `Wait` |
@@ -329,6 +354,40 @@ setting is available through `ISegmentCoreRepositoryMaintenance<TContract>.Optio
 Frame sizes, checksums, alignment, format versions, commit markers, and corruption bounds remain
 internal format invariants rather than performance options. Changing those would define a storage
 format migration, not a hardware profile.
+
+### Hash Routing Choices
+
+SegmentCore supports `Fnv1a32`, `Fnv1a64`, `XxHash64`, and `XxHash3` for assigning an object key to
+one of its bounded append stripes. `Fnv1a32` with seed zero exactly preserves the original
+`preview.3` route and manifest. The selected algorithm and seed are persisted in both low-level and
+store-format manifests. Reopen, backup, and restore validate them before mutation; changing either
+requires an explicit migration into a new store. `HashSeed` is a deterministic distribution input,
+not a password or cryptographic secret.
+
+The maintained .NET 10/Windows comparison used 500,000 keys, 16 stripes, three key shapes, zero
+allocation in every routing loop, and five real SegmentCore write/checkpoint/reopen iterations:
+
+| Algorithm | Raw routing speed vs `Fnv1a32` | End-to-end writes vs `Fnv1a32` | Guidance |
+|---|---:|---:|---|
+| `Fnv1a32` | 1.00x | 1.00x | Compatibility default and best general starting point. |
+| `Fnv1a64` | 0.96x | 0.97x | Available for controlled experiments; no measured reason to prefer it. |
+| `XxHash64` | 1.48x | 1.02x | Faster routing, but only a small storage-layer gain. |
+| `XxHash3` | 1.96x | 1.04x | Best measured opt-in candidate for routing-heavy writes. |
+
+A focused 100,000-record raw-payload confirmation measured `XxHash64` at 1.41x raw routing speed and 1.02x
+geometric-mean write throughput, while `XxHash3` reached 1.86x and 1.05x respectively. `XxHash3`
+improved writes by about 2.7% for sequential keys, 2.6% for the long common-prefix shape, and 8.7%
+for GUID keys in that run. Checkpoint and reopen results did not show one consistently superior
+algorithm. This evidence supports an opt-in choice but does not justify changing the durable
+default. Benchmark representative application keys before opting in:
+
+```powershell
+dotnet run -c Release --project StorageBenchmarks.Transactions -- `
+  --segment-core-hash-routing `
+  --routing-keys=500000 `
+  --storage-records=100000 `
+  --iterations=5
+```
 
 ## Operations And Health
 
@@ -376,7 +435,7 @@ can subscribe to:
 
 Open and operation measurements carry `transaction.protocol` and `result` tags. Stage timings add
 `stage`; storage measurements use `component`. Avoid high-cardinality values such as store paths or
-object keys in metric tags. On the maintained 100,000-object fresh-process workload, the measured
+object keys in metric tags. On the historical 100,000-record raw-payload fresh-process workload, the measured
 open stages were 43.10 ms for the primary checkpoint, 32.92 ms for WAL validation, 30.38 ms for
 object-log recovery, 8.42 ms for replay, and 10.88 ms across the two compatibility manifests. A
 prototype that overlapped WAL and object-log work made median open slower through same-device I/O
@@ -422,13 +481,13 @@ to the validated resident checkpoint. Small automatic/resident stores do not pay
 map. The raw store therefore has bounded reopen allocation, although the current InterfaceDB
 repository adapter still enumerates physical keys to seed envelope metadata and search-index state.
 
-InterfaceDB's exact, range, RadixForge prefix/suffix, and ordinal-contains structures also have a checksummed derived catalog beside the store. The catalog includes schema and primary-locator fingerprints. A warm matching catalog initializes indexes without deserializing every payload; a missing, corrupt, stale, or schema-incompatible catalog is ignored and rebuilt from authoritative objects.
+InterfaceDB's exact, range, RadixForge prefix/suffix, and ordinal-contains structures also have a checksummed derived catalog beside the store. The catalog includes schema and primary-locator fingerprints. A warm matching catalog initializes indexes without deserializing every payload; runtime types are resolved once per distinct type and contains-index compaction is deferred until bulk installation completes. A missing, corrupt, stale, or schema-incompatible catalog is ignored and rebuilt from authoritative objects.
 
 Compaction is copy-forward and interruption-safe. It rotates stripes in bounded preparation slices, copies live frames in bounded record slices, publishes two independent full checkpoints without holding the mutation barrier during file publication, retires readers briefly, and only then deletes superseded segments. Free-space admission requires enough room for another live copy plus the configured reserve. Cancellation or process termination before deletion leaves extra frames, not lost objects; a later compaction can reclaim them.
 
 ## Maintained Performance Snapshot
 
-Measurements below are local .NET 10 results from the repository's Windows/NVMe machine on 2026-08-26. Each path encodes or binds complete six-field objects, durably acknowledges writes, reopens the store, and materializes complete objects with count and checksum validation. SQLite uses WAL with `synchronous=FULL`. Results are medians of five fresh stores with 5,000 objects.
+Measurements below are local .NET 10 results from the repository's Windows/NVMe machine on 2026-08-26. Each transaction path encodes or binds complete six-field objects, durably acknowledges writes, reopens the store, and separately materializes complete objects with count and checksum validation. SQLite uses WAL with `synchronous=FULL`. Results are medians of five fresh stores with 5,000 objects. SegmentCore reopen is a provider-open metric; the SQLite counterpart is connection-open. Both stop before the separately timed materialization pass.
 
 | Atomic batch | SegmentCore explicit flush | SQLite | SegmentCore result |
 |---:|---:|---:|---:|
@@ -446,7 +505,7 @@ Measurements below are local .NET 10 results from the repository's Windows/NVMe 
 | 1,000 | 303,783 records/s | 136,790 records/s | 2.22x faster |
 | Independent durable writes | 4,368 records/s | 300 records/s | 14.54x faster |
 
-Explicit-flush checkpoints were 15.4-20.9 ms after mutation-WAL atomic workloads and 7.63 ms after already-flushed independent writes. Write-through checkpoints were 9.7-14.5 ms after atomic workloads and 7.24 ms after independent writes. SegmentCore reopened in 5.0-13.0 ms, while SQLite remained faster at 0.36-0.55 ms. Complete-object materialization remained workload-dependent once open.
+Explicit-flush checkpoints were 15.4-20.9 ms after mutation-WAL atomic workloads and 7.63 ms after already-flushed independent writes. Write-through checkpoints were 9.7-14.5 ms after atomic workloads and 7.24 ms after independent writes. SegmentCore provider-open completed in 5.0-13.0 ms, while SQLite connection-open completed in 0.36-0.55 ms. Neither reopen number includes the separately measured complete-object scan; complete-object materialization remained workload-dependent once open.
 
 When one maintenance checkpoint is amortized across 5,000 records, write-through SegmentCore
 remained 8.61x, 5.34x, 3.51x, and 1.40x faster than SQLite at batches 1, 10, 100, and 1,000.
@@ -460,12 +519,12 @@ Process termination was injected after durable commit and immediately before and
 
 ### Scale And Recovery Qualification
 
-The maintained write-through scale gate creates complete deterministic payloads, performs atomic batched ingestion, publishes a full checkpoint, proves no-op generation reuse, checksum-validates every live frame through the bounded streaming path, reopens with zero tail replay, and validates deterministic sampled reads. The latest one-million-object A/B run isolates primary-locator policy:
+The maintained write-through storage-core scale gate creates complete deterministic payloads, performs atomic batched ingestion, publishes a full checkpoint, proves no-op generation reuse, checksum-validates every live frame through the bounded streaming path, reopens with zero tail replay, and validates deterministic sampled raw-payload reads. It does not instantiate repository objects. The latest one-million-record A/B run isolates primary-locator policy:
 
-| 1,000,000 objects | Ingestion | Full checkpoint | Integrity scan | Reopen | Reopen allocation | 10,000 sampled reads |
+| 1,000,000 records | Ingestion | Full checkpoint | Integrity scan | Raw-store reopen | Reopen allocation | 10,000 sampled raw-payload reads |
 |---|---:|---:|---:|---:|---:|---:|
-| Resident locator | 286,655 objects/s | 653.2 ms | 403,335 objects/s | 927.2 ms | 139.9 MiB | 131,930 reads/s |
-| Paged locator | 278,641 objects/s | 915.2 ms | 408,379 objects/s | 42.6 ms | 25.2 MiB | 79,774 reads/s |
+| Resident locator | 286,655 records/s | 653.2 ms | 403,335 records/s | 927.2 ms | 139.9 MiB | 131,930 reads/s |
+| Paged locator | 278,641 records/s | 915.2 ms | 408,379 records/s | 42.6 ms | 25.2 MiB | 79,774 reads/s |
 
 Paging made raw-store reopen 21.8x faster and reduced reopen allocation by 82.0%. It added 262.0 ms to the full checkpoint and reduced the sampled random-read rate by 39.5%. This is why `Automatic` pages at 100,000 live entries rather than forcing one policy on every store. Resident mode also avoids writing the page-map sidecar. In both runs the unchanged checkpoint took about 1.5 ms and allocated 1,728 bytes.
 
@@ -480,9 +539,9 @@ The scale report includes live payload bytes, the runtime's managed-memory budge
 whether the dataset exceeded that budget, the reopened locator mode, and skipped WAL-prefix bytes.
 The maintained larger-than-memory qualification used `--checkpoint-every-batches` to bound retained
 WAL growth and `--require-larger-than-memory` to fail unless live payload exceeded the runtime's
-measured memory budget. It stored 34,000 one-MiB objects: 35.65 GB live versus 34.26 GB available
+measured memory budget. It stored 34,000 one-MiB raw-payload records: 35.65 GB live versus 34.26 GB available
 managed memory (1.041x), then passed final checkpoint, a 34.37-second full integrity scan, 932.8 ms
-reopen with a fully verified 755 MB retained WAL prefix, and 502.5 sampled one-MiB reads/s.
+raw-store reopen with a fully verified 755 MB retained WAL prefix, and 502.5 sampled one-MiB payload reads/s. It did not instantiate repository objects.
 
 Physical power-loss qualification is intentionally a two-boot procedure. Point `--root` at a dedicated test volume, start the writer, remove power only after acknowledged batches are reported, reboot, and run the validator against the same root:
 
@@ -491,14 +550,15 @@ dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core
 dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-power-loss-validate --root E:\InterfaceDbPowerLoss
 ```
 
-The harness uses alternating checksummed acknowledgement ledgers. Validation requires every ledger-acknowledged object and its complete deterministic payload to survive. Any records newer than the newest durable ledger must form complete fixed-size transaction batches with no missing key. A finite 20-batch/640-object two-boot rehearsal passed, but graceful process exit does not substitute for physically removing power on each supported storage/controller/filesystem combination.
+The harness uses alternating checksummed acknowledgement ledgers. Validation requires every ledger-acknowledged record and its complete deterministic payload to survive. Any records newer than the newest durable ledger must form complete fixed-size transaction batches with no missing key. A finite 20-batch/640-record two-boot rehearsal passed, but graceful process exit does not substitute for physically removing power on each supported storage/controller/filesystem combination.
 
-The automated qualification runner combines a deterministic mixed read/write/delete workload,
+The automated raw-store qualification runner combines a deterministic mixed read/write/delete workload,
 periodic checkpoints, full model comparison after reopen, integrity verification, and an injected
 ENOSPC-equivalent durability-flush failure. The latest Windows engineering run seeded 100,000
-1 KiB objects and sustained five minutes of mixed activity: 81,473,282 operations completed,
-reopen took 72.99 ms, and disk-exhaustion recovery passed. A .NET 10 Linux Docker run passed all
-93 SegmentCore tests, all 20 direct InterfaceDB unit tests, all 49 integration scenarios, and 12/12
+1 KiB payload records and sustained five minutes of mixed activity: 81,473,282 operations completed,
+provider reopen took 72.99 ms, and disk-exhaustion recovery passed. The current .NET 10 Linux Docker
+run passes all 123 SegmentCore tests, including symlink-alias ownership and shutdown-admission races,
+with zero skips. The separately maintained full gate passed all 49 integration scenarios and 12/12
 forced-termination cycles. Its full strict-durability admission nevertheless failed: SegmentCore was
 only 5.4% faster than SQLite direct at p50, below the required 15%. Docker remains virtualized evidence,
 not bare-metal Linux certification, and the performance miss is a disclosed release limitation.
@@ -512,16 +572,43 @@ persisted index catalog, restore, catalog rebuild, and complete object compariso
 exclusive slice for 18.87 ms. The verified 4,399,000-byte backup took 373.73 ms; repository reopen
 took 557.05 ms and restored-repository open with index rebuild took 357.55 ms on this machine.
 
-The current 30-second mixed-load rerun performed 12,641,604 operations, reopened in 17.91 ms, and
+The current 30-second raw-store mixed-load rerun performed 12,641,604 operations, reopened the provider in 17.91 ms, and
 passed the injected ENOSPC-equivalent recovery case. The current quick Linux run passed all 93
 SegmentCore correctness tests and all three forced-termination cycles; its 11.1% strict p50 lead
 again missed the deliberately conservative 15% virtualized performance threshold.
 
-A separate fresh-process comparison at 100,000 objects measured SegmentCore at 64,624 validated
-point reads/s versus SQLite at 31,182/s. SegmentCore fresh-process open was slower at 133.13 ms
-versus 22.75 ms. Four concurrent SQLite reader processes succeeded; SegmentCore currently permits
-one owning process per live store, so only one of four Windows workers and zero of four Linux workers
-opened the same store during a simultaneous race. Treat this as an explicit deployment boundary.
+The corrected 2026-09-02 fresh-process comparison stored the same set of 100,000 deterministic
+256-byte `PhaseZeroCodec` payloads in both engines and performed 25,000 deterministic reads per worker.
+Both sides decoded each payload, instantiated a complete six-field `GateRecord`, validated every field
+and content character, and produced the same parent-verified checksum. Across three final runs,
+median post-open throughput was 67,442 complete objects/s for SegmentCore versus 38,806/s for SQLite
+(1.74x). SQLite statement creation and preparation happened before its read timer. Median read-path
+allocation was 28.0 MB versus 42.5 MB. The older 64,624-versus-31,182 result is retained only as
+historical raw-payload evidence because that earlier harness did not instantiate objects.
+
+Median raw SegmentCore activation was 83.07 ms, down from one same-harness pre-change observation of
+103.5161 ms (19.76%). Recovery now overlaps independent checkpoint/WAL/object-log work but still
+validates the authoritative state and holds the root-owner lease from before recovery through store
+disposal. SQLite read-only connection open was 16.32 ms p50. Those open numbers stop before the first
+query and object, but they do not represent equal startup work and are not ranked against each other.
+The operating-system cache was not evicted, and the read-process SegmentCore worker captured stage
+telemetry.
+
+The separate five-run repository-lifecycle qualification measured 5,405.07 ms p50 for a deliberately
+missing catalog, with exactly 100,000 payload deserializations, and 2,172.41 ms p50 for a valid warm
+catalog, with zero payload deserializations. Time through the first fully materialized, validated
+six-field object was 5,414.12 ms and 2,243.65 ms respectively. A second
+`IRepository.InitializeAsync` in the same provider lifetime measured 0.0087 ms p50 across ten calls,
+allocated zero bytes, and performed zero deserializations. This is why the service provider and its
+singleton repository should live for the application lifetime rather than be recreated per request.
+The startup runner uses a fresh process and byte-identical store clone per sample, disables synchronous
+stage listeners by default, and does not evict the operating-system page cache.
+
+Four concurrent SQLite reader processes materialized 100,000 objects at a median aggregate 86,728 reads/s
+across the three final runs.
+SegmentCore currently permits one owning process per live store, so its same-store group qualified one
+fully materialized reader plus three explicit ownership rejections and deliberately reports no aggregate
+multi-reader throughput. Treat this as an explicit deployment boundary, not a performance result.
 
 ```powershell
 dotnet run -c Release --project StorageBenchmarks.Transactions -- `
@@ -531,6 +618,14 @@ dotnet run -c Release --project StorageBenchmarks.Transactions -- `
   --payload-bytes 1024 `
   --readers 4 `
   --output segment-core-qualification.json
+```
+
+Run the isolated repository-lifecycle qualification with:
+
+```powershell
+dotnet run -c Release --project StorageBenchmarks.Transactions -- `
+  --segment-core-startup --records=100000 --iterations=5 `
+  --worker-timeout-seconds=300 --output=segment-core-startup.json
 ```
 
 The JSON report separates `EngineeringPass` from `ProductionCertificationComplete`. Docker proves
@@ -550,6 +645,9 @@ Local report names from the final commands:
 - `segment-core-qualification-windows-5m-release-optimized.json`
 - `artifacts/phase-zero/linux-release-full-20260826.json`
 - `segment-core-read-process-release-optimized.json`
+- `artifacts/benchmark-audit/read-process-materialization-100k.json`
+- `artifacts/benchmark-audit/segment-open-final-1.json` through `segment-open-final-3.json`
+- `artifacts/benchmark-audit/segment-core-startup-cold-warm-100k-5x-final.json`
 - `segment-core-read-process-linux-latest.json`
 - `segment-core-production-pilot-full.json`
 - `segment-core-qualification-current-30s.json`
@@ -568,8 +666,8 @@ others:
    exported API surface for the reviewed `1.0` baseline, so every addition or break requires an
    explicit compatibility review and baseline update.
 2. **Storage engine format.** Every store contains a checksummed `storage-format.manifest` with
-   engine `1.0`, component versions, and router identity
-   `fnv1a-utf16le-hash-stripes-v1`. A runtime accepts the same engine major and no newer engine or
+   engine `1.0`, component versions, and its configured hash-routing identity. The original/default
+   identity is `fnv1a-utf16le-hash-stripes-v1`. A runtime accepts the same engine major and no newer engine or
    component minor than it understands. Unsupported future formats, changed routers, and corrupt
    manifests fail before mutation with `SegmentCoreCompatibilityException`. Router identity and
    transaction protocol are immutable for an existing store.

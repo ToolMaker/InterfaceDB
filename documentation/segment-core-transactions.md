@@ -170,9 +170,9 @@ The same maintained transaction workload was also run with SegmentCore's qualifi
 
 On this Windows/NVMe system, write-through leads SQLite before and after maintenance at every tested batch and reached 303,783 records/s at batch 1,000. Explicit flush reached 166,914 records/s at that batch. The durability strategy remains immutable for an existing store. An actual power cut is still required for the strongest durability claim; bare-metal Linux/NVMe measurements are lower-priority characterization before publishing results for that profile.
 
-Thresholded recycling keeps physical checkpoint maintenance bounded. A checksummed, checkpoint-bound seek sidecar skips to a retained WAL boundary only after the covered prefix is fully SHA-256 verified; corrupt or missing sidecars fall back to complete scanning. SegmentCore's latest rows reopened in 4.99-13.04 ms versus SQLite at 0.36-0.55 ms. SQLite still has the lower fixed open cost. An O(1) trust-the-boundary shortcut remains deliberately unimplemented because it would weaken that full-prefix integrity guarantee.
+Thresholded recycling keeps physical checkpoint maintenance bounded. A checksummed, checkpoint-bound seek sidecar skips to a retained WAL boundary only after the covered prefix is fully SHA-256 verified; corrupt or missing sidecars fall back to complete scanning. SegmentCore's latest rows reopened the provider in 4.99-13.04 ms versus opening SQLite in 0.36-0.55 ms. Those timings stop before the first application object is materialized, so they compare fixed provider-open cost rather than object retrieval. SQLite still has the lower fixed open cost. An O(1) trust-the-boundary shortcut remains deliberately unimplemented because it would weaken that full-prefix integrity guarantee.
 
-The segment-order cursor groups live locators into bounded 4 MiB windows, reads independent segments in parallel, validates every frame, and materializes complete payloads. The maintained 5,000-object scans took 6.02-15.65 ms with explicit flush and 6.64-17.02 ms with write-through, versus SQLite's 6.80-8.04 ms and 6.76-7.89 ms. Each engine led five of the ten operation/durability rows. Remaining differences depend on physical fragmentation and access order.
+The segment-order cursor groups live locators into bounded 4 MiB windows, reads independent segments in parallel, validates every frame, and decodes complete payloads into `GateRecord` objects. SQLite likewise maps all six columns into `GateRecord` objects. The maintained 5,000-object scans took 6.02-15.65 ms with explicit flush and 6.64-17.02 ms with write-through, versus SQLite's 6.80-8.04 ms and 6.76-7.89 ms. Each engine led five of the ten operation/durability rows. Remaining differences depend on physical fragmentation and access order.
 
 ## Incremental Checkpoints And Compaction
 
@@ -204,7 +204,7 @@ Use `--durability=write-through` to reproduce the native Windows profile.
 
 ## What The Routing Controls Showed
 
-No Radix router was implemented. The same transaction benchmark was rerun with a fixed one-, two-, four-, and eight-stripe store to isolate participant locality:
+The same transaction benchmark was rerun with a fixed one-, two-, four-, and eight-stripe SegmentCore store to isolate participant locality:
 
 | Batch | 1 stripe | 2 stripes | 4 stripes | 8 stripes |
 |---:|---:|---:|---:|---:|
@@ -212,7 +212,7 @@ No Radix router was implemented. The same transaction benchmark was rerun with a
 | 100 | 9,208/s | 8,749/s | 7,764/s | 7,611/s |
 | 1,000 | 38,114/s | 43,254/s | 43,896/s | 52,607/s |
 
-Fewer participants improve small and medium transactions by avoiding durability barriers. More stripes win for large transactions because parallel frame writes outweigh the extra participant flushes. A useful future router therefore needs adaptive locality; routing everything to one bucket is not the answer.
+Fewer participants improve small and medium transactions by avoiding durability barriers. More stripes win for large transactions because parallel frame writes outweigh the extra participant flushes. Routing everything to one bucket is therefore not a general solution.
 
 ## Recommendation And Product Boundary
 

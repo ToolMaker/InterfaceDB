@@ -651,9 +651,6 @@ internal sealed class SqlServerGateStore : IProductionGateStore
     {
         SqlConnection.ClearAllPools();
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT COUNT_BIG(*) FROM {QualifiedTable}";
-        _ = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public GateStorageStats GetStorageStats() => default;

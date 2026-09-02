@@ -50,11 +50,18 @@ internal static class SegmentCoreDiagnostics
             return;
         }
 
-        OpenStageDuration.Record(
-            Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds,
-            new KeyValuePair<string, object?>("stage", stage),
-            new KeyValuePair<string, object?>("transaction.protocol", ProtocolName(protocol)),
-            new KeyValuePair<string, object?>("result", succeeded ? "success" : "failure"));
+        try
+        {
+            OpenStageDuration.Record(
+                Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds,
+                new KeyValuePair<string, object?>("stage", stage),
+                new KeyValuePair<string, object?>("transaction.protocol", ProtocolName(protocol)),
+                new KeyValuePair<string, object?>("result", succeeded ? "success" : "failure"));
+        }
+        catch
+        {
+            // Diagnostics listeners are external observers and must not affect storage correctness.
+        }
     }
 
     internal static void RecordOperation(
@@ -67,20 +74,34 @@ internal static class SegmentCoreDiagnostics
         var result = succeeded ? "success" : "failure";
         if (OperationDuration.Enabled)
         {
-            OperationDuration.Record(
-                Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds,
-                new KeyValuePair<string, object?>("operation", operation),
-                new KeyValuePair<string, object?>("transaction.protocol", protocolName),
-                new KeyValuePair<string, object?>("result", result));
+            try
+            {
+                OperationDuration.Record(
+                    Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds,
+                    new KeyValuePair<string, object?>("operation", operation),
+                    new KeyValuePair<string, object?>("transaction.protocol", protocolName),
+                    new KeyValuePair<string, object?>("result", result));
+            }
+            catch
+            {
+                // Diagnostics listeners are external observers and must not affect storage correctness.
+            }
         }
 
         if (OperationCount.Enabled)
         {
-            OperationCount.Add(
-                1,
-                new KeyValuePair<string, object?>("operation", operation),
-                new KeyValuePair<string, object?>("transaction.protocol", protocolName),
-                new KeyValuePair<string, object?>("result", result));
+            try
+            {
+                OperationCount.Add(
+                    1,
+                    new KeyValuePair<string, object?>("operation", operation),
+                    new KeyValuePair<string, object?>("transaction.protocol", protocolName),
+                    new KeyValuePair<string, object?>("result", result));
+            }
+            catch
+            {
+                // Diagnostics listeners are external observers and must not affect storage correctness.
+            }
         }
     }
 
@@ -91,9 +112,16 @@ internal static class SegmentCoreDiagnostics
             return;
         }
 
-        StorageBytes.Record(
-            bytes,
-            new KeyValuePair<string, object?>("component", component));
+        try
+        {
+            StorageBytes.Record(
+                bytes,
+                new KeyValuePair<string, object?>("component", component));
+        }
+        catch
+        {
+            // Diagnostics listeners are external observers and must not affect storage correctness.
+        }
     }
 
     private static string ProtocolName(SegmentCoreTransactionProtocol protocol) =>

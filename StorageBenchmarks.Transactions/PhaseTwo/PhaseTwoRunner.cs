@@ -275,6 +275,9 @@ internal static class PhaseTwoRunner
                 options.Records,
                 $"phase2-{iteration}",
                 benchmarkCase.PayloadBytes);
+            var recordChecksums = records
+                .Select(static record => record.MaterializedChecksum)
+                .ToArray();
             var expected = warmupRecords
                 .Concat(records)
                 .ToDictionary(static record => record.Id, StringComparer.Ordinal);
@@ -285,7 +288,7 @@ internal static class PhaseTwoRunner
                 async index =>
                 {
                     await store.SaveAsync(records[index]).ConfigureAwait(false);
-                    return records[index].MaterializedChecksum;
+                    return recordChecksums[index];
                 }).ConfigureAwait(false));
 
             await AddCheckpointAsync(accumulators, store).ConfigureAwait(false);
@@ -299,15 +302,22 @@ internal static class PhaseTwoRunner
             }
 
             var readKeys = CreateReadKeys(expected.Keys.ToArray(), options.ReadOperations, seed: 19 + iteration);
+            var readExpectations = readKeys
+                .Select(key => new GateQueryResult(1, expected[key].MaterializedChecksum))
+                .ToArray();
             Add(accumulators, "GetWarm", await MeasureAsync(
                 readKeys.Length,
                 benchmarkCase.Concurrency,
                 async index =>
                 {
-                    var result = await store.GetAsync(readKeys[index]).ConfigureAwait(false);
-                    if (result.Count != 1)
+                    var key = readKeys[index];
+                    var result = await store.GetAsync(key).ConfigureAwait(false);
+                    var required = readExpectations[index];
+                    if (result != required)
                     {
-                        throw new InvalidDataException($"Exact read failed for '{readKeys[index]}'.");
+                        throw new InvalidDataException(
+                            $"Exact read failed for '{key}': {result.Count}/{result.Checksum}; "
+                            + $"expected {required.Count}/{required.Checksum}.");
                     }
 
                     return result.Checksum;
@@ -316,6 +326,9 @@ internal static class PhaseTwoRunner
             var updateCount = Math.Max(1, records.Length / 4);
             var updates = records.Take(updateCount)
                 .Select(record => record with { Age = record.Age + 1, Revision = 1 })
+                .ToArray();
+            var updateChecksums = updates
+                .Select(static record => record.MaterializedChecksum)
                 .ToArray();
             Add(accumulators, "Update", await MeasureAsync(
                 updates.Length,
@@ -327,7 +340,7 @@ internal static class PhaseTwoRunner
                         throw new InvalidDataException($"Update failed for '{updates[index].Id}'.");
                     }
 
-                    return updates[index].MaterializedChecksum;
+                    return updateChecksums[index];
                 }).ConfigureAwait(false));
             foreach (var update in updates)
             {
@@ -364,15 +377,22 @@ internal static class PhaseTwoRunner
                 }).ConfigureAwait(false));
 
             var reopenedKeys = CreateReadKeys(expected.Keys.ToArray(), options.ReadOperations, seed: 37 + iteration);
+            var reopenedExpectations = reopenedKeys
+                .Select(key => new GateQueryResult(1, expected[key].MaterializedChecksum))
+                .ToArray();
             Add(accumulators, "GetAfterReopen", await MeasureAsync(
                 reopenedKeys.Length,
                 benchmarkCase.Concurrency,
                 async index =>
                 {
-                    var result = await store.GetAsync(reopenedKeys[index]).ConfigureAwait(false);
-                    if (result.Count != 1)
+                    var key = reopenedKeys[index];
+                    var result = await store.GetAsync(key).ConfigureAwait(false);
+                    var required = reopenedExpectations[index];
+                    if (result != required)
                     {
-                        throw new InvalidDataException($"Post-reopen read failed for '{reopenedKeys[index]}'.");
+                        throw new InvalidDataException(
+                            $"Post-reopen read failed for '{key}': {result.Count}/{result.Checksum}; "
+                            + $"expected {required.Count}/{required.Checksum}.");
                     }
 
                     return result.Checksum;
@@ -393,7 +413,7 @@ internal static class PhaseTwoRunner
             foreach (var pair in expected)
             {
                 if (!snapshot.TryGetValue(pair.Key, out var actual)
-                    || actual.MaterializedChecksum != pair.Value.MaterializedChecksum)
+                    || actual != pair.Value)
                 {
                     throw new InvalidDataException($"Final materialized object mismatch for '{pair.Key}'.");
                 }
@@ -442,7 +462,11 @@ internal static class PhaseTwoRunner
                 case 0:
                 {
                     var record = CreateRecord(inserts++, $"mixed-new-{iteration}", payloadBytes);
-                    operations[index] = new MixedOperation(MixedKind.Insert, record.Id, record);
+                    operations[index] = new MixedOperation(
+                        MixedKind.Insert,
+                        record.Id,
+                        record,
+                        record.MaterializedChecksum);
                     expected.Add(record.Id, record);
                     break;
                 }
@@ -454,7 +478,7 @@ internal static class PhaseTwoRunner
                     }
 
                     var record = deleteCandidates[deletes++];
-                    operations[index] = new MixedOperation(MixedKind.Delete, record.Id, null);
+                    operations[index] = new MixedOperation(MixedKind.Delete, record.Id, null, 0);
                     expected.Remove(record.Id);
                     break;
                 }
@@ -464,14 +488,22 @@ internal static class PhaseTwoRunner
                     var source = updateCandidates[updates % updateCandidates.Length];
                     var updated = source with { Age = source.Age + 2, Revision = 2 + updates };
                     updates++;
-                    operations[index] = new MixedOperation(MixedKind.Update, updated.Id, updated);
+                    operations[index] = new MixedOperation(
+                        MixedKind.Update,
+                        updated.Id,
+                        updated,
+                        updated.MaterializedChecksum);
                     expected[updated.Id] = updated;
                     break;
                 }
                 default:
                 {
                     var key = liveForReads[(int)(((long)index * 7919) % liveForReads.Length)];
-                    operations[index] = new MixedOperation(MixedKind.Read, key, null);
+                    operations[index] = new MixedOperation(
+                        MixedKind.Read,
+                        key,
+                        null,
+                        0);
                     break;
                 }
             }
@@ -495,10 +527,12 @@ internal static class PhaseTwoRunner
                 return result.Checksum;
             }
             case MixedKind.Update:
-                return await store.UpdateAsync(operation.Record!).ConfigureAwait(false) ? 1 : throw new InvalidDataException("Mixed update failed.");
+                return await store.UpdateAsync(operation.Record!).ConfigureAwait(false)
+                    ? operation.ExpectedChecksum
+                    : throw new InvalidDataException("Mixed update failed.");
             case MixedKind.Insert:
                 await store.SaveAsync(operation.Record!).ConfigureAwait(false);
-                return 1;
+                return operation.ExpectedChecksum;
             case MixedKind.Delete:
                 return await store.DeleteAsync(operation.Key).ConfigureAwait(false) ? 1 : throw new InvalidDataException("Mixed delete failed.");
             default:
@@ -968,7 +1002,11 @@ internal static class PhaseTwoRunner
 
     private sealed record BenchmarkCase(StoreSpecification Specification, int PayloadBytes, int Concurrency);
 
-    private sealed record MixedOperation(MixedKind Kind, string Key, GateRecord? Record);
+    private sealed record MixedOperation(
+        MixedKind Kind,
+        string Key,
+        GateRecord? Record,
+        long ExpectedChecksum);
 
     private enum MixedKind
     {

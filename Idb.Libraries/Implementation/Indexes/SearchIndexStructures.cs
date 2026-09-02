@@ -61,6 +61,12 @@ internal sealed class PropertySearchIndex : IDisposable
         _suffix?.Dispose();
     }
 
+    internal void BeginBulkLoad()
+        => _contains?.BeginBulkLoad();
+
+    internal void CompleteBulkLoad()
+        => _contains?.CompleteBulkLoad();
+
     public void Add(object value, string physicalKey)
     {
         if (_definition.Mode.HasFlag(SearchIndexMode.Exact))
@@ -236,18 +242,28 @@ internal sealed class PropertySearchIndex : IDisposable
 
 internal sealed class AdaptiveContainsSearchIndex : IDisposable
 {
+    // InterfaceDB owns the normal threshold check so catalog installation can temporarily
+    // defer compaction without buffering values or changing their immediate visibility.
     private readonly AdaptiveGramIndex<string> _index = new(
+        new AdaptiveGramIndexOptions { AutomaticCompactionThreshold = 0 },
         itemEqualityComparer: StringComparer.Ordinal);
+    private int _bulkLoadDepth;
 
     public int Count => _index.Count;
 
     public int PendingMutationCount => _index.PendingMutationCount;
 
     public void Upsert(string value, string physicalKey)
-        => _index.Upsert(physicalKey, value);
+    {
+        _index.Upsert(physicalKey, value);
+        CompactAutomaticallyIfNeeded();
+    }
 
     public void Remove(string physicalKey)
-        => _index.Remove(physicalKey);
+    {
+        _index.Remove(physicalKey);
+        CompactAutomaticallyIfNeeded();
+    }
 
     public int EstimateCount(string substring)
         => _index.CountContaining(substring);
@@ -258,9 +274,40 @@ internal sealed class AdaptiveContainsSearchIndex : IDisposable
     public AdaptiveGramIndexCompactionResult Compact()
         => _index.Compact();
 
+    internal void BeginBulkLoad()
+    {
+        checked
+        {
+            _bulkLoadDepth++;
+        }
+    }
+
+    internal void CompleteBulkLoad()
+    {
+        if (_bulkLoadDepth <= 0)
+        {
+            throw new InvalidOperationException("No adaptive contains-index bulk load is active.");
+        }
+
+        _bulkLoadDepth--;
+        if (_bulkLoadDepth == 0)
+        {
+            _index.Compact();
+        }
+    }
+
     public void Clear() => _index.Clear();
 
     public void Dispose() => _index.Dispose();
+
+    private void CompactAutomaticallyIfNeeded()
+    {
+        if (_bulkLoadDepth == 0
+            && _index.PendingMutationCount >= AdaptiveGramIndexOptions.DefaultAutomaticCompactionThreshold)
+        {
+            _index.Compact();
+        }
+    }
 }
 
 internal sealed class RadixPrefixSearchIndex : IDisposable

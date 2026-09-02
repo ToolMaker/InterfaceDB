@@ -10,7 +10,7 @@ public static class StripedObjectLogRecovery
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         var fullRoot = Path.GetFullPath(rootDirectory);
-        var stripeCount = StripedObjectLogManifest.ReadRequired(fullRoot);
+        var stripeCount = StripedObjectLogManifest.ReadRequired(fullRoot).StripeCount;
         var records = new Dictionary<string, StripedObjectLogRecoveredRecord>(StringComparer.Ordinal);
         long repairedTailBytes = 0;
         long scannedFrames = 0;

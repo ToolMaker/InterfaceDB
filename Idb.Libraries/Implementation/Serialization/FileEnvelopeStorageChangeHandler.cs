@@ -21,6 +21,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
     private readonly StoragePolicy _storagePolicy;
     private readonly string _dataRoot;
     private readonly string _fileExtension;
+    private readonly StringComparer _pathComparer;
 
     public FileEnvelopeStorageChangeHandler(
         IDbContractConfigDto<TContract> contractConfig,
@@ -42,6 +43,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
 
         _dataRoot = Path.GetFullPath(contractConfig.DataRoot!);
         _fileExtension = contractConfig.FileExtension.NormalizeExtension();
+        _pathComparer = FileSystemPathIdentity.ResolveComparer(_dataRoot);
     }
 
     public async ValueTask<EnvelopeStorageChangeResult<TContract>> HandleAsync(
@@ -113,9 +115,9 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
 
         var envelope = await ReadCommittedEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
         envelope.Location = file.FullName;
-        envelope.EnvelopeCacheKey = string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey)
-            ? Path.GetFileNameWithoutExtension(file.Name)
-            : envelope.EnvelopeCacheKey;
+        // The file name is the provider's physical identity. Serialized metadata can be stale
+        // after an external rename/copy and must not redirect cache membership to another path.
+        envelope.EnvelopeCacheKey = Path.GetFileNameWithoutExtension(file.Name);
         envelope.VersionTag = string.IsNullOrWhiteSpace(envelope.VersionTag)
             ? ResolveVersion(file)
             : envelope.VersionTag;
@@ -205,7 +207,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
     {
         var dataRoot = new DirectoryInfo(_dataRoot);
         var directory = file.Directory;
-        while (directory is not null && !string.Equals(directory.Parent?.FullName, dataRoot.FullName, StringComparison.OrdinalIgnoreCase))
+        while (directory is not null && !_pathComparer.Equals(directory.Parent?.FullName, dataRoot.FullName))
         {
             directory = directory.Parent;
         }

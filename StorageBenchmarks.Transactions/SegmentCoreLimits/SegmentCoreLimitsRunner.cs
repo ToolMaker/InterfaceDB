@@ -289,6 +289,9 @@ internal static class SegmentCoreLimitsRunner
         SegmentCoreLimitsReport report)
     {
         var operations = Math.Max(options.Records * 4, 2_000);
+        var exactExpectations = records
+            .Select(static record => new ExactReadExpectation(record.Id, record.MaterializedChecksum))
+            .ToArray();
         report.Metrics.Add(await MeasureConcurrentAsync(
             "Warm exact read and materialization",
             "SegmentCore",
@@ -296,11 +299,20 @@ internal static class SegmentCoreLimitsRunner
             options.Concurrency,
             async index =>
             {
-                var expected = records[index % records.Count];
+                var expected = exactExpectations[index % exactExpectations.Length];
                 var payload = await segment.GetAsync(expected.Id).ConfigureAwait(false)
                     ?? throw new InvalidDataException($"Missing SegmentCore key '{expected.Id}'.");
                 var decoded = PhaseZeroCodec.Decode(payload);
-                return decoded.MaterializedChecksum;
+                var checksum = decoded.MaterializedChecksum;
+                if (checksum != expected.Checksum)
+                {
+                    throw new InvalidDataException(
+                        $"SegmentCore exact read for '{expected.Id}' returned checksum {checksum}; "
+                        + $"expected {expected.Checksum}.");
+                }
+
+                GC.KeepAlive(decoded);
+                return checksum;
             },
             collectGarbage: true).ConfigureAwait(false));
         report.Metrics.Add(await MeasureConcurrentAsync(
@@ -310,9 +322,15 @@ internal static class SegmentCoreLimitsRunner
             options.Concurrency,
             async index =>
             {
-                var result = await sqlite.QueryAsync(GateQueryKind.Exact, records[index % records.Count].Id)
+                var expected = exactExpectations[index % exactExpectations.Length];
+                var result = await sqlite.QueryAsync(GateQueryKind.Exact, expected.Id)
                     .ConfigureAwait(false);
-                return result.Count == 1 ? result.Checksum : throw new InvalidDataException("SQLite exact read failed.");
+                var required = new GateQueryResult(1, expected.Checksum);
+                return result == required
+                    ? result.Checksum
+                    : throw new InvalidDataException(
+                        $"SQLite exact read for '{expected.Id}' returned {result.Count}/{result.Checksum}; "
+                        + $"expected {required.Count}/{required.Checksum}.");
             },
             collectGarbage: true).ConfigureAwait(false));
     }
@@ -331,7 +349,7 @@ internal static class SegmentCoreLimitsRunner
             options.Iterations,
             async () =>
             {
-                var result = await ScanSegmentAsync(segment, static _ => true).ConfigureAwait(false);
+                var result = await SnapshotSegmentAsync(segment).ConfigureAwait(false);
                 RequireResult(expectedAll, result, "SegmentCore complete scan");
                 return result.Checksum;
             }).ConfigureAwait(false));
@@ -642,6 +660,29 @@ internal static class SegmentCoreLimitsRunner
         GC.KeepAlive(materialized);
         return result;
     }
+
+    private static async ValueTask<GateQueryResult> SnapshotSegmentAsync(SegmentCoreStore store)
+    {
+        var materialized = new Dictionary<string, GateRecord>(StringComparer.Ordinal);
+        foreach (var key in store.GetKeysSnapshot())
+        {
+            var payload = await store.GetAsync(key).ConfigureAwait(false)
+                ?? throw new InvalidDataException($"SegmentCore key '{key}' disappeared during scan.");
+            var record = PhaseZeroCodec.Decode(payload);
+            if (!materialized.TryAdd(record.Id, record))
+            {
+                throw new InvalidDataException($"SegmentCore scan returned duplicate id '{record.Id}'.");
+            }
+        }
+
+        var result = new GateQueryResult(
+            materialized.Count,
+            materialized.Values.Sum(static record => record.MaterializedChecksum));
+        GC.KeepAlive(materialized);
+        return result;
+    }
+
+    private readonly record struct ExactReadExpectation(string Id, long Checksum);
 
     private static async Task VerifyStoreAsync(
         SegmentCoreStore segment,

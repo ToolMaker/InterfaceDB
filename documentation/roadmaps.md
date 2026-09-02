@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The `1.0.0-preview.4` public-preview decision is complete. Virtualized Linux correctness remains
+The `1.0.0-preview.5` public-preview decision is complete. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:
@@ -47,7 +47,7 @@ Store-local atomic multi-object transaction scoping is implemented with two immu
 
 The native-Windows write-through profile benefits from contiguous batched frame writes: mutation WAL was 8.67x, 5.48x, 4.13x, and 2.22x faster than SQLite before maintenance at batches 1, 10, 100, and 1,000. Independent autocommit was 14.54x faster. Named `Portable`, `LowMemory`, `HighThroughput`, `WindowsNvme`, and `Custom` hardware profiles resolve through `StoragePolicy` into complete SegmentCore options. Durability strategy remains immutable per store; a safe adaptive dual-path design remains research work.
 
-The current file-per-object Durable path measured 7.060 ms median in the latest local quick gate, down from 15.299 ms without weakening tested recovery behavior. The remaining difference from SQLite is dominated by creating, locking, and publishing an independently recoverable object file. File discovery no longer schedules one thread-pool hop per object, and valid default file identities now avoid a redundant sanitized-key allocation.
+The current file-per-object Durable path measured 5.574 ms median in the 2026-09-02 local quick gate, down from 15.299 ms without weakening tested recovery behavior. The remaining difference from SQLite is dominated by creating, locking, and publishing an independently recoverable object file. File discovery no longer schedules one thread-pool hop per object, and valid default file identities now avoid a redundant sanitized-key allocation.
 
 The provider implementation is now packaged as `InterfaceDB.Storage.SegmentCore` and integrated behind `IEnvelopeRepository<TContract>`. It preserves the public repository/query layer, MessagePack envelopes, polymorphism, encryption hooks, notifications, and the existing exact/range/RadixForge prefix/suffix/contains index manager. Checksummed secondary-index catalogs now avoid payload hydration on a valid warm reopen and safely rebuild when stale, corrupt, or schema-incompatible. It remains opt-in and does not replace the file provider.
 
@@ -72,27 +72,29 @@ The production pass completed:
 5. Automatic checkpoint/compaction maintenance with surfaced errors and mutation watermarks.
 6. Interruption-safe copy-forward compaction with bounded record copies, bounded per-stripe preparation, two independently published recovery roots, free-space admission, and detailed pause telemetry. In the final two-update run it reclaimed 1,292.5 KiB; the longest observed exclusive slices were 15.6 ms under explicit flush and 9.9 ms under write-through.
 7. Public integrity verification and store/provider health statistics.
-8. End-to-end provider tests for bulk write, indexed query, delete, checkpoint, integrity, reopen, bounded compaction, hardware-profile resolution, precedence, validation, and every named profile's write/checkpoint/reopen path; 93 SegmentCore tests pass on Windows and in the maintained Linux container gate.
+8. End-to-end provider tests for bulk write, indexed query, delete, checkpoint, integrity, reopen, bounded compaction, hardware-profile resolution, precedence, validation, and every named profile's write/checkpoint/reopen path. The maintained suite includes lifetime-owner, symlink-alias, concurrent-initialization, and shutdown-admission regressions on both Windows and Linux.
 9. Provider-neutral hardware profiles, explicit provider-option precedence, observable effective options, and public physical read/write coalescing controls.
 10. True concurrent WAL group commit, allocation-reusing striped batch queues, no-op checkpoint generation reuse, lazy delta composition, and reclaim/maximum-size WAL recycle thresholds.
 11. Checksummed, schema-bound, primary-locator-bound secondary-index catalogs for exact, range, ordinal prefix/suffix, and ordinal contains indexes. Warm indexed startup requires no payload deserialization; stale and corrupt catalogs rebuild from authoritative objects.
-12. Bounded streaming enumeration/integrity verification, allocation-light small point reads, passing write-through gates at 100,000 and 1,000,000 objects, and a two-boot physical power-loss writer/validator harness.
+12. Bounded streaming enumeration/integrity verification, allocation-light small raw-payload point reads, passing write-through storage-core gates at 100,000 and 1,000,000 records, and a two-boot physical power-loss writer/validator harness.
 13. A checksummed retained-WAL seek boundary that reduced the prior 51-53 ms small-transaction reopen cases to 9.77-14.60 ms without making the sidecar recovery authority.
-14. Resident, paged, and automatic primary-locator modes. At one million objects the latest paged mode reopened in 42.6 ms versus 927.2 ms resident and reduced reopen allocation by 82.0%, with documented checkpoint/random-read trade-offs.
+14. Resident, paged, and automatic primary-locator modes. At one million raw records the latest paged mode reopened the raw store in 42.6 ms versus 927.2 ms resident and reduced reopen allocation by 82.0%, with documented checkpoint and raw-payload random-read trade-offs.
 15. Provider-native, explicit, source-preserving, resumable contract migration with strict/tolerant modes, target checkpointing, and integrity verification.
 16. Point-consistent online backup and non-overwriting restore with immutable-prefix capture, SHA-256 inventory, staged reopen/integrity validation, and atomic directory publication.
 17. A checksummed storage-format/router manifest, explicit `IDB4` serialization identity, public compatibility policy, and a test-enforced exported-API baseline.
 18. Automated long mixed-load and ENOSPC-equivalent durability-failure qualification plus passing .NET 10 Linux container execution.
-19. A genuine data-larger-than-memory execution with 35.65 GB live payload against a 34.26 GB managed-memory budget, periodic WAL recycling, full integrity verification, 932.8 ms checkpoint reopen with a fully verified 755 MB WAL prefix, and 502.5 one-MiB reads/s.
-20. Fresh-process and concurrent multi-process read characterization against SQLite on Windows and Linux; the results explicitly confirm the current one-owning-process-per-live-store boundary.
+19. A genuine raw-payload data-larger-than-memory execution with 35.65 GB live payload against a 34.26 GB managed-memory budget, periodic WAL recycling, full integrity verification, 932.8 ms raw-store reopen with a fully verified 755 MB WAL prefix, and 502.5 one-MiB payload reads/s. It does not instantiate repository objects.
+20. Fresh-process complete-`GateRecord` and concurrent multi-process read characterization against SQLite on Windows, plus historical Linux raw-payload characterization. The current Windows harness uses the same codec on both sides, parent-verifies every materialized object/digest, and explicitly confirms the one-owning-process-per-live-store boundary. It remains a storage-core-plus-codec result rather than an `IRepository<T>` secondary-query result.
 21. A .NET 10 JIT/CIL audit of measured hot paths. Hardware CRC32C already compiles to direct 64/32/8-bit `crc32` instructions with no calls in the hot loop; slower fused-CRC and custom-radix-sort experiments were reverted rather than shipped.
-22. Direct primitive paged-checkpoint arrays, streamed map validation, parallel authoritative/derived validation, parallel map publication, allocation-light key validation, and cached read handles/paths. The latest fresh-process point-read result is 64,624/s versus SQLite at 31,182/s.
+22. Direct primitive paged-checkpoint arrays, streamed map validation, parallel authoritative/derived validation, parallel map publication, allocation-light key validation, and cached read handles/paths. The final three-run corrected fresh-process object median measured 67,442 complete `GateRecord` objects/s versus SQLite at 38,806/s using the same payload codec and all-field validation. The earlier 64,624-versus-31,182 raw-payload result remains historical storage-core evidence only.
 23. A deterministic regression for fresh-segment combined-batch rotation, found by Linux certification, plus a corrected large-payload validator that no longer allocates a failure message for every valid byte.
 24. Listener-disabled-by-default `System.Diagnostics.Metrics` telemetry for open stages, maintenance latency/outcomes, and storage sizes, with deterministic instrument tests.
 25. Cancellation-safe online backup gate acquisition and staging cleanup, including a regression that cancels while backup waits behind checkpoint publication and then proves the compaction gate remains usable.
 26. Local-package upgrade qualification from a retained `1.0.0-preview.2` baseline through current-source mutation, checkpoint, integrity, backup, restore, and reopen.
 27. A 10,000-object, five-cycle production pilot through `IRepository<T>` and every persisted index family, plus symmetric pre/post-reclamation measurements against SQLite VACUUM.
-28. Startup stage profiling. The safe same-device parallel-open prototype was slower and was reverted; the retained instrumentation identifies checkpoint, WAL validation, and object-log recovery as the main fixed costs.
+28. Startup stage profiling with listener-disabled-by-default headline measurements and opt-in stage diagnostics.
+29. Safe overlap of independent checkpoint/WAL/object-log activation, a full-lifetime alias-safe root-owner lease, single-flight repository/index initialization, and shared concurrent disposal. The 100,000-record raw-open regression moved from one 103.5161 ms baseline observation to an 83.0657 ms three-run median while retaining full recovery validation.
+30. A fresh-process repository-lifecycle gate that separates raw activation, missing-catalog rebuild, valid-warm catalog installation, first complete object materialization, and same-lifetime repeat initialization. Runtime-type caching and one-shot contains-index compaction reduced a matched 100,000-record warm initialization by 39.78% and allocation by 60.17%; the final five-run warm median was 2,172.41 ms with zero payload deserializations, while repeat initialization was 0.0087 ms p50 with zero allocation.
 
 See [SegmentCore Storage Provider](segment-core-storage-provider.md) for the usable API and final maintained measurements.
 
@@ -100,7 +102,7 @@ See [SegmentCore Storage Provider](segment-core-storage-provider.md) for the usa
 
 Execute and retain an actual physical power cut. Docker, abrupt process-kill windows, fault
 injection, and the graceful two-boot rehearsal pass but are not substitutes for controller-level
-evidence. This does not block `1.0.0-preview.4`; it blocks the strongest durability claim and stable
+evidence. This does not block `1.0.0-preview.5`; it blocks the strongest durability claim and stable
 `1.0.0`.
 
 ### Deferred Product Decisions
@@ -110,6 +112,7 @@ evidence. This does not block `1.0.0-preview.4`; it blocks the strongest durabil
 3. Keep complete retained-WAL validation. Do not adopt the O(1) checkpoint-boundary shortcut unless a future integrity-policy decision explicitly accepts the weaker recovery guarantee.
 4. Consider an explicit detached-upsert API separately. Multiple-cardinality detached instances are inserts by design; tracked-object updates are enforced by the production pilot.
 5. Treat the 15% virtualized-Linux lead as an advisory optimization target. Correctness remains mandatory; the maintained full run led SQLite by 5.4% p50 and the latest quick run by 11.1%.
+6. Consider a compact catalog format with a runtime-type table and primitive binary values only as an explicitly versioned migration. The present format remains compatible; streaming catalog installation would mainly reduce peak memory and must preserve all-or-nothing footer validation.
 
 ### Lower-Priority External Characterization
 
@@ -141,6 +144,7 @@ Required design rules:
 ## Priority 2: Reopen And Query Fixed Costs
 
 - Extend lazy metadata beyond the completed paged raw primary locator; the repository adapter still creates one envelope skeleton per physical key.
+- Reduce valid-warm repository startup beyond the completed runtime-type cache and one-shot contains-index compaction. Profiled remaining work is dominated by installing in-memory index structures; do not merely defer it into the first query without an explicit readiness-semantics decision.
 - Evaluate a persisted catalog for the file-per-object provider so indexed startup need not deserialize every object, but only after reviewing the interface-layer responsibility with the project owner.
 - Retain full retained-WAL prefix verification unless the product explicitly approves the weaker O(1) checkpoint-boundary trust model.
 - Extend the current per-expression compiled-delegate cache to normalized, safely reusable query-plan shapes.

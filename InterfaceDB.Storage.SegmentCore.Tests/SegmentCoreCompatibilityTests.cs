@@ -65,6 +65,102 @@ public sealed class SegmentCoreCompatibilityTests
     }
 
     [TestMethod]
+    public void HashRouterIdentities_RoundTripEverySupportedAlgorithmAndSeed()
+    {
+        foreach (var algorithm in Enum.GetValues<SegmentCoreHashAlgorithm>())
+        {
+            foreach (var seed in new[] { 0L, 42L, -1L, long.MinValue, long.MaxValue })
+            {
+                var routerId = SegmentCoreHashRouter.GetRouterId(algorithm, seed);
+                Assert.IsLessThanOrEqualTo(48, Encoding.UTF8.GetByteCount(routerId), routerId);
+                Assert.IsTrue(SegmentCoreHashRouter.TryParseRouterId(routerId, out var parsed), routerId);
+                Assert.AreEqual(algorithm, parsed.Algorithm, routerId);
+                Assert.AreEqual(seed, parsed.Seed, routerId);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow(SegmentCoreHashAlgorithm.Fnv1a32, "0000000036BDBFC6")]
+    [DataRow(SegmentCoreHashAlgorithm.Fnv1a64, "B8144D83AEA7AA06")]
+    [DataRow(SegmentCoreHashAlgorithm.XxHash64, "A20C0E1A1131C5B2")]
+    [DataRow(SegmentCoreHashAlgorithm.XxHash3, "024EAEF07A54C3D0")]
+    public void HashAlgorithms_HaveStableVersionOneVectors(
+        SegmentCoreHashAlgorithm algorithm,
+        string expected)
+    {
+        var hash = SegmentCoreHashRouter.ComputeHash("InterfaceDB/key/Ω/🚀", algorithm, seed: 1729);
+        Assert.AreEqual(expected, hash.ToString("X16"));
+    }
+
+    [TestMethod]
+    public async Task StoreReopen_RejectsDifferentPersistedHashRouting()
+    {
+        using var root = new CompatibilityTemporaryDirectory();
+        var options = Options() with
+        {
+            LogOptions = Options().LogOptions with
+            {
+                HashAlgorithm = SegmentCoreHashAlgorithm.XxHash3,
+                HashSeed = 1729
+            }
+        };
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            await store.SaveAsync("key", "value"u8.ToArray());
+            _ = await store.CheckpointAsync();
+        }
+
+        await using (var reopened = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            CollectionAssert.AreEqual("value"u8.ToArray(), await reopened.GetAsync("key"));
+        }
+
+        _ = await Assert.ThrowsExactlyAsync<SegmentCoreCompatibilityException>(
+            () => SegmentCoreStore.OpenAsync(
+                root.Path,
+                options with
+                {
+                    LogOptions = options.LogOptions with
+                    {
+                        HashAlgorithm = SegmentCoreHashAlgorithm.Fnv1a32,
+                        HashSeed = 0
+                    }
+                }).AsTask());
+    }
+
+    [TestMethod]
+    public async Task BackupRestore_InfersAndPreservesNonDefaultHashRouting()
+    {
+        using var root = new CompatibilityTemporaryDirectory();
+        var source = Path.Combine(root.Path, "source");
+        var backup = Path.Combine(root.Path, "backup");
+        var restored = Path.Combine(root.Path, "restored");
+        var options = Options() with
+        {
+            LogOptions = Options().LogOptions with
+            {
+                HashAlgorithm = SegmentCoreHashAlgorithm.XxHash64,
+                HashSeed = 1729
+            }
+        };
+        await using (var store = await SegmentCoreStore.OpenAsync(source, options))
+        {
+            await store.SaveAsync("preserved", "payload"u8.ToArray());
+            _ = await store.BackupAsync(backup);
+        }
+
+        _ = await SegmentCoreStore.RestoreBackupAsync(backup, restored);
+        await using (var reopened = await SegmentCoreStore.OpenAsync(restored, options))
+        {
+            CollectionAssert.AreEqual("payload"u8.ToArray(), await reopened.GetAsync("preserved"));
+        }
+
+        _ = await Assert.ThrowsExactlyAsync<SegmentCoreCompatibilityException>(
+            () => SegmentCoreStore.OpenAsync(restored, Options()).AsTask());
+    }
+
+    [TestMethod]
     public void PublicApiSurface_MatchesTheReviewedVersionOneBaseline()
     {
         var lines = typeof(SegmentCoreStore).Assembly.ExportedTypes
@@ -75,7 +171,7 @@ public sealed class SegmentCoreCompatibilityTests
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
         Assert.AreEqual(
-            "77655B87A441457BA1B6457D8B32FCE4FDC775D00A776105F14C79E3309CB01F",
+            "3DF03F1DBB96790470B99FC3B584389A8FBA14F2F3D349ACA947BB4A0E25AF3A",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

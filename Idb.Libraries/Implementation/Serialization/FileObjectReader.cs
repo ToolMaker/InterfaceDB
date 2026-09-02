@@ -16,7 +16,6 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly IDbContractConfigDto<TContract> _contractConfig;
         private readonly StoragePolicy _storagePolicy;
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
-        private readonly IEnvelopeStorageChangeSource<TContract> _storageChangeSource;
 
         public FileObjectReader(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
@@ -32,7 +31,7 @@ namespace Idb.Libraries.Implementation.Serialization
             _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
             _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
             _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
-            _storageChangeSource = storageChangeSource ?? throw new ArgumentNullException(nameof(storageChangeSource));
+            _ = storageChangeSource ?? throw new ArgumentNullException(nameof(storageChangeSource));
         }
 
         public async Task<TContract> ReadAsync(FileInfo file, CancellationToken cancellationToken = default)
@@ -43,6 +42,10 @@ namespace Idb.Libraries.Implementation.Serialization
             var candidateKey = Path.GetFileNameWithoutExtension(file.Name);
             if (!string.IsNullOrWhiteSpace(candidateKey) && _envelopes.TryGetValue(candidateKey, out var cached) && cached is not null)
             {
+                // Cache membership is keyed by the provider locator. Keep the envelope itself
+                // canonical too, including when a strong cached object survived a file rename.
+                cached.EnvelopeCacheKey = candidateKey;
+                cached.Location = file.FullName;
                 if (StorageObjectCachePolicy.TryGetObjectInstance(cached, out var cachedInstance) && cachedInstance is not null)
                 {
                     cached.ObjectInstance = cachedInstance;
@@ -54,10 +57,9 @@ namespace Idb.Libraries.Implementation.Serialization
                 // Hydrate from disk without retaining the object unless the cache policy allows it.
                 var deserialized = await ReadEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
                 deserialized.Location = file.FullName;
-                if (string.IsNullOrWhiteSpace(deserialized.EnvelopeCacheKey))
-                {
-                    deserialized.EnvelopeCacheKey = candidateKey;
-                }
+                // The provider locator, rather than serialized metadata, owns physical identity.
+                // A copied or externally renamed payload can legitimately carry its former key.
+                deserialized.EnvelopeCacheKey = candidateKey;
 
                 if (deserialized.CacheObjectInstance)
                 {
@@ -85,10 +87,7 @@ namespace Idb.Libraries.Implementation.Serialization
             var envelope = await ReadEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
 
             envelope.Location = file.FullName;
-            if (string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey))
-            {
-                envelope.EnvelopeCacheKey = candidateKey;
-            }
+            envelope.EnvelopeCacheKey = candidateKey;
 
             return _envelopeLifecycle.Unwrap(envelope);
         }
@@ -106,15 +105,11 @@ namespace Idb.Libraries.Implementation.Serialization
             var result = rotationAwareSerializer.DeserializeForRead(payload);
             if (result.ReplacementPayload is not null)
             {
-                var replaced = await _fileWriteCoordinator.ReplaceIfUnchangedAsync(
+                _ = await _fileWriteCoordinator.ReplaceIfUnchangedAsync(
                     file.FullName,
                     payload,
                     result.ReplacementPayload,
                     cancellationToken).ConfigureAwait(false);
-                if (replaced)
-                {
-                    _storageChangeSource.AcknowledgeLocalChange(file.FullName);
-                }
             }
 
             return result.Envelope;

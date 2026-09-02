@@ -82,7 +82,7 @@ The resolved policy and options are registered in dependency injection and are a
 `ISegmentCoreRepositoryMaintenance<TContract>.StoragePolicy` and `.Options`. This makes the actual
 repository, stripe, queue, read, transaction, checkpoint, and compaction settings observable at runtime.
 
-The complete SegmentCore option graph also exposes `GroupCommitDelay`,
+The complete SegmentCore option graph also exposes `HashAlgorithm`, `HashSeed`, `GroupCommitDelay`,
 `MaximumBatchRecords`, `MaximumCombinedWriteBytes`, `WalRecycleMinimumReclaimBytes`,
 `WalMaximumBytesBeforeForcedRecycle`, `StreamingBatchRecords`, and
 `SynchronousPointReadMaximumBytes`. Keep the WAL maximum greater than or equal to its minimum
@@ -113,7 +113,12 @@ The defaults favor conservative cleanup with a five-minute stale threshold. Reco
 
 ### Watcher Settings
 
-`StorageChangeDebounce` coalesces repeated filesystem events. `LocalStorageChangeSuppression` prevents a repository from processing its own write echo. Watchers are reconciliation mechanisms, not distributed event delivery; overflow/error paths rescan the store.
+`StorageChangeDebounce` coalesces repeated filesystem events. File change delivery is currently
+at-least-once, so a local repository notification can also arrive as a watcher echo.
+`LocalStorageChangeSuppression` is retained as a compatibility placeholder for future exact-revision
+acknowledgements; a path-only acknowledgement is deliberately not used because it could hide a newer
+external commit. Watchers are reconciliation mechanisms, not distributed event delivery;
+overflow/error paths rescan the store.
 
 On Android, place `DataRoot` under the application's persistent internal files directory and set
 `WatchStorageChanges = false` unless filesystem notifications have been qualified for the target
@@ -131,12 +136,12 @@ Apple applications must also coordinate repository lifetime with application sus
 
 ### Provider Applicability
 
-The shared policy deliberately does not contain provider-format details. File buffering,
-sidecar locks, and filesystem watchers apply to the file-per-object provider. SegmentCore's
-stripe count, queue capacity, write coalescing, segment size, flush strategy, transaction
-protocol, checkpoint retention, physical read windows, and compaction controls live in
-`SegmentCoreRepositoryOptions`. The hardware profile connects the two layers without making the
-core InterfaceDB package depend on a particular storage engine.
+The shared policy deliberately does not contain provider-format details. File buffering, sidecar
+locks, and filesystem watchers apply to the file-per-object provider. SegmentCore's stripe, hash,
+queue, segment, transaction, checkpoint, read, and compaction settings live in
+`SegmentCoreRepositoryOptions`. Durable format identity cannot change after creation without
+migration. The hardware profile connects the layers without making the core InterfaceDB package
+depend on a particular storage engine.
 
 Search-index persistence is automatic for SegmentCore repositories. The derived catalog has no
 separate durability setting: it is accepted only when its checksum, contract schema, runtime-type

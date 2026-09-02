@@ -15,7 +15,7 @@ namespace Idb.Libraries.Implementation.Serialization
     {
         private static readonly ConcurrentDictionary<string, byte> _ensuredDirs = new();
         private static readonly ConcurrentDictionary<string, IdentitySemaphoreEntry> _identitySemaphores = new(
-            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            StringComparer.Ordinal);
         private IObjectSerializer<TContract> _serializer;
         private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
         private readonly SemaphoreSlim? _writeSemaphore;
@@ -25,6 +25,7 @@ namespace Idb.Libraries.Implementation.Serialization
         private readonly IFileWriteCoordinator _fileWriteCoordinator;
         private readonly IEnvelopeStorageIdentityFactory<TContract> _storageIdentityFactory;
         private readonly string _identityLockScope;
+        private readonly StringComparer _pathComparer;
 
         public FileObjectWriter(IObjectSerializer<TContract> serializer,
             IEnvelopeLifecycle<TContract> envelopeLifecycle,
@@ -43,6 +44,7 @@ namespace Idb.Libraries.Implementation.Serialization
             _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
             _identityLockScope = Path.GetFullPath(_contractConfig.DataRoot
                 ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
+            _pathComparer = FileSystemPathIdentity.ResolveComparer(_identityLockScope);
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
                 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
@@ -322,7 +324,9 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
-            var semaphoreKey = _identityLockScope + "|" + typeof(TContract).FullName + "|" + logicalKey;
+            var semaphoreKey = FileSystemPathIdentity.Normalize(
+                _identityLockScope + "|" + typeof(TContract).FullName + "|" + logicalKey,
+                _pathComparer);
 
             while (true)
             {

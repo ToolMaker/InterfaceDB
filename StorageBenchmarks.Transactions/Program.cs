@@ -22,12 +22,31 @@ using Microsoft.Extensions.DependencyInjection;
 using PerformanceCommon;
 using System.Data;
 using ContractPerson = MigrationTool.Contracts.Person.v1_0_0;
+using PersonStorage = IdbDemoStorage.Storage.Person.v1_0_0;
 
 try
 {
+    if (args.Any(argument => string.Equals(argument, "--segment-core-hash-routing", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreHashRoutingBenchmarkRunner.RunAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
     if (args.Any(argument => string.Equals(argument, "--segment-core-read-worker", StringComparison.OrdinalIgnoreCase)))
     {
         SegmentCoreReadProcessQualificationRunner.RunWorkerAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-startup-worker", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreStartupQualificationRunner.RunWorkerAsync(args).GetAwaiter().GetResult();
+        return;
+    }
+
+    if (args.Any(argument => string.Equals(argument, "--segment-core-startup", StringComparison.OrdinalIgnoreCase)))
+    {
+        SegmentCoreStartupQualificationRunner.RunAsync(args).GetAwaiter().GetResult();
         return;
     }
 
@@ -145,6 +164,12 @@ try
         return;
     }
 
+    if (args.Any(argument => string.Equals(argument, "--materialization-self-test", StringComparison.OrdinalIgnoreCase)))
+    {
+        BenchmarkMaterializationSelfTest.RunAsync().GetAwaiter().GetResult();
+        return;
+    }
+
     if (args.Any(argument => string.Equals(argument, "--planner-validate", StringComparison.OrdinalIgnoreCase)))
     {
         QueryPlannerBenchmarks.Validate();
@@ -201,6 +226,22 @@ catch (Exception ex)
     Environment.ExitCode = 1;
 }
 
+public readonly record struct BenchmarkQueryDigest(int Count, ulong HashSum, ulong HashXor)
+{
+    public BenchmarkQueryDigest Combine(BenchmarkQueryDigest other, int queryOrdinal)
+        => new(
+            checked(Count + other.Count),
+            unchecked(
+                (HashSum * 1099511628211UL)
+                ^ other.HashSum
+                ^ ((ulong)(uint)(queryOrdinal + 1) * 11400714819323198485UL)),
+            unchecked(
+                ((HashXor << 17) | (HashXor >> 47))
+                ^ other.HashXor
+                ^ ((ulong)(uint)other.Count << 32)
+                ^ (uint)(queryOrdinal + 1)));
+}
+
 [MemoryDiagnoser]
 public class TransactionBenchmarks : IDisposable
 {
@@ -217,7 +258,12 @@ public class TransactionBenchmarks : IDisposable
         DefaultBenchmarkPersonCount);
     private readonly List<ContractPerson.IPerson> _seedPersons;
     private readonly List<IIndexedBenchmarkPerson> _seedIndexedPersons;
+    private readonly BenchmarkQueryDigest _expectedQueryBatch;
+    private readonly BenchmarkQueryDigest _expectedSelectiveQueryBatch;
     private static readonly string[] QueryRoles = { "Student", "Employee" };
+    private static readonly string[] BenchmarkFirstNames = { "Alex", "Jordan", "Taylor", "Casey", "Morgan", "Riley", "Sydney", "Robin" };
+    private static readonly string[] BenchmarkDepartments = { "Engineering", "Finance", "Marketing", "Operations", "Research" };
+    private static readonly string[] BenchmarkCourses = { "Mathematics", "Physics", "Computer Science", "History", "Economics" };
 
     private ServiceProvider? _fileProvider;
     private ServiceProvider? _indexedFileProvider;
@@ -242,8 +288,14 @@ public class TransactionBenchmarks : IDisposable
 
     public TransactionBenchmarks()
     {
-        _seedPersons = PersonDataFactory.CreatePersons(_benchmarkPersonCount);
-        _seedIndexedPersons = CreateIndexedPersons(_benchmarkPersonCount);
+        _seedPersons = CreateDeterministicPersons(_benchmarkPersonCount);
+        _seedIndexedPersons = CloneIndexedPersons(_seedPersons);
+        EnsureQueryDigest(
+            "indexed seed projection",
+            DigestPersons(_seedPersons),
+            DigestIndexedPersons(_seedIndexedPersons));
+        _expectedQueryBatch = ExpectedQueryBatch();
+        _expectedSelectiveQueryBatch = ExpectedSelectiveQueryBatch();
     }
 
     public static void PrintUsage()
@@ -278,6 +330,7 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --production-gate --records=10000,100000 --duration=00:30:00 --concurrency=1,4,16 --cache=strong,weak,metadata --durability=performance,durable");
         Console.WriteLine("  Add --include-sqlserver to include the configured SQL Server alongside InterfaceDB and SQLite.");
         Console.WriteLine("  Add --include-write-ablations to isolate search-index and sidecar-lock write costs.");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --materialization-self-test");
         Console.WriteLine();
         Console.WriteLine("Run the low-level durable file-protocol probe:");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --file-protocol-probe --probe-records=200 --probe-payload-bytes=262");
@@ -296,9 +349,11 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-transactions --records=5000 --iterations=3 --batch-sizes=1,10,100,1000");
         Console.WriteLine();
         Console.WriteLine("Run the SegmentCore scale and physical power-loss qualification gates:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-hash-routing --routing-keys=250000 --storage-records=20000 --iterations=3");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-scale --records=1000000 --durability=write-through --primary-index=paged --output=segment-core-scale-1m-paged.json");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-qualification --duration-seconds=60 --records=100000 --payload-bytes=1024 --output=segment-core-qualification.json");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-read-process --records=100000 --processes=4 --reads-per-process=25000 --output=segment-core-read-process.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-startup --records=100000 --iterations=5 --worker-timeout-seconds=300 --output=segment-core-startup.json [--capture-open-stages]");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-production-pilot --quick --output=segment-core-production-pilot.json");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-power-loss-writer --root=E:\\InterfaceDbPowerLoss");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --segment-core-power-loss-validate --root=E:\\InterfaceDbPowerLoss");
@@ -850,13 +905,10 @@ public class TransactionBenchmarks : IDisposable
         _queryRepository = _fileProvider.GetRequiredService<IRepository<ContractPerson.IPerson>>();
         _queryRepository.InitializeAsync().GetAwaiter().GetResult();
         _queryRepository.SaveManyAsync(PersonDataFactory.ClonePersons(_seedPersons)).GetAwaiter().GetResult();
-        var validationCount = CountInterfaceDbMatchesAsync(_queryRepository, "Student", 20)
-            .GetAwaiter()
-            .GetResult();
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("InterfaceDB query benchmark setup produced no queryable records.");
-        }
+        EnsureQueryDigest(
+            "InterfaceDB predicate query schedule",
+            _expectedQueryBatch,
+            ExecuteFileSystemQueryBatchAsync().GetAwaiter().GetResult());
     }
 
     [GlobalSetup(Targets = new[]
@@ -891,13 +943,14 @@ public class TransactionBenchmarks : IDisposable
         _indexedQueryRepository = _indexedFileProvider.GetRequiredService<IRepository<IIndexedBenchmarkPerson>>();
         _indexedQueryRepository.InitializeAsync().GetAwaiter().GetResult();
         _indexedQueryRepository.SaveManyAsync(CloneIndexedPersons(_seedIndexedPersons)).GetAwaiter().GetResult();
-        var validationCount = CountIndexedInterfaceDbMatchesAsync(_indexedQueryRepository, "Student", 20)
-            .GetAwaiter()
-            .GetResult();
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("Indexed InterfaceDB query benchmark setup produced no queryable records.");
-        }
+        EnsureQueryDigest(
+            "InterfaceDB indexed broad query schedule",
+            _expectedQueryBatch,
+            ExecuteFileSystemSearchIndexQueryBatchAsync().GetAwaiter().GetResult());
+        EnsureQueryDigest(
+            "InterfaceDB indexed selective query schedule",
+            _expectedSelectiveQueryBatch,
+            ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().GetAwaiter().GetResult());
     }
 
     [GlobalSetup(Targets = new[] { nameof(SqlServer_QueryBatch), nameof(SqlServer_SelectiveQueryBatch) })]
@@ -921,11 +974,14 @@ public class TransactionBenchmarks : IDisposable
         bulkCopy.ColumnMappings.Add("Surname", "Surname");
         bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
         CreateSqlQueryIndexes(_sqlQueryConnection);
-        var validationCount = MaterializeSqlPersons(_sqlQueryConnection, "Student", 20).Count;
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("SQL Server query benchmark setup produced no queryable records.");
-        }
+        EnsureQueryDigest(
+            "SQL Server ADO.NET broad query schedule",
+            _expectedQueryBatch,
+            ExecuteSqlServerQueryBatch());
+        EnsureQueryDigest(
+            "SQL Server ADO.NET selective query schedule",
+            _expectedSelectiveQueryBatch,
+            ExecuteSqlServerSelectiveQueryBatch());
     }
 
     [GlobalSetup(Targets = new[] { nameof(Dapper_QueryBatch), nameof(Dapper_SelectiveQueryBatch) })]
@@ -950,11 +1006,14 @@ public class TransactionBenchmarks : IDisposable
         bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
         CreateSqlQueryIndexes(_dapperQueryConnection);
 
-        var validationCount = QueryDapperPersons(_dapperQueryConnection, "Student", 20).Count;
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("Dapper query benchmark setup produced no queryable records.");
-        }
+        EnsureQueryDigest(
+            "Dapper broad query schedule",
+            _expectedQueryBatch,
+            ExecuteDapperQueryBatch());
+        EnsureQueryDigest(
+            "Dapper selective query schedule",
+            _expectedSelectiveQueryBatch,
+            ExecuteDapperSelectiveQueryBatch());
     }
 
     [GlobalSetup(Targets = new[] { nameof(EfCore_QueryBatch), nameof(EfCore_SelectiveQueryBatch) })]
@@ -980,186 +1039,213 @@ public class TransactionBenchmarks : IDisposable
         bulkCopy.WriteToServer(CreatePersonDataTable(_seedPersons));
         CreateSqlQueryIndexes(connection);
 
-        var validationCount = QueryEfCorePersons(_efQueryOptions, "Student", 20).Count;
-        if (validationCount <= 0)
-        {
-            throw new InvalidOperationException("EF Core query benchmark setup produced no queryable records.");
-        }
+        EnsureQueryDigest(
+            "EF Core broad query schedule",
+            _expectedQueryBatch,
+            ExecuteEfCoreQueryBatch());
+        EnsureQueryDigest(
+            "EF Core selective query schedule",
+            _expectedSelectiveQueryBatch,
+            ExecuteEfCoreSelectiveQueryBatch());
     }
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + strong object cache - 100 predicate scans over configured persons")]
-    public async Task<int> FileSystem_QueryBatch_StrongObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_QueryBatch_StrongObjectCache()
         => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + metadata-only cache - 100 predicate scans over configured persons")]
-    public async Task<int> FileSystem_QueryBatch_MetadataOnly()
+    public async Task<BenchmarkQueryDigest> FileSystem_QueryBatch_MetadataOnly()
         => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + PassthroughIndexManager + weak object cache - 100 predicate scans over configured persons")]
-    public async Task<int> FileSystem_QueryBatch_WeakObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_QueryBatch_WeakObjectCache()
         => await ExecuteFileSystemQueryBatchAsync().ConfigureAwait(false);
 
-    private async Task<int> ExecuteFileSystemQueryBatchAsync()
+    private async Task<BenchmarkQueryDigest> ExecuteFileSystemQueryBatchAsync()
     {
         var repository = _queryRepository ?? throw new InvalidOperationException("File-system query repository not initialized.");
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
 
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             var role = QueryRoles[i % QueryRoles.Length];
             var minimumAge = 20 + (i % 30);
-            await foreach (var _ in repository.QueryManyAsync(person => person.Role == role && person.Age >= minimumAge))
+            var materialized = new List<ContractPerson.IPerson>();
+            await foreach (var person in repository.QueryManyAsync(person => person.Role == role && person.Age >= minimumAge))
             {
-                total++;
+                materialized.Add(person);
             }
+
+            total = total.Combine(DigestPersons(materialized), i);
+            GC.KeepAlive(materialized);
         }
 
         return total;
     }
 
     [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 materialized queries over configured persons")]
-    public int SqlServer_QueryBatch()
+    public BenchmarkQueryDigest SqlServer_QueryBatch()
+        => ExecuteSqlServerQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteSqlServerQueryBatch()
     {
         if (_sqlQueryConnection is null)
         {
             throw new InvalidOperationException("SQL Server query connection not initialized.");
         }
 
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             var role = QueryRoles[i % QueryRoles.Length];
             var minimumAge = 20 + (i % 30);
-            total += MaterializeSqlPersons(_sqlQueryConnection, role, minimumAge).Count;
+            total = total.Combine(DigestSqlPersons(MaterializeSqlPersons(_sqlQueryConnection, role, minimumAge)), i);
         }
 
         return total;
     }
 
     [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 materialized queries over configured persons")]
-    public int Dapper_QueryBatch()
+    public BenchmarkQueryDigest Dapper_QueryBatch()
+        => ExecuteDapperQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteDapperQueryBatch()
     {
         if (_dapperQueryConnection is null)
         {
             throw new InvalidOperationException("Dapper query connection not initialized.");
         }
 
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             var role = QueryRoles[i % QueryRoles.Length];
             var minimumAge = 20 + (i % 30);
-            total += QueryDapperPersons(_dapperQueryConnection, role, minimumAge).Count;
+            total = total.Combine(DigestSqlPersons(QueryDapperPersons(_dapperQueryConnection, role, minimumAge)), i);
         }
 
         return total;
     }
 
     [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 materialized queries over configured persons")]
-    public int EfCore_QueryBatch()
+    public BenchmarkQueryDigest EfCore_QueryBatch()
+        => ExecuteEfCoreQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteEfCoreQueryBatch()
     {
         var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             var role = QueryRoles[i % QueryRoles.Length];
             var minimumAge = 20 + (i % 30);
-            total += QueryEfCorePersons(options, role, minimumAge).Count;
+            total = total.Combine(DigestSqlPersons(QueryEfCorePersons(options, role, minimumAge)), i);
         }
 
         return total;
     }
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + strong object cache - 100 indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexQueryBatch_StrongObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexQueryBatch_StrongObjectCache()
         => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + metadata-only cache - 100 indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexQueryBatch_MetadataOnly()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexQueryBatch_MetadataOnly()
         => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + weak object cache - 100 indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexQueryBatch_WeakObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexQueryBatch_WeakObjectCache()
         => await ExecuteFileSystemSearchIndexQueryBatchAsync().ConfigureAwait(false);
 
-    private async Task<int> ExecuteFileSystemSearchIndexQueryBatchAsync()
+    private async Task<BenchmarkQueryDigest> ExecuteFileSystemSearchIndexQueryBatchAsync()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
 
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             var role = QueryRoles[i % QueryRoles.Length];
             var minimumAge = 20 + (i % 30);
-            await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= minimumAge))
+            var materialized = new List<IIndexedBenchmarkPerson>();
+            await foreach (var person in repository.SearchManyAsync(person => person.Role == role && person.Age >= minimumAge))
             {
-                total++;
+                materialized.Add(person);
             }
+
+            total = total.Combine(DigestIndexedPersons(materialized), i);
+            GC.KeepAlive(materialized);
         }
 
         return total;
     }
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + strong object cache - 100 selective indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexSelectiveQueryBatch_StrongObjectCache()
         => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + metadata-only cache - 100 selective indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_MetadataOnly()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexSelectiveQueryBatch_MetadataOnly()
         => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
 
     [Benchmark(Description = "InterfaceDB FileEnvelopeRepository + SearchIndexManager + weak object cache - 100 selective indexed searches over configured persons")]
-    public async Task<int> FileSystem_SearchIndexSelectiveQueryBatch_WeakObjectCache()
+    public async Task<BenchmarkQueryDigest> FileSystem_SearchIndexSelectiveQueryBatch_WeakObjectCache()
         => await ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync().ConfigureAwait(false);
 
-    private async Task<int> ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync()
+    private async Task<BenchmarkQueryDigest> ExecuteFileSystemSearchIndexSelectiveQueryBatchAsync()
     {
         var repository = _indexedQueryRepository ?? throw new InvalidOperationException("Indexed file-system query repository not initialized.");
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
 
         for (var i = 0; i < QueryRepeatCount; i++)
         {
+            var materialized = new List<IIndexedBenchmarkPerson>();
             if ((i & 1) == 0)
             {
                 var id = _seedIndexedPersons[i % _seedIndexedPersons.Count].Id;
-                await foreach (var _ in repository.SearchManyAsync(person => person.Id == id))
+                await foreach (var person in repository.SearchManyAsync(person => person.Id == id))
                 {
-                    total++;
+                    materialized.Add(person);
                 }
             }
             else
             {
                 var role = QueryRoles[i % QueryRoles.Length];
-                await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= 58))
+                await foreach (var person in repository.SearchManyAsync(person => person.Role == role && person.Age >= 58))
                 {
-                    total++;
+                    materialized.Add(person);
                 }
             }
+
+            total = total.Combine(DigestIndexedPersons(materialized), i);
+            GC.KeepAlive(materialized);
         }
 
         return total;
     }
 
     [Benchmark(Description = "SQL Server ADO.NET + SQL indexes - 100 selective materialized queries over configured persons")]
-    public int SqlServer_SelectiveQueryBatch()
+    public BenchmarkQueryDigest SqlServer_SelectiveQueryBatch()
+        => ExecuteSqlServerSelectiveQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteSqlServerSelectiveQueryBatch()
     {
         if (_sqlQueryConnection is null)
         {
             throw new InvalidOperationException("SQL Server query connection not initialized.");
         }
 
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             if ((i & 1) == 0)
             {
                 var id = _seedPersons[i % _seedPersons.Count].Id;
-                total += MaterializeSqlPersonById(_sqlQueryConnection, id).Count;
+                total = total.Combine(DigestSqlPersons(MaterializeSqlPersonById(_sqlQueryConnection, id)), i);
             }
             else
             {
                 var role = QueryRoles[i % QueryRoles.Length];
-                total += MaterializeSqlPersons(_sqlQueryConnection, role, 58).Count;
+                total = total.Combine(DigestSqlPersons(MaterializeSqlPersons(_sqlQueryConnection, role, 58)), i);
             }
         }
 
@@ -1167,25 +1253,28 @@ public class TransactionBenchmarks : IDisposable
     }
 
     [Benchmark(Description = "Dapper SQL Server + SQL indexes - 100 selective materialized queries over configured persons")]
-    public int Dapper_SelectiveQueryBatch()
+    public BenchmarkQueryDigest Dapper_SelectiveQueryBatch()
+        => ExecuteDapperSelectiveQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteDapperSelectiveQueryBatch()
     {
         if (_dapperQueryConnection is null)
         {
             throw new InvalidOperationException("Dapper query connection not initialized.");
         }
 
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             if ((i & 1) == 0)
             {
                 var id = _seedPersons[i % _seedPersons.Count].Id;
-                total += QueryDapperPersonById(_dapperQueryConnection, id).Count;
+                total = total.Combine(DigestSqlPersons(QueryDapperPersonById(_dapperQueryConnection, id)), i);
             }
             else
             {
                 var role = QueryRoles[i % QueryRoles.Length];
-                total += QueryDapperPersons(_dapperQueryConnection, role, 58).Count;
+                total = total.Combine(DigestSqlPersons(QueryDapperPersons(_dapperQueryConnection, role, 58)), i);
             }
         }
 
@@ -1193,21 +1282,24 @@ public class TransactionBenchmarks : IDisposable
     }
 
     [Benchmark(Description = "Entity Framework Core SQL Server + SQL indexes - 100 selective materialized queries over configured persons")]
-    public int EfCore_SelectiveQueryBatch()
+    public BenchmarkQueryDigest EfCore_SelectiveQueryBatch()
+        => ExecuteEfCoreSelectiveQueryBatch();
+
+    private BenchmarkQueryDigest ExecuteEfCoreSelectiveQueryBatch()
     {
         var options = _efQueryOptions ?? throw new InvalidOperationException("EF Core query options not initialized.");
-        var total = 0;
+        var total = default(BenchmarkQueryDigest);
         for (var i = 0; i < QueryRepeatCount; i++)
         {
             if ((i & 1) == 0)
             {
                 var id = _seedPersons[i % _seedPersons.Count].Id;
-                total += QueryEfCorePersonById(options, id).Count;
+                total = total.Combine(DigestSqlPersons(QueryEfCorePersonById(options, id)), i);
             }
             else
             {
                 var role = QueryRoles[i % QueryRoles.Length];
-                total += QueryEfCorePersons(options, role, 58).Count;
+                total = total.Combine(DigestSqlPersons(QueryEfCorePersons(options, role, 58)), i);
             }
         }
 
@@ -1452,32 +1544,161 @@ public class TransactionBenchmarks : IDisposable
         command.ExecuteNonQuery();
     }
 
-    private static async Task<int> CountInterfaceDbMatchesAsync(
-        IRepository<ContractPerson.IPerson> repository,
-        string role,
-        int minimumAge)
+    private BenchmarkQueryDigest ExpectedQueryBatch()
     {
-        var count = 0;
-        await foreach (var _ in repository.QueryManyAsync(person => person.Role == role && person.Age >= minimumAge))
+        var total = default(BenchmarkQueryDigest);
+        for (var i = 0; i < QueryRepeatCount; i++)
         {
-            count++;
+            var role = QueryRoles[i % QueryRoles.Length];
+            var minimumAge = 20 + (i % 30);
+            var materialized = _seedPersons
+                .Where(person => person.Role == role && person.Age >= minimumAge)
+                .ToList();
+            total = total.Combine(DigestPersons(materialized), i);
+            GC.KeepAlive(materialized);
         }
 
-        return count;
+        return total;
     }
 
-    private static async Task<int> CountIndexedInterfaceDbMatchesAsync(
-        IRepository<IIndexedBenchmarkPerson> repository,
-        string role,
-        int minimumAge)
+    private BenchmarkQueryDigest ExpectedSelectiveQueryBatch()
     {
-        var count = 0;
-        await foreach (var _ in repository.SearchManyAsync(person => person.Role == role && person.Age >= minimumAge))
+        var total = default(BenchmarkQueryDigest);
+        for (var i = 0; i < QueryRepeatCount; i++)
         {
-            count++;
+            List<ContractPerson.IPerson> materialized;
+            if ((i & 1) == 0)
+            {
+                var id = _seedPersons[i % _seedPersons.Count].Id;
+                materialized = _seedPersons.Where(person => person.Id == id).ToList();
+            }
+            else
+            {
+                var role = QueryRoles[i % QueryRoles.Length];
+                materialized = _seedPersons
+                    .Where(person => person.Role == role && person.Age >= 58)
+                    .ToList();
+            }
+
+            total = total.Combine(DigestPersons(materialized), i);
+            GC.KeepAlive(materialized);
         }
 
-        return count;
+        return total;
+    }
+
+    private static void EnsureQueryDigest(
+        string scenario,
+        BenchmarkQueryDigest expected,
+        BenchmarkQueryDigest actual)
+    {
+        if (expected.Count <= 0)
+        {
+            throw new InvalidOperationException($"{scenario} has an empty expected query schedule.");
+        }
+
+        if (actual != expected)
+        {
+            throw new InvalidOperationException(
+                $"{scenario} materialized {actual.Count} rows with digest {actual.HashSum:X16}/{actual.HashXor:X16}; "
+                + $"expected {expected.Count} rows with digest {expected.HashSum:X16}/{expected.HashXor:X16}.");
+        }
+    }
+
+    private static BenchmarkQueryDigest DigestPersons(IReadOnlyCollection<ContractPerson.IPerson> persons)
+    {
+        var digest = DigestPersons(
+            persons,
+            static person => person.Id,
+            static person => person.Name,
+            static person => person.Age,
+            static person => person.Role);
+        GC.KeepAlive(persons);
+        return digest;
+    }
+
+    private static BenchmarkQueryDigest DigestIndexedPersons(IReadOnlyCollection<IIndexedBenchmarkPerson> persons)
+    {
+        var digest = DigestPersons(
+            persons,
+            static person => person.Id,
+            static person => person.Name,
+            static person => person.Age,
+            static person => person.Role);
+        GC.KeepAlive(persons);
+        return digest;
+    }
+
+    private static BenchmarkQueryDigest DigestSqlPersons(IReadOnlyCollection<DapperPersonEnvelope> persons)
+    {
+        var digest = DigestPersons(
+            persons,
+            static person => person.Id,
+            static person => person.Name,
+            static person => person.Age,
+            static person => person.Role);
+        GC.KeepAlive(persons);
+        return digest;
+    }
+
+    private static BenchmarkQueryDigest DigestPersons<T>(
+        IReadOnlyCollection<T> persons,
+        Func<T, Guid> id,
+        Func<T, string> name,
+        Func<T, int> age,
+        Func<T, string> role)
+    {
+        ulong hashSum = 0;
+        ulong hashXor = 0;
+        foreach (var person in persons)
+        {
+            var personHash = HashPerson(id(person), name(person), age(person), role(person));
+            hashSum = unchecked(hashSum + personHash);
+            hashXor ^= personHash;
+        }
+
+        return new BenchmarkQueryDigest(persons.Count, hashSum, hashXor);
+    }
+
+    private static ulong HashPerson(Guid id, string name, int age, string role)
+    {
+        const ulong offsetBasis = 14695981039346656037UL;
+        var hash = offsetBasis;
+        Span<byte> idBytes = stackalloc byte[16];
+        id.TryWriteBytes(idBytes);
+        foreach (var value in idBytes)
+        {
+            MixHashByte(ref hash, value);
+        }
+
+        MixHashString(ref hash, name);
+        MixHashInt32(ref hash, age);
+        MixHashString(ref hash, role);
+        return hash;
+    }
+
+    private static void MixHashString(ref ulong hash, string value)
+    {
+        MixHashInt32(ref hash, value.Length);
+        foreach (var character in value)
+        {
+            MixHashByte(ref hash, unchecked((byte)character));
+            MixHashByte(ref hash, unchecked((byte)(character >> 8)));
+        }
+    }
+
+    private static void MixHashInt32(ref ulong hash, int value)
+    {
+        MixHashByte(ref hash, unchecked((byte)value));
+        MixHashByte(ref hash, unchecked((byte)(value >> 8)));
+        MixHashByte(ref hash, unchecked((byte)(value >> 16)));
+        MixHashByte(ref hash, unchecked((byte)(value >> 24)));
+    }
+
+    private static void MixHashByte(ref ulong hash, byte value)
+    {
+        const ulong prime = 1099511628211UL;
+        hash = unchecked((hash ^ value) * prime);
     }
 
     private static List<DapperPersonEnvelope> MaterializeSqlPersons(
@@ -1487,7 +1708,7 @@ public class TransactionBenchmarks : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id, Name, Age, Role, Surname
+            SELECT Id, Name, Age, Role
             FROM dbo.Persons
             WHERE Role = @role AND Age >= @minimumAge
             """;
@@ -1503,8 +1724,7 @@ public class TransactionBenchmarks : IDisposable
                 Id = reader.GetGuid(0),
                 Name = reader.GetString(1),
                 Age = reader.GetInt32(2),
-                Role = reader.GetString(3),
-                Surname = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+                Role = reader.GetString(3)
             });
         }
 
@@ -1517,7 +1737,7 @@ public class TransactionBenchmarks : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id, Name, Age, Role, Surname
+            SELECT Id, Name, Age, Role
             FROM dbo.Persons
             WHERE Id = @id
             """;
@@ -1532,8 +1752,7 @@ public class TransactionBenchmarks : IDisposable
                 Id = reader.GetGuid(0),
                 Name = reader.GetString(1),
                 Age = reader.GetInt32(2),
-                Role = reader.GetString(3),
-                Surname = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+                Role = reader.GetString(3)
             });
         }
 
@@ -1546,7 +1765,7 @@ public class TransactionBenchmarks : IDisposable
         int minimumAge)
     {
         const string sql = """
-            SELECT Id, Name, Age, Role, Surname
+            SELECT Id, Name, Age, Role
             FROM dbo.Persons
             WHERE Role = @Role AND Age >= @MinimumAge
             """;
@@ -1562,7 +1781,7 @@ public class TransactionBenchmarks : IDisposable
         Guid id)
     {
         const string sql = """
-            SELECT Id, Name, Age, Role, Surname
+            SELECT Id, Name, Age, Role
             FROM dbo.Persons
             WHERE Id = @Id
             """;
@@ -1573,7 +1792,7 @@ public class TransactionBenchmarks : IDisposable
             .AsList();
     }
 
-    private static List<TransactionPersonEntity> QueryEfCorePersons(
+    private static List<DapperPersonEnvelope> QueryEfCorePersons(
         DbContextOptions<TransactionBenchDbContext> options,
         string role,
         int minimumAge)
@@ -1582,10 +1801,17 @@ public class TransactionBenchmarks : IDisposable
         return context.Persons
             .AsNoTracking()
             .Where(person => person.Role == role && person.Age >= minimumAge)
+            .Select(person => new DapperPersonEnvelope
+            {
+                Id = person.Id,
+                Name = person.Name,
+                Age = person.Age,
+                Role = person.Role
+            })
             .ToList();
     }
 
-    private static List<TransactionPersonEntity> QueryEfCorePersonById(
+    private static List<DapperPersonEnvelope> QueryEfCorePersonById(
         DbContextOptions<TransactionBenchDbContext> options,
         Guid id)
     {
@@ -1593,6 +1819,13 @@ public class TransactionBenchmarks : IDisposable
         return context.Persons
             .AsNoTracking()
             .Where(person => person.Id == id)
+            .Select(person => new DapperPersonEnvelope
+            {
+                Id = person.Id,
+                Name = person.Name,
+                Age = person.Age,
+                Role = person.Role
+            })
             .ToList();
     }
 
@@ -1613,10 +1846,48 @@ public class TransactionBenchmarks : IDisposable
         return table;
     }
 
-    private static List<IIndexedBenchmarkPerson> CreateIndexedPersons(int count)
+    private static List<ContractPerson.IPerson> CreateDeterministicPersons(int count)
     {
-        var source = PersonDataFactory.CreatePersons(count);
-        return CloneIndexedPersons(source);
+        var persons = new List<ContractPerson.IPerson>(count);
+        for (var ordinal = 0; ordinal < count; ordinal++)
+        {
+            var sample = MixDeterministic(unchecked((ulong)(uint)ordinal + 0xA0761D6478BD642FUL));
+            var id = CreateDeterministicGuid(ordinal);
+            var name = $"{BenchmarkFirstNames[sample % (uint)BenchmarkFirstNames.Length]} "
+                + BenchmarkFirstNames[(sample >> 8) % (uint)BenchmarkFirstNames.Length];
+            var age = 18 + (int)((sample >> 16) % 42);
+            persons.Add((ordinal & 1) == 0
+                ? new PersonStorage.Student(id, name, age, BenchmarkCourses[(sample >> 24) % (uint)BenchmarkCourses.Length])
+                : new PersonStorage.Employee(id, name, age, BenchmarkDepartments[(sample >> 24) % (uint)BenchmarkDepartments.Length]));
+        }
+
+        return persons;
+    }
+
+    private static Guid CreateDeterministicGuid(int ordinal)
+    {
+        var first = MixDeterministic(unchecked((ulong)(uint)ordinal + 0xE7037ED1A0B428DBUL));
+        var second = MixDeterministic(first);
+        return new Guid(
+            unchecked((int)first),
+            unchecked((short)(first >> 32)),
+            unchecked((short)(first >> 48)),
+            unchecked((byte)second),
+            unchecked((byte)(second >> 8)),
+            unchecked((byte)(second >> 16)),
+            unchecked((byte)(second >> 24)),
+            unchecked((byte)(second >> 32)),
+            unchecked((byte)(second >> 40)),
+            unchecked((byte)(second >> 48)),
+            unchecked((byte)(second >> 56)));
+    }
+
+    private static ulong MixDeterministic(ulong value)
+    {
+        value = unchecked(value + 0x9E3779B97F4A7C15UL);
+        value = unchecked((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL);
+        value = unchecked((value ^ (value >> 27)) * 0x94D049BB133111EBUL);
+        return value ^ (value >> 31);
     }
 
     private static List<IIndexedBenchmarkPerson> CloneIndexedPersons(IEnumerable<ContractPerson.IPerson> source)

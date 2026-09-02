@@ -1,8 +1,10 @@
 # Production Benchmark And Stress Gate
 
 The production gate is the repeatable decision point for InterfaceDB performance,
-concurrency, durability, and embedded-database positioning. It compares equivalent
-materialized query results instead of timing only index candidate generation.
+concurrency, durability, and embedded-database positioning. Its query cases compare
+complete application objects instead of timing only index candidates or SQL scalar
+values. Provider-open and raw storage-core cases have different boundaries and are
+labelled separately.
 
 The latest curated development snapshot is in [Current Performance Results](performance-results.md). Generated gate reports under `TestResults` are deliberately ignored.
 
@@ -17,8 +19,8 @@ The gate runs the same deterministic records through:
 Every engine is tested for:
 
 - object-per-operation seed throughput, latency, and allocation;
-- process/repository reopen time;
-- InterfaceDB in-memory index reconstruction during reopen;
+- provider-specific startup time: InterfaceDB object deserialization and in-memory
+  index reconstruction versus relational connection-open, before a separate query;
 - exact, range, prefix, suffix, literal substring, and broad conjunction queries;
 - complete record materialization, with count and checksum validation;
 - mixed concurrent reads, inserts, updates, and deletes;
@@ -38,11 +40,21 @@ objects only after materialization completes, and `GC.KeepAlive` keeps the list
 observable through the end of the operation.
 
 InterfaceDB likewise retains every returned `IProductionGateRecord` in a result
-list and touches every property after enumeration. StrongObject mode measures the
-product's intended object-cache benefit; MetadataOnly separately measures file
-read, deserialization, and object hydration. SQL `WHERE` evaluation remains inside
-the SQL engine, just as InterfaceDB index candidate evaluation remains inside its
-index manager; only matching result objects cross the application boundary.
+list and touches every property after enumeration. SQL `WHERE` evaluation remains
+inside the SQL engine, just as InterfaceDB index candidate evaluation remains inside
+its index manager; only matching result objects cross the application boundary.
+
+Cache mode is part of the comparison contract. InterfaceDB's startup index rebuild
+deserializes all stored records and, in `StrongObject` mode, retains them before the
+post-startup validation and timed queries. Those query rows therefore reuse live
+InterfaceDB object instances while SQL still constructs a new `GateRecord` for every
+returned row.
+Those rows represent legitimate hot application-cache behavior, but they are not the
+canonical storage-to-new-object comparison. `MetadataOnly` is canonical for fresh
+managed materialization because every InterfaceDB result is read and deserialized
+again. The operating-system page cache can still be warm in that mode; a physical
+cold-media claim requires a separately controlled cold-cache run. `WeakObject` is an
+opportunistic-cache profile and must not be presented as deterministically hot or cold.
 
 The mixed workload is 70% reads, 15% inserts, 10% updates, and 5% deletes.
 Latency sampling uses bounded per-worker reservoir samples so a long soak does not
@@ -84,6 +96,14 @@ and SQLite FULL durability:
 The command writes both JSON and Markdown reports. It exits non-zero for query
 equivalence errors, stress exceptions, final-data differences, crash-recovery
 failures, or configured baseline regressions.
+
+The default quick run is a correctness/regression smoke and deliberately exercises
+the hot `StrongObject` profile. For the canonical fresh-object comparison, run:
+
+```powershell
+.\Scripts\Test-ProductionGate.ps1 -Quick -Cache metadata `
+  -Output TestResults\production-gate-quick-metadata.json
+```
 
 ## Production Soak Matrix
 
@@ -153,6 +173,10 @@ Only metrics with the same engine, record count, cache mode, durability mode, an
 operation are compared. Keep hardware, power plan, runtime, storage device, and
 background workload stable when enforcing a performance baseline.
 
+Each report also carries a versioned materialization contract. A baseline created
+before the current six-field FNV object sink is rejected instead of being silently
+compared with a different timed workload; regenerate it with the current benchmark code.
+
 ## Durability And Crash-Recovery Policy
 
 The gate's InterfaceDB profile explicitly uses:
@@ -178,10 +202,15 @@ suffixes and should not be emitted directly by a custom identity factory.
 
 ## Cold Versus Warm
 
-`reopen-and-index-rebuild-os-cache-warm` closes and reconstructs the database
-provider. It measures InterfaceDB catalog/index reconstruction and SQLite reopen,
-but it does not flush the operating-system disk cache. A true cold-disk run must
-be performed after a machine restart or with an independently controlled cache
+`provider-specific-startup-os-cache-warm-pre-query` closes and reconstructs the
+database provider. InterfaceDB enumerates and deserializes the stored objects while
+rebuilding its catalog and indexes; in `StrongObject` mode that startup work also
+populates the strong object cache. The corresponding SQLite or SQL Server measurement
+only reopens a connection and executes no row query. The metric ends before any
+separately issued result query, so it is a deliberately provider-specific startup
+comparison rather than an equal-work object-query comparison. It also does not flush
+the operating-system disk cache. A true cold-disk run
+must be performed after a machine restart or with an independently controlled cache
 procedure and must be reported separately.
 
 ## Automated Wrapper

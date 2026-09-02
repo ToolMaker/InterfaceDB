@@ -1,6 +1,8 @@
 using Idb.Storage.SegmentCore;
 using Idb.Storage.SegmentCore.ObjectLog;
 using Microsoft.Win32.SafeHandles;
+using System.Diagnostics;
+using System.Reflection;
 
 namespace Idb.Storage.SegmentCore.Tests;
 
@@ -604,6 +606,275 @@ public sealed class SegmentCoreStoreTests
         CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("before-checkpoint"));
         CollectionAssert.AreEqual(Payload(2, 64), await reopened.GetAsync("after-checkpoint"));
         Assert.AreEqual(1, reopened.Statistics.TailRecordsReplayed);
+    }
+
+    [TestMethod]
+    public async Task MutationWal_CheckpointWithoutTailReopensWithoutReplayAndRemainsWritable()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 4);
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            await store.SaveAsync("checkpointed", Payload(1, 64));
+            _ = await store.CheckpointAsync();
+        }
+
+        await using (var reopened = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            Assert.AreEqual(1L, reopened.Statistics.CheckpointGeneration);
+            Assert.AreEqual(0, reopened.Statistics.TailRecordsReplayed);
+            CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("checkpointed"));
+            await reopened.SaveAsync("after-reopen", Payload(2, 64));
+        }
+
+        await using var final = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(Payload(1, 64), await final.GetAsync("checkpointed"));
+        CollectionAssert.AreEqual(Payload(2, 64), await final.GetAsync("after-reopen"));
+    }
+
+    [TestMethod]
+    public async Task MutationWal_OwnerLeaseRejectsConcurrentOpenBeforeAndAfterCheckpoint()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 4);
+        var owner = await SegmentCoreStore.OpenAsync(root.Path, options);
+        try
+        {
+            _ = await Assert.ThrowsExactlyAsync<IOException>(
+                () => SegmentCoreStore.OpenAsync(root.Path, options).AsTask());
+
+            await owner.SaveAsync("owned", Payload(1, 64));
+            _ = await owner.CheckpointAsync();
+            _ = await Assert.ThrowsExactlyAsync<IOException>(
+                () => SegmentCoreStore.OpenAsync(root.Path, options).AsTask());
+            CollectionAssert.AreEqual(Payload(1, 64), await owner.GetAsync("owned"));
+        }
+        finally
+        {
+            await owner.DisposeAsync();
+        }
+
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("owned"));
+    }
+
+    [TestMethod]
+    public async Task CommitJournal_OwnerLeaseRejectsConcurrentOpenAndReleasesOnDispose()
+    {
+        using var root = new TemporaryDirectory();
+        var options = Options(stripes: 4, segmentBytes: 1024 * 1024);
+        var owner = await SegmentCoreStore.OpenAsync(root.Path, options);
+        try
+        {
+            await owner.SaveAsync("owned", Payload(1, 64));
+            _ = await Assert.ThrowsExactlyAsync<IOException>(
+                () => SegmentCoreStore.OpenAsync(root.Path, options).AsTask());
+            CollectionAssert.AreEqual(Payload(1, 64), await owner.GetAsync("owned"));
+        }
+        finally
+        {
+            await owner.DisposeAsync();
+        }
+
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("owned"));
+    }
+
+    [TestMethod]
+    public async Task OwnerLeaseRejectsSymlinkAliasAndReopensThroughAliasAfterDispose()
+    {
+        using var root = new TemporaryDirectory();
+        var alias = root.Path + "-alias";
+        try
+        {
+            try
+            {
+                _ = Directory.CreateSymbolicLink(alias, root.Path);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                                              or IOException
+                                              or PlatformNotSupportedException
+                                              or NotSupportedException)
+            {
+                Assert.Inconclusive($"Directory symlinks are unavailable: {exception.Message}");
+                return;
+            }
+
+            var options = WalOptions(stripes: 4);
+            var owner = await SegmentCoreStore.OpenAsync(root.Path, options);
+            try
+            {
+                await owner.SaveAsync("aliased", Payload(1, 64));
+                _ = await Assert.ThrowsExactlyAsync<IOException>(
+                    () => SegmentCoreStore.OpenAsync(alias, options).AsTask());
+                CollectionAssert.AreEqual(Payload(1, 64), await owner.GetAsync("aliased"));
+            }
+            finally
+            {
+                await owner.DisposeAsync();
+            }
+
+            await using var reopened = await SegmentCoreStore.OpenAsync(alias, options);
+            CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("aliased"));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(alias);
+            }
+            catch
+            {
+                // Symlink cleanup should not hide the ownership assertion.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDisposeCallersWaitForOwnerLeaseRelease()
+    {
+        using var root = new TemporaryDirectory();
+        var fileSystem = new FailingDurableFileSystem();
+        var options = WalOptions(stripes: 4) with { DurableFileSystem = fileSystem };
+        var store = await SegmentCoreStore.OpenAsync(root.Path, options);
+        await store.SaveAsync("durable", Payload(1, 64));
+
+        fileSystem.BlockFileFlushes();
+        var firstDispose = store.DisposeAsync().AsTask();
+        await fileSystem.WaitForBlockedFileFlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var secondDispose = store.DisposeAsync().AsTask();
+        try
+        {
+            Assert.IsFalse(secondDispose.IsCompleted);
+        }
+        finally
+        {
+            fileSystem.ReleaseFileFlushes();
+        }
+
+        await Task.WhenAll(firstDispose, secondDispose);
+        await using var reopened = await SegmentCoreStore.OpenAsync(
+            root.Path,
+            options with { DurableFileSystem = PlatformDurableFileSystem.Instance });
+        CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("durable"));
+    }
+
+    [TestMethod]
+    public async Task DisposeDrainsCheckpointCallerAlreadyEnteringGate()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 4);
+        var store = await SegmentCoreStore.OpenAsync(root.Path, options);
+        var checkpointGate = GetPrivateField<SemaphoreSlim>(store, "_checkpointGate");
+        await checkpointGate.WaitAsync();
+
+        Task<SegmentCoreCheckpointResult>? checkpoint = null;
+        Task? disposal = null;
+        try
+        {
+            checkpoint = store.CheckpointAsync().AsTask();
+            await WaitForPositivePrivateCounterAsync(store, "_gateAdmissions");
+            disposal = store.DisposeAsync().AsTask();
+            await Task.Delay(25);
+            Assert.IsFalse(disposal.IsCompleted, "Disposal did not drain the entering checkpoint caller.");
+        }
+        finally
+        {
+            checkpointGate.Release();
+        }
+
+        _ = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
+            () => checkpoint!.WaitAsync(TimeSpan.FromSeconds(5)));
+        await disposal!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        Assert.AreEqual(0, reopened.Count);
+    }
+
+    [TestMethod]
+    public async Task DisposeDrainsExclusiveCallerAlreadyEnteringGate()
+    {
+        using var root = new TemporaryDirectory();
+        var options = Options(stripes: 4, segmentBytes: 1024 * 1024);
+        var store = await SegmentCoreStore.OpenAsync(root.Path, options);
+        var exclusiveGate = GetPrivateField<SemaphoreSlim>(store, "_exclusiveGate");
+        await exclusiveGate.WaitAsync();
+        await using var transaction = await store.BeginTransactionAsync();
+        await transaction.SaveAsync("racing-save", Payload(1, 64));
+
+        Task? commit = null;
+        Task? disposal = null;
+        try
+        {
+            commit = transaction.CommitAsync().AsTask();
+            await WaitForPositivePrivateCounterAsync(store, "_gateAdmissions");
+            disposal = store.DisposeAsync().AsTask();
+            await Task.Delay(25);
+            Assert.IsFalse(disposal.IsCompleted, "Disposal did not drain the entering exclusive caller.");
+        }
+        finally
+        {
+            exclusiveGate.Release();
+        }
+
+        _ = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
+            () => commit!.WaitAsync(TimeSpan.FromSeconds(5)));
+        await disposal!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        Assert.IsNull(await reopened.GetAsync("racing-save"));
+    }
+
+    [TestMethod]
+    public async Task MutationWal_ConcurrentOpenWalFailureReleasesObjectLogWriter()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 4);
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            await store.SaveAsync("durable", Payload(1, 64));
+            _ = await store.CheckpointAsync();
+        }
+
+        var walPath = WalPath(root.Path);
+        var validWal = File.ReadAllBytes(walPath);
+        CorruptByte(walPath, offset: 0);
+        _ = await Assert.ThrowsExactlyAsync<ObjectLogCorruptionException>(
+            () => SegmentCoreStore.OpenAsync(root.Path, options).AsTask());
+
+        File.WriteAllBytes(walPath, validWal);
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("durable"));
+    }
+
+    [TestMethod]
+    public async Task MutationWal_ConcurrentObjectLogFailureReleasesWalWriter()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 4);
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            await store.SaveAsync("durable", Payload(1, 64));
+            _ = await store.CheckpointAsync();
+        }
+
+        var segmentPath = Directory.EnumerateFiles(
+                Path.Combine(root.Path, "stripes"),
+                "segment-*.idbseg",
+                SearchOption.AllDirectories)
+            .First();
+        using (var exclusive = new FileStream(
+                   segmentPath,
+                   FileMode.Open,
+                   FileAccess.ReadWrite,
+                   FileShare.None))
+        {
+            _ = await Assert.ThrowsExactlyAsync<IOException>(
+                () => SegmentCoreStore.OpenAsync(root.Path, options).AsTask());
+        }
+
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(Payload(1, 64), await reopened.GetAsync("durable"));
     }
 
     [TestMethod]
@@ -1421,6 +1692,33 @@ public sealed class SegmentCoreStoreTests
         return bytes;
     }
 
+    private static T GetPrivateField<T>(SegmentCoreStore store, string name)
+        where T : class
+        => typeof(SegmentCoreStore)
+               .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?
+               .GetValue(store) as T
+           ?? throw new InvalidOperationException($"SegmentCoreStore field '{name}' was not found.");
+
+    private static async Task WaitForPositivePrivateCounterAsync(
+        SegmentCoreStore store,
+        string name)
+    {
+        var field = typeof(SegmentCoreStore).GetField(
+            name,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"SegmentCoreStore field '{name}' was not found.");
+        var deadline = Stopwatch.StartNew();
+        while ((int)field.GetValue(store)! <= 0)
+        {
+            if (deadline.Elapsed >= TimeSpan.FromSeconds(5))
+            {
+                Assert.Fail($"SegmentCoreStore field '{name}' did not become positive.");
+            }
+
+            await Task.Delay(1);
+        }
+    }
+
     private static string WalPath(string root) => Path.Combine(
         root,
         "transactions",
@@ -1433,6 +1731,18 @@ public sealed class SegmentCoreStoreTests
         var value = stream.ReadByte();
         Assert.AreNotEqual(-1, value);
         stream.Position = stream.Length - 1;
+        stream.WriteByte((byte)(value ^ 0xFF));
+        stream.Flush(flushToDisk: true);
+    }
+
+    private static void CorruptByte(string path, long offset)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.IsTrue(offset >= 0 && offset < stream.Length);
+        stream.Position = offset;
+        var value = stream.ReadByte();
+        Assert.AreNotEqual(-1, value);
+        stream.Position = offset;
         stream.WriteByte((byte)(value ^ 0xFF));
         stream.Flush(flushToDisk: true);
     }
@@ -1469,7 +1779,10 @@ public sealed class SegmentCoreStoreTests
         private int _replaceCount;
         private TaskCompletionSource _checkpointPublication = NewSignal();
         private readonly ManualResetEventSlim _checkpointPublicationRelease = new(initialState: true);
+        private TaskCompletionSource _blockedFileFlush = NewSignal();
+        private readonly ManualResetEventSlim _fileFlushRelease = new(initialState: true);
         private int _blockCheckpointPublication;
+        private int _blockFileFlushes;
 
         public int FileFlushCount => Volatile.Read(ref _fileFlushCount);
 
@@ -1496,12 +1809,36 @@ public sealed class SegmentCoreStoreTests
             _checkpointPublicationRelease.Set();
         }
 
+        public void BlockFileFlushes()
+        {
+            _blockedFileFlush = NewSignal();
+            _fileFlushRelease.Reset();
+            Volatile.Write(ref _blockFileFlushes, 1);
+        }
+
+        public Task WaitForBlockedFileFlushAsync() => _blockedFileFlush.Task;
+
+        public void ReleaseFileFlushes()
+        {
+            Volatile.Write(ref _blockFileFlushes, 0);
+            _fileFlushRelease.Set();
+        }
+
         public void FlushFile(SafeFileHandle handle)
         {
             var count = Interlocked.Increment(ref _fileFlushCount);
             if (count == FailOnFileFlush)
             {
                 throw new IOException("Injected transaction durability failure.");
+            }
+
+            if (Volatile.Read(ref _blockFileFlushes) != 0)
+            {
+                _blockedFileFlush.TrySetResult();
+                if (!_fileFlushRelease.Wait(TimeSpan.FromSeconds(10)))
+                {
+                    throw new TimeoutException("File-flush test gate timed out.");
+                }
             }
 
             PlatformDurableFileSystem.Instance.FlushFile(handle);

@@ -55,7 +55,11 @@ public sealed class FileSystemEncryptionRotationOperation<TContract> :
             .ConfigureAwait(false);
 
         var files = Directory
-            .EnumerateFiles(storageRoot, "*" + extension, SearchOption.AllDirectories)
+            .EnumerateFiles(storageRoot, "*", SearchOption.AllDirectories)
+            .Where(path => string.Equals(
+                Path.GetExtension(path),
+                extension,
+                StringComparison.OrdinalIgnoreCase))
             .ToArray();
         var reencrypted = 0;
         var unchanged = 0;

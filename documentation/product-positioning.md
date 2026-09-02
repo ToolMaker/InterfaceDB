@@ -73,7 +73,7 @@ The file provider has two profiles:
 - `Performance` writes canonical object files directly for low local latency.
 - `Durable` uses proposal publication, cross-process locks, and restart recovery.
 
-Current measurements show competitive hot cached range/broad-query behavior, but SQLite remains much faster for selective exact/suffix queries, reopen, and independently durable writes. The comparison gate materializes complete objects for every engine; scalar SQL selects are not used as a substitute.
+Current measurements show competitive `StrongObject` hot-cache range/broad-query behavior, but SQLite remains much faster for selective exact/suffix queries, provider startup, and independently durable writes. The comparison gate returns complete objects for every engine; scalar SQL selects are not used as a substitute. Because InterfaceDB's startup index rebuild deserializes records and populates its strong object cache while SQLite still maps new objects from rows, those results must not be presented as fresh storage-to-object rankings. `MetadataOnly` is the canonical fresh managed object-materialization profile; a physical cold-media claim additionally needs a controlled cold-cache run.
 
 See [Current Performance Results](performance-results.md) for numbers and [Production Benchmark And Stress Gate](production-benchmark-gate.md) for the contract.
 

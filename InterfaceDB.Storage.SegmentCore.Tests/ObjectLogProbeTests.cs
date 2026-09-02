@@ -269,6 +269,54 @@ public sealed class ObjectLogProbeTests
             () => ObjectLogProbeWriter.OpenAsync(root.Path, DurableOptions()).AsTask());
     }
 
+    [TestMethod]
+    public async Task WriterLease_RejectsSymlinkAliasAndReopensAfterDispose()
+    {
+        using var root = TestRoot.Create();
+        var alias = root.Path + "-alias";
+        try
+        {
+            try
+            {
+                _ = Directory.CreateSymbolicLink(alias, root.Path);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                                              or IOException
+                                              or PlatformNotSupportedException
+                                              or NotSupportedException)
+            {
+                Assert.Inconclusive($"Directory symlinks are unavailable: {exception.Message}");
+                return;
+            }
+
+            var owner = await ObjectLogProbeWriter.OpenAsync(root.Path, DurableOptions());
+            try
+            {
+                _ = await owner.AppendAsync("aliased", "value"u8.ToArray());
+                _ = await Assert.ThrowsExactlyAsync<IOException>(
+                    () => ObjectLogProbeWriter.OpenAsync(alias, DurableOptions()).AsTask());
+            }
+            finally
+            {
+                await owner.DisposeAsync();
+            }
+
+            await using var reopened = await ObjectLogProbeWriter.OpenAsync(alias, DurableOptions());
+            _ = await reopened.AppendAsync("after-reopen", "value"u8.ToArray());
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(alias);
+            }
+            catch
+            {
+                // Symlink cleanup should not hide the ownership assertion.
+            }
+        }
+    }
+
     private static ObjectLogProbeOptions DurableOptions() => new()
     {
         DurabilityMode = ObjectLogDurabilityMode.Durable,

@@ -66,6 +66,46 @@ public sealed class SegmentCoreDiagnosticsTests
             && item.Value > 0));
     }
 
+    [TestMethod]
+    public async Task ThrowingMeterListenerCannotChangeStoreLifecycleOrLeakOwnerLease()
+    {
+        using var root = new DiagnosticsTemporaryDirectory();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (string.Equals(
+                    instrument.Meter.Name,
+                    "InterfaceDB.Storage.SegmentCore",
+                    StringComparison.Ordinal))
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+            throw new InvalidOperationException("Injected diagnostics listener failure."));
+        listener.SetMeasurementEventCallback<long>(static (_, _, _, _) =>
+            throw new InvalidOperationException("Injected diagnostics listener failure."));
+        listener.Start();
+
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, Options()))
+        {
+            await store.SaveAsync("diagnostic", new byte[] { 1, 2, 3, 4 });
+            _ = await store.CheckpointAsync();
+        }
+
+        await using (var reopened = await SegmentCoreStore.OpenAsync(root.Path, Options()))
+        {
+            CollectionAssert.AreEqual(
+                new byte[] { 1, 2, 3, 4 },
+                await reopened.GetAsync("diagnostic"));
+        }
+
+        await using var final = await SegmentCoreStore.OpenAsync(root.Path, Options());
+        CollectionAssert.AreEqual(
+            new byte[] { 1, 2, 3, 4 },
+            await final.GetAsync("diagnostic"));
+    }
+
     private static string? FindTag(
         ReadOnlySpan<KeyValuePair<string, object?>> tags,
         string name)

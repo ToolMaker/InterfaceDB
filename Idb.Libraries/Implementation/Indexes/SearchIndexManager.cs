@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Options;
@@ -25,12 +26,19 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     private readonly SearchIndexStore<TContract> _searchIndexes;
     private readonly ConcurrentDictionary<Type, IRuntimeSearchIndexStore> _runtimeSearchIndexes = new();
     private readonly ConcurrentDictionary<string, Type> _runtimeTypesByPhysicalKey = new(StringComparer.Ordinal);
+    private readonly object _initializationGate = new();
+    private readonly object _indexMutationGate = new();
+    private readonly Dictionary<string, PendingIndexMutation> _pendingIndexMutations = new(StringComparer.Ordinal);
     private IPersistentSearchIndexCatalogRepository? _persistentCatalogRepository;
     private string? _persistentCatalogPath;
     private int _persistentCatalogDirty;
     private IContractSubscription? _storedSubscription;
     private IContractSubscription? _deletedSubscription;
+    private Task? _initializationTask;
+    private Task? _disposalTask;
     private int _subscriptionsStarted;
+    private int _bufferIndexMutations = 1;
+    private int _initialized;
     private int _disposed;
 
     public SearchIndexManager(
@@ -56,47 +64,77 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             envelope is not null && _envelopeRepository.Exists(envelope.EnvelopeCacheKey));
     }
 
-    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (Volatile.Read(ref _initialized) != 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        Task initialization;
+        lock (_initializationGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            initialization = _initializationTask ??= InitializeCoreAsync();
+        }
+
+        return new ValueTask(initialization.WaitAsync(cancellationToken));
+    }
+
+    private async Task InitializeCoreAsync()
+    {
+        // Subscribe before the snapshot/catalog rebuild begins. Mutations are journaled until
+        // the rebuild is installed, then replayed under the same gate used by live updates.
+        StartIndexSubscriptions();
+
         if (_envelopeRepository is IPersistentSearchIndexCatalogRepository persistentCatalog)
         {
-            await persistentCatalog.InitializeForSearchIndexCatalogAsync(cancellationToken).ConfigureAwait(false);
+            await persistentCatalog.InitializeForSearchIndexCatalogAsync(CancellationToken.None).ConfigureAwait(false);
             _persistentCatalogRepository = persistentCatalog;
             _persistentCatalogPath = PersistentSearchIndexCatalog.GetPath(
                 persistentCatalog.SearchIndexCatalogDirectory,
                 _searchIndexes.SchemaFingerprint.Span);
             var storageIdentity = await persistentCatalog
-                .GetSearchIndexStorageIdentityAsync(cancellationToken)
+                .GetSearchIndexStorageIdentityAsync(CancellationToken.None)
                 .ConfigureAwait(false);
-            if (TryLoadPersistentCatalog(storageIdentity, cancellationToken))
+            if (TryLoadPersistentCatalog(storageIdentity, CancellationToken.None))
             {
-                StartIndexSubscriptions();
+                CompleteIndexBootstrap();
+                Volatile.Write(ref _initialized, 1);
                 return;
             }
 
+            var initializationEnvelopes = _envelopeRepository
+                is IEnvelopeRepositoryInitializationStream<TContract> persistentInitializationStream
+                    ? persistentInitializationStream.InitializeAndEnumerateAsync(CancellationToken.None)
+                    : _envelopeRepository.EnumerateAsync(CancellationToken.None);
             await RebuildIndexesAsync(
-                _envelopeRepository.EnumerateAsync(cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-            await TryPersistCatalogAsync(cancellationToken, storageIdentity).ConfigureAwait(false);
-            StartIndexSubscriptions();
+                initializationEnvelopes,
+                CancellationToken.None).ConfigureAwait(false);
+            await TryPersistCatalogAsync(CancellationToken.None, storageIdentity).ConfigureAwait(false);
+            CompleteIndexBootstrap();
+            Volatile.Write(ref _initialized, 1);
             return;
         }
 
         if (_envelopeRepository is IEnvelopeRepositoryInitializationStream<TContract> initializationStream)
         {
             await RebuildIndexesAsync(
-                initializationStream.InitializeAndEnumerateAsync(cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+                initializationStream.InitializeAndEnumerateAsync(CancellationToken.None),
+                CancellationToken.None).ConfigureAwait(false);
         }
         else
         {
-            await _envelopeRepository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await _envelopeRepository.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await RebuildIndexesAsync(
-                _envelopeRepository.EnumerateAsync(cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+                _envelopeRepository.EnumerateAsync(CancellationToken.None),
+                CancellationToken.None).ConfigureAwait(false);
         }
 
-        StartIndexSubscriptions();
+        CompleteIndexBootstrap();
+        Volatile.Write(ref _initialized, 1);
     }
 
     public async ValueTask<bool> DeleteAsync(
@@ -109,10 +147,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         var deleted = await _envelopeRepository.DeleteAsync(entity, cancellationToken).ConfigureAwait(false);
         if (deleted && !string.IsNullOrWhiteSpace(physicalKey))
         {
-            _searchIndexes.Remove(physicalKey);
-            RemoveRuntimeSearchIndexes(physicalKey);
-            _runtimeTypesByPhysicalKey.TryRemove(physicalKey, out _);
-            Volatile.Write(ref _persistentCatalogDirty, 1);
+            QueueOrApplyDelete(physicalKey);
         }
 
         return deleted;
@@ -372,12 +407,30 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             // Runtime implementation types can still have their own index attributes.
         }
 
-        await foreach (var envelope in envelopes.ConfigureAwait(false))
+        using var contractBulkLoad = _searchIndexes.BeginBulkLoad();
+        var runtimeBulkLoads = new Dictionary<Type, IDisposable>();
+        try
         {
-            if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
+            await foreach (var envelope in envelopes.ConfigureAwait(false))
             {
-                UpdateIndexes(envelope.EnvelopeCacheKey, entity);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
+                {
+                    var runtimeType = entity.GetType();
+                    if (!runtimeBulkLoads.ContainsKey(runtimeType))
+                    {
+                        runtimeBulkLoads.Add(
+                            runtimeType,
+                            GetRuntimeSearchIndexStore(runtimeType).BeginBulkLoad());
+                    }
+
+                    UpdateIndexes(envelope.EnvelopeCacheKey, entity);
+                }
             }
+        }
+        finally
+        {
+            DisposeBulkLoads(runtimeBulkLoads.Values);
         }
     }
 
@@ -392,17 +445,14 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         {
             if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
             {
-                UpdateIndexes(envelope.EnvelopeCacheKey, entity);
+                QueueOrApplyUpsert(envelope.EnvelopeCacheKey, entity);
             }
 
             return ValueTask.CompletedTask;
         });
         _deletedSubscription = _envelopeRepository.SubscribeToDeleted(envelope =>
         {
-            _searchIndexes.Remove(envelope.EnvelopeCacheKey);
-            RemoveRuntimeSearchIndexes(envelope.EnvelopeCacheKey);
-            _runtimeTypesByPhysicalKey.TryRemove(envelope.EnvelopeCacheKey, out _);
-            Volatile.Write(ref _persistentCatalogDirty, 1);
+            QueueOrApplyDelete(envelope.EnvelopeCacheKey);
             return ValueTask.CompletedTask;
         });
     }
@@ -412,8 +462,75 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         var envelope = entity.Envelope;
         if (envelope is not null)
         {
-            UpdateIndexes(envelope.EnvelopeCacheKey, entity);
+            QueueOrApplyUpsert(envelope.EnvelopeCacheKey, entity);
         }
+    }
+
+    private void QueueOrApplyUpsert(string physicalKey, TContract entity)
+    {
+        lock (_indexMutationGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            if (_bufferIndexMutations != 0)
+            {
+                _pendingIndexMutations[physicalKey] = new PendingIndexMutation(entity, IsDelete: false);
+                return;
+            }
+
+            UpdateIndexes(physicalKey, entity);
+        }
+    }
+
+    private void QueueOrApplyDelete(string physicalKey)
+    {
+        lock (_indexMutationGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            if (_bufferIndexMutations != 0)
+            {
+                _pendingIndexMutations[physicalKey] = new PendingIndexMutation(null, IsDelete: true);
+                return;
+            }
+
+            ApplyDelete(physicalKey);
+        }
+    }
+
+    private void CompleteIndexBootstrap()
+    {
+        lock (_indexMutationGate)
+        {
+            foreach (var mutation in _pendingIndexMutations)
+            {
+                if (mutation.Value.IsDelete)
+                {
+                    ApplyDelete(mutation.Key);
+                }
+                else if (mutation.Value.Entity is not null)
+                {
+                    UpdateIndexes(mutation.Key, mutation.Value.Entity);
+                }
+            }
+
+            _pendingIndexMutations.Clear();
+            _bufferIndexMutations = 0;
+        }
+    }
+
+    private void ApplyDelete(string physicalKey)
+    {
+        _searchIndexes.Remove(physicalKey);
+        RemoveRuntimeSearchIndexes(physicalKey);
+        _runtimeTypesByPhysicalKey.TryRemove(physicalKey, out _);
+        Volatile.Write(ref _persistentCatalogDirty, 1);
     }
 
     private void UpdateIndexes(string physicalKey, TContract entity)
@@ -480,25 +597,60 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 
         _searchIndexes.Clear();
         _runtimeTypesByPhysicalKey.Clear();
-        foreach (var record in records)
+        using var contractBulkLoad = _searchIndexes.BeginBulkLoad();
+        var runtimeBulkLoads = new Dictionary<Type, IDisposable>();
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var runtimeType = Type.GetType(record.RuntimeTypeName, throwOnError: false);
-            if (runtimeType is null || !typeof(TContract).IsAssignableFrom(runtimeType))
+            foreach (var record in records)
             {
-                _searchIndexes.Clear();
-                _runtimeTypesByPhysicalKey.Clear();
-                return false;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                var runtimeType = record.RuntimeType;
+                if (!typeof(TContract).IsAssignableFrom(runtimeType))
+                {
+                    _searchIndexes.Clear();
+                    _runtimeTypesByPhysicalKey.Clear();
+                    return false;
+                }
 
-            _searchIndexes.UpsertValues(record.PhysicalKey, record.ContractValues);
-            var runtimeStore = GetRuntimeSearchIndexStore(runtimeType);
-            runtimeStore.UpsertValues(record.PhysicalKey, record.RuntimeValues);
-            _runtimeTypesByPhysicalKey[record.PhysicalKey] = runtimeType;
+                _searchIndexes.UpsertValues(record.PhysicalKey, record.ContractValues);
+                var runtimeStore = GetRuntimeSearchIndexStore(runtimeType);
+                if (!runtimeBulkLoads.ContainsKey(runtimeType))
+                {
+                    runtimeBulkLoads.Add(runtimeType, runtimeStore.BeginBulkLoad());
+                }
+
+                runtimeStore.UpsertValues(record.PhysicalKey, record.RuntimeValues);
+                _runtimeTypesByPhysicalKey[record.PhysicalKey] = runtimeType;
+            }
+        }
+        finally
+        {
+            DisposeBulkLoads(runtimeBulkLoads.Values);
         }
 
         Volatile.Write(ref _persistentCatalogDirty, 0);
         return true;
+    }
+
+    private static void DisposeBulkLoads(IEnumerable<IDisposable> bulkLoads)
+    {
+        Exception? completionException = null;
+        foreach (var bulkLoad in bulkLoads)
+        {
+            try
+            {
+                bulkLoad.Dispose();
+            }
+            catch (Exception exception)
+            {
+                completionException ??= exception;
+            }
+        }
+
+        if (completionException is not null)
+        {
+            ExceptionDispatchInfo.Capture(completionException).Throw();
+        }
     }
 
     private RuntimeSearchIndexCatalogSchema? ResolveRuntimeCatalogSchema(string runtimeTypeName)
@@ -510,7 +662,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         }
 
         var store = GetRuntimeSearchIndexStore(runtimeType);
-        return new RuntimeSearchIndexCatalogSchema(store.SchemaFingerprint, store.ValueTypes);
+        return new RuntimeSearchIndexCatalogSchema(runtimeType, store.SchemaFingerprint, store.ValueTypes);
     }
 
     private async ValueTask TryPersistCatalogAsync(
@@ -588,14 +740,39 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        Task disposal;
+        lock (_initializationGate)
         {
-            return;
+            if (_disposalTask is null)
+            {
+                Volatile.Write(ref _disposed, 1);
+                _disposalTask = DisposeCoreAsync(_initializationTask);
+            }
+
+            disposal = _disposalTask;
         }
 
-        if (Volatile.Read(ref _persistentCatalogDirty) != 0)
+        return new ValueTask(disposal);
+    }
+
+    private async Task DisposeCoreAsync(Task? initialization)
+    {
+        if (initialization is not null)
+        {
+            try
+            {
+                await initialization.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Initialization failure remains observable to its callers; disposal still owns cleanup.
+            }
+        }
+
+        if (Volatile.Read(ref _initialized) != 0
+            && Volatile.Read(ref _persistentCatalogDirty) != 0)
         {
             await TryPersistCatalogAsync(CancellationToken.None).ConfigureAwait(false);
         }
@@ -603,15 +780,21 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         _storedSubscription?.Dispose();
         _deletedSubscription?.Dispose();
 
-        _searchIndexes.Dispose();
-        foreach (var runtimeIndex in _runtimeSearchIndexes.Values)
+        lock (_indexMutationGate)
         {
-            runtimeIndex.Dispose();
-        }
+            _pendingIndexMutations.Clear();
+            _searchIndexes.Dispose();
+            foreach (var runtimeIndex in _runtimeSearchIndexes.Values)
+            {
+                runtimeIndex.Dispose();
+            }
 
-        _runtimeSearchIndexes.Clear();
-        _runtimeTypesByPhysicalKey.Clear();
+            _runtimeSearchIndexes.Clear();
+            _runtimeTypesByPhysicalKey.Clear();
+        }
     }
+
+    private readonly record struct PendingIndexMutation(TContract? Entity, bool IsDelete);
 
     private interface IRuntimeSearchIndexStore : IDisposable
     {
@@ -620,6 +803,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         ReadOnlyMemory<byte> SchemaFingerprint { get; }
 
         IReadOnlyList<Type> ValueTypes { get; }
+
+        IDisposable BeginBulkLoad();
 
         void Upsert(string physicalKey, object entity);
 
@@ -637,6 +822,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         private readonly object _store;
         private readonly Action<string, object> _upsert;
         private readonly Action<string> _remove;
+        private readonly Func<IDisposable> _beginBulkLoad;
         private readonly Action<string, IReadOnlyList<object?>> _upsertValues;
         private readonly Func<string, object?[]?> _getValues;
         private readonly Func<LambdaExpression, HashSet<string>?> _tryEvaluate;
@@ -677,6 +863,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
                 nameof(SearchIndexStore<TContract>.UpsertValues),
                 methodFlags)
                 ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' has no persisted-value import.");
+            var beginBulkLoad = storeType.GetMethod(
+                nameof(SearchIndexStore<TContract>.BeginBulkLoad),
+                methodFlags)
+                ?? throw new InvalidOperationException($"Search index store for '{runtimeType.FullName}' has no bulk-load scope.");
             var getValues = storeType.GetMethod(
                 nameof(SearchIndexStore<TContract>.GetValues),
                 methodFlags)
@@ -690,6 +880,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             _upsert = CompileUpsert(storeType, runtimeType, upsert, _store);
             _remove = CompileRemove(storeType, remove, _store);
             _tryEvaluate = CompileTryEvaluate(storeType, tryEvaluate, _store);
+            _beginBulkLoad = CompileBeginBulkLoad(storeType, beginBulkLoad, _store);
             _upsertValues = CompileUpsertValues(storeType, upsertValues, _store);
             _getValues = CompileGetValues(storeType, getValues, _store);
         }
@@ -699,6 +890,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 
         public void Remove(string physicalKey)
             => _remove(physicalKey);
+
+        public IDisposable BeginBulkLoad()
+            => _beginBulkLoad();
 
         public void UpsertValues(string physicalKey, IReadOnlyList<object?> values)
             => _upsertValues(physicalKey, values);
@@ -765,6 +959,15 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             var values = Expression.Parameter(typeof(IReadOnlyList<object?>), "values");
             var call = Expression.Call(Expression.Constant(store, storeType), method, key, values);
             return Expression.Lambda<Action<string, IReadOnlyList<object?>>>(call, key, values).Compile();
+        }
+
+        private static Func<IDisposable> CompileBeginBulkLoad(
+            Type storeType,
+            System.Reflection.MethodInfo method,
+            object store)
+        {
+            var call = Expression.Call(Expression.Constant(store, storeType), method);
+            return Expression.Lambda<Func<IDisposable>>(call).Compile();
         }
 
         private static Func<string, object?[]?> CompileGetValues(

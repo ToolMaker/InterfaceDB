@@ -28,6 +28,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
+    private const int CacheMutationGateCount = 64;
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StoragePolicy _storagePolicy;
     private readonly SegmentCoreRepositoryOptions _options;
@@ -43,11 +44,14 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     private readonly ConcurrentDictionary<string, SuffixAllocator> _suffixAllocators = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _identityGate = new(1, 1);
     private readonly object _initializationGate = new();
+    private readonly object[] _cacheMutationGates = CreateCacheMutationGates();
     private readonly CancellationTokenSource _maintenanceCancellation = new();
     private readonly string _storeRoot;
     private readonly IReaderAndWriter<TContract> _readerAndWriter;
     private Task? _initializationTask;
+    private Task? _hydrationTask;
     private Task? _maintenanceTask;
+    private Task? _disposalTask;
     private SegmentCoreStore? _store;
     private Exception? _lastMaintenanceError;
     private long _totalMutations;
@@ -55,6 +59,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     private long _compactionMutationWatermark;
     private long _lastCheckpointUtcTicks;
     private long _lastCompactionUtcTicks;
+    private int _initialized;
+    private int _hydrated;
     private int _disposed;
 
     public SegmentCoreEnvelopeRepository(
@@ -152,7 +158,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
-        await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var envelope in EnumerateInitializedAsync(cancellationToken).ConfigureAwait(false))
         {
             yield return envelope;
         }
@@ -164,10 +170,23 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (Volatile.Read(ref _initialized) != 0
+            && (!hydrateOnInitialize || Volatile.Read(ref _hydrated) != 0))
+        {
+            return ValueTask.CompletedTask;
+        }
+
         Task initialization;
         lock (_initializationGate)
         {
-            initialization = _initializationTask ??= InitializeCoreAsync(hydrateOnInitialize);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            var storageInitialization = _initializationTask ??= InitializeCoreAsync();
+            if (hydrateOnInitialize)
+            {
+                _hydrationTask ??= HydrateAfterInitializationAsync(storageInitialization);
+            }
+
+            initialization = hydrateOnInitialize ? _hydrationTask! : storageInitialization;
         }
 
         return new ValueTask(initialization.WaitAsync(cancellationToken));
@@ -192,7 +211,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             return Array.Empty<TContract>();
         }
 
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var prepared = new List<PreparedWrite>(materialized.Count);
         var batchKeys = new HashSet<string>(StringComparer.Ordinal);
         try
@@ -265,7 +284,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(contractInstance);
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var envelope = contractInstance.Envelope
             ?? throw new InvalidOperationException("The object has not been persisted by InterfaceDB.");
         if (envelope.State == StorageObjectState.Deleted)
@@ -283,7 +302,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         envelope.State = StorageObjectState.Deleted;
-        _envelopes.Remove(key);
+        RemoveCachedEnvelope(key);
         Interlocked.Increment(ref _totalMutations);
         if (_storagePolicy.RaiseNotifications)
         {
@@ -298,7 +317,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         if (!_envelopes.TryGetGroup(ToLogicalKey(storageKey), out var group))
         {
             yield break;
@@ -319,7 +338,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(physicalStorageKey);
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         if (_envelopes.TryGetValue(physicalStorageKey, out var cached)
             && StorageObjectCachePolicy.TryGetObjectInstance(cached, out _))
         {
@@ -329,7 +348,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         var payload = await Store.GetAsync(physicalStorageKey, cancellationToken).ConfigureAwait(false);
         if (payload is null)
         {
-            _envelopes.Remove(physicalStorageKey);
+            RemoveCachedEnvelope(physicalStorageKey);
             return null;
         }
 
@@ -339,7 +358,16 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
+        await foreach (var envelope in EnumerateInitializedAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return envelope;
+        }
+    }
+
+    private async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateInitializedAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
 
         // A complete strong-object cache is already the materialized store. Avoid rereading and
         // deserializing the object log for warm full scans and index rebuilds after eager hydration.
@@ -399,7 +427,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     public async ValueTask<SegmentCoreCheckpointResult> CheckpointAsync(
         CancellationToken cancellationToken = default)
     {
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var mutationWatermark = Volatile.Read(ref _totalMutations);
         var result = await Store.CheckpointAsync(cancellationToken).ConfigureAwait(false);
         Volatile.Write(ref _checkpointMutationWatermark, mutationWatermark);
@@ -411,7 +439,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     public async ValueTask<SegmentCoreCompactionResult> CompactAsync(
         CancellationToken cancellationToken = default)
     {
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var mutationWatermark = Volatile.Read(ref _totalMutations);
         var result = await Store.CompactAsync(_options.CompactionOptions, cancellationToken).ConfigureAwait(false);
         Volatile.Write(ref _compactionMutationWatermark, mutationWatermark);
@@ -425,7 +453,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     public async ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsync(
         CancellationToken cancellationToken = default)
     {
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         return await Store.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -434,7 +462,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         SegmentCoreBackupOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         return await Store.BackupAsync(destinationDirectory, options, cancellationToken).ConfigureAwait(false);
     }
 
@@ -448,7 +476,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceVersion);
         options ??= new SegmentCoreMigrationOptions();
         options.Validate();
-        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var sourceRoot = Path.GetFullPath(sourceStoreDirectory);
         if (IsPathWithin(sourceRoot, _storeRoot) || IsPathWithin(_storeRoot, sourceRoot))
         {
@@ -571,29 +599,33 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     public ValueTask ContractDeleted(IObjectEnvelope<TContract> @event, CancellationToken cancellationToken = default) =>
         _pubSub.PublishAsync(ContractEvent.Deleted, @event, cancellationToken);
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return;
-        }
-
-        await _maintenanceCancellation.CancelAsync().ConfigureAwait(false);
-        if (_maintenanceTask is not null)
-        {
-            try
-            {
-                await _maintenanceTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (_maintenanceCancellation.IsCancellationRequested)
-            {
-            }
-        }
-
-        Task? initialization;
+        Task disposal;
         lock (_initializationGate)
         {
-            initialization = _initializationTask;
+            if (_disposalTask is null)
+            {
+                Volatile.Write(ref _disposed, 1);
+                _disposalTask = DisposeCoreAsync(_initializationTask, _hydrationTask);
+            }
+
+            disposal = _disposalTask;
+        }
+
+        return new ValueTask(disposal);
+    }
+
+    private async Task DisposeCoreAsync(Task? initialization, Task? hydration)
+    {
+        List<Exception>? failures = null;
+        try
+        {
+            await _maintenanceCancellation.CancelAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
         }
 
         if (initialization is not null)
@@ -602,31 +634,94 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             {
                 await initialization.ConfigureAwait(false);
             }
-            catch when (_store is null)
+            catch
             {
-                // Initialization already disposed its partially opened store.
+                // Initialization failure remains observable to its callers; disposal still owns cleanup.
             }
         }
 
-        if (_store is not null)
+        if (hydration is not null && !ReferenceEquals(hydration, initialization))
+        {
+            try
+            {
+                await hydration.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Hydration failure remains observable to its callers; disposal still owns cleanup.
+            }
+        }
+
+        var maintenance = Volatile.Read(ref _maintenanceTask);
+        if (maintenance is not null)
+        {
+            try
+            {
+                await maintenance.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_maintenanceCancellation.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
+        }
+
+        var store = Interlocked.Exchange(ref _store, null);
+        if (store is not null)
         {
             if (_options.CheckpointOnDispose
                 && Volatile.Read(ref _totalMutations) > Volatile.Read(ref _checkpointMutationWatermark))
             {
-                await _store.CheckpointAsync().ConfigureAwait(false);
+                try
+                {
+                    await store.CheckpointAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    (failures ??= []).Add(exception);
+                }
             }
 
-            await _store.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
         }
 
-        _maintenanceCancellation.Dispose();
-        _identityGate.Dispose();
+        try
+        {
+            _maintenanceCancellation.Dispose();
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
+        try
+        {
+            _identityGate.Dispose();
+        }
+        catch (Exception exception)
+        {
+            (failures ??= []).Add(exception);
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException("SegmentCore repository disposal encountered one or more failures.", failures);
+        }
     }
 
     private SegmentCoreStore Store => Volatile.Read(ref _store)
         ?? throw new InvalidOperationException("SegmentCore repository has not been initialized.");
 
-    private async Task InitializeCoreAsync(bool hydrateOnInitialize)
+    private async Task InitializeCoreAsync()
     {
         Directory.CreateDirectory(_storeRoot);
         var store = await SegmentCoreStore.OpenAsync(_storeRoot, _options.StoreOptions).ConfigureAwait(false);
@@ -637,34 +732,51 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 CacheEnvelopeSkeleton(key);
             }
 
-            if (hydrateOnInitialize)
-            {
-                var records = await store.ReadAllAsync().ConfigureAwait(false);
-                await Parallel.ForEachAsync(
-                    records,
-                    new ParallelOptions
-                    {
-                        MaxDegreeOfParallelism = Math.Clamp(_storagePolicy.MaxConcurrency, 1, 256)
-                    },
-                    (record, cancellationToken) =>
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        _ = MaterializeAndCache(record.Key, record.Payload);
-                        return ValueTask.CompletedTask;
-                    }).ConfigureAwait(false);
-            }
-
             Volatile.Write(ref _store, store);
             if (_options.EnableBackgroundMaintenance)
             {
                 _maintenanceTask = RunMaintenanceAsync(_maintenanceCancellation.Token);
             }
+
+            Volatile.Write(ref _initialized, 1);
         }
         catch
         {
+            Interlocked.CompareExchange(ref _store, null, store);
             await store.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async Task HydrateAfterInitializationAsync(Task initialization)
+    {
+        await initialization.ConfigureAwait(false);
+        var hydrationCandidates = CaptureHydrationCandidates();
+        if (hydrationCandidates.Count == 0)
+        {
+            Volatile.Write(ref _hydrated, 1);
+            return;
+        }
+
+        var records = await Store.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
+        await Parallel.ForEachAsync(
+            records,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(_storagePolicy.MaxConcurrency, 1, 256)
+            },
+            (record, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (hydrationCandidates.TryGetValue(record.Key, out var expectedCacheEntry)
+                    && IsCurrentCacheEntry(record.Key, expectedCacheEntry))
+                {
+                    MaterializeAndCacheIfUnchanged(record.Key, record.Payload, expectedCacheEntry);
+                }
+
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
+        Volatile.Write(ref _hydrated, 1);
     }
 
     private async Task RunMaintenanceAsync(CancellationToken cancellationToken)
@@ -820,6 +932,37 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
     private IObjectEnvelope<TContract> MaterializeAndCache(string key, byte[] payload)
     {
+        var (envelope, instance) = Materialize(key, payload);
+        CacheEnvelope(envelope, instance);
+        return envelope;
+    }
+
+    private void MaterializeAndCacheIfUnchanged(
+        string key,
+        byte[] payload,
+        IObjectEnvelope<TContract> expectedCacheEntry)
+    {
+        var (envelope, instance) = Materialize(key, payload);
+        var cached = CreateCachedEnvelope(envelope, instance);
+        var gate = GetCacheMutationGate(key);
+        lock (gate)
+        {
+            if (!_envelopes.TryGetValue(key, out var current)
+                || !ReferenceEquals(current, expectedCacheEntry))
+            {
+                return;
+            }
+
+            _envelopes.AddOrUpdate(key, ToLogicalKey(key), cached);
+        }
+
+        ObservePhysicalKey(key);
+    }
+
+    private (IObjectEnvelope<TContract> Envelope, TContract Instance) Materialize(
+        string key,
+        byte[] payload)
+    {
         var envelope = _serializer.Deserialize(payload);
         if (!string.Equals(envelope.EnvelopeCacheKey, key, StringComparison.Ordinal))
         {
@@ -833,8 +976,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         envelope.ImplementationTypeName ??= instance.GetType().AssemblyQualifiedName
             ?? instance.GetType().FullName
             ?? instance.GetType().Name;
-        CacheEnvelope(envelope, instance);
-        return envelope;
+        return (envelope, instance);
     }
 
     private void CacheEnvelopeSkeleton(string physicalKey)
@@ -848,11 +990,31 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         envelope.ObjectInstance = null;
         envelope.ObjectInstanceWeakReference = null;
         envelope.State = StorageObjectState.Active;
-        _envelopes.AddOrUpdate(physicalKey, ToLogicalKey(physicalKey), envelope);
+        lock (GetCacheMutationGate(physicalKey))
+        {
+            _envelopes.AddOrUpdate(physicalKey, ToLogicalKey(physicalKey), envelope);
+        }
+
         ObservePhysicalKey(physicalKey);
     }
 
     private void CacheEnvelope(IObjectEnvelope<TContract> hydrated, TContract instance)
+    {
+        var cached = CreateCachedEnvelope(hydrated, instance);
+        lock (GetCacheMutationGate(cached.EnvelopeCacheKey))
+        {
+            _envelopes.AddOrUpdate(
+                cached.EnvelopeCacheKey,
+                ToLogicalKey(cached.EnvelopeCacheKey),
+                cached);
+        }
+
+        ObservePhysicalKey(cached.EnvelopeCacheKey);
+    }
+
+    private IObjectEnvelope<TContract> CreateCachedEnvelope(
+        IObjectEnvelope<TContract> hydrated,
+        TContract instance)
     {
         IObjectEnvelope<TContract> cached;
         if (StorageObjectCachePolicy.ResolveObjectCacheMode(instance, _storagePolicy)
@@ -876,11 +1038,60 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             StorageObjectCachePolicy.StoreObjectReference(cached, instance, _storagePolicy);
         }
 
-        _envelopes.AddOrUpdate(
-            cached.EnvelopeCacheKey,
-            ToLogicalKey(cached.EnvelopeCacheKey),
-            cached);
-        ObservePhysicalKey(cached.EnvelopeCacheKey);
+        return cached;
+    }
+
+    private Dictionary<string, IObjectEnvelope<TContract>> CaptureHydrationCandidates()
+    {
+        var candidates = new Dictionary<string, IObjectEnvelope<TContract>>(StringComparer.Ordinal);
+        foreach (var pair in _envelopes)
+        {
+            lock (GetCacheMutationGate(pair.Key))
+            {
+                if (_envelopes.TryGetValue(pair.Key, out var current)
+                    && ReferenceEquals(current, pair.Value)
+                    && !StorageObjectCachePolicy.TryGetObjectInstance(current, out _))
+                {
+                    candidates.Add(pair.Key, current);
+                }
+            }
+        }
+
+        return candidates;
+    }
+
+    private bool IsCurrentCacheEntry(string key, IObjectEnvelope<TContract> expected)
+    {
+        lock (GetCacheMutationGate(key))
+        {
+            return _envelopes.TryGetValue(key, out var current)
+                && ReferenceEquals(current, expected);
+        }
+    }
+
+    private void RemoveCachedEnvelope(string key)
+    {
+        lock (GetCacheMutationGate(key))
+        {
+            _envelopes.Remove(key);
+        }
+    }
+
+    private object GetCacheMutationGate(string key)
+    {
+        var hashCode = StringComparer.Ordinal.GetHashCode(key);
+        return _cacheMutationGates[(int)((uint)hashCode % CacheMutationGateCount)];
+    }
+
+    private static object[] CreateCacheMutationGates()
+    {
+        var gates = new object[CacheMutationGateCount];
+        for (var index = 0; index < gates.Length; index++)
+        {
+            gates[index] = new object();
+        }
+
+        return gates;
     }
 
     private void ObservePhysicalKey(string physicalKey)
@@ -914,7 +1125,10 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     }
 
     private void EnsureInitializedSynchronously() =>
-        InitializeAsync().AsTask().GetAwaiter().GetResult();
+        EnsureInitializedAsync(hydrateOnInitialize: false, CancellationToken.None)
+            .AsTask()
+            .GetAwaiter()
+            .GetResult();
 
     private static DateTimeOffset? ToTimestamp(long utcTicks) =>
         utcTicks == 0 ? null : new DateTimeOffset(utcTicks, TimeSpan.Zero);

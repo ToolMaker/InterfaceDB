@@ -168,9 +168,9 @@ before selecting a mobile data root or application-lifecycle policy.
 
 ## Current Performance Snapshot
 
-On the repository's Windows/NVMe development machine, the final 1,000-object quick gate measured one independent Durable write per object at a 7.060 ms median. The equivalent SQLite FULL autocommit measurements were 3.381 ms through `Microsoft.Data.Sqlite` and 3.330 ms through Dapper. The optimized file protocol is 2.17 times faster than InterfaceDB's earlier 15.299 ms Durable baseline while preserving all forced-process recovery and cross-process tests.
+On the repository's Windows/NVMe development machine, the current 1,000-object quick gate measured one independent Durable write per object at a 5.574 ms median. The equivalent SQLite FULL autocommit measurements were 1.927 ms through `Microsoft.Data.Sqlite` and 1.936 ms through Dapper. The optimized file protocol is 2.74 times faster than InterfaceDB's earlier 15.299 ms Durable baseline while preserving all forced-process recovery and cross-process tests.
 
-These are local diagnostic measurements, not universal rankings. Queries return fully materialized objects for every engine, verify count and checksum, and include mapping from the storage API into the object model. SQL scalar reads are not treated as equivalent to InterfaceDB object retrieval.
+These are local diagnostic measurements, not universal rankings. The production-gate query paths return complete objects for every engine, verify count and checksum, and include mapping from the storage API into the object model; SQL scalar reads are not treated as equivalent to InterfaceDB object retrieval. The curated file-provider query rows use `StrongObject` and therefore describe a hot InterfaceDB object cache. `MetadataOnly`, with a fresh managed object created for every result, is the canonical mode for storage-to-object comparisons; a true cold-media claim additionally requires a controlled cold-cache run. Raw SegmentCore payload and provider-open measurements are reported separately and are not object-query results.
 
 See [Current Performance Results](documentation/performance-results.md) and [Benchmark Methodology](documentation/production-benchmark-gate.md).
 
@@ -190,9 +190,9 @@ reopen, restore, and catalog rebuild. It finished with 10,500 fully compared obj
 or query mismatch. SegmentCore also exposes listener-disabled-by-default `System.Diagnostics.Metrics`
 for open stages, maintenance outcomes/latency, and storage sizes.
 
-The latest one-million-object scale A/B passed in both modes. Resident locators reopened in 927.2 ms and allocated 139.9 MiB; paged locators reopened in 42.6 ms and allocated 25.2 MiB—a 21.8x reopen improvement and 82.0% allocation reduction. Paging costs more checkpoint time and about 40% sampled point-read throughput, so the default switches automatically at 100,000 live entries. These are local engineering measurements, not universal rankings.
+The latest one-million-record storage-core scale A/B passed in both modes. Resident locators reopened in 927.2 ms and allocated 139.9 MiB; paged locators reopened in 42.6 ms and allocated 25.2 MiB—a 21.8x reopen improvement and 82.0% allocation reduction. Paging costs more checkpoint time and about 40% sampled raw-payload point-read throughput, so the default switches automatically at 100,000 live entries. These measurements do not include repository object materialization and are local engineering measurements, not universal rankings.
 
-SegmentCore is not presented as a general SQLite replacement: SQLite still opens faster, maintenance can dominate very large batches at deliberately short checkpoint intervals, and SegmentCore does not implement SQL joins, relational constraints, multiple writer processes, or cross-store transactions. The five-minute Windows mixed soak, current 30-second/12.6-million-operation rerun, ENOSPC-equivalent recovery, all 93 Linux-container SegmentCore tests, 20 direct Linux InterfaceDB tests, 49 Linux integration scenarios, provider migration, online backup/restore, compatibility enforcement, package upgrade, and a 35.65 GB larger-than-managed-memory gate pass. The full virtualized-Linux strict-durability benchmark was 5.4% faster than SQLite at p50; the desired 15% lead remains an advisory optimization target, not a release blocker. Actual physical power-cut evidence remains outstanding and gates stable `1.0.0`; bare-metal Linux/NVMe and cold-media measurements are lower-priority hardware-specific characterization.
+SegmentCore is not presented as a general SQLite replacement: SQLite has the lower measured provider-open cost, maintenance can dominate very large batches at deliberately short checkpoint intervals, and SegmentCore does not implement SQL joins, relational constraints, multiple writer processes, or cross-store transactions. Provider-open timings stop before first-result object materialization and must not be read as end-to-end query latency. The five-minute Windows raw-store mixed soak, current 30-second/12.6-million-operation raw-store rerun, ENOSPC-equivalent recovery, all 93 Linux-container SegmentCore tests, 20 direct Linux InterfaceDB tests, 49 Linux integration scenarios, provider migration, online backup/restore, compatibility enforcement, package upgrade, and a 35.65 GB raw-payload larger-than-memory gate pass. The full virtualized-Linux strict-durability benchmark was 5.4% faster than SQLite at p50; the desired 15% lead remains an advisory optimization target, not a release blocker. Actual physical power-cut evidence remains outstanding and gates stable `1.0.0`; bare-metal Linux/NVMe and cold-media measurements are lower-priority hardware-specific characterization.
 
 ## Documentation
 
@@ -234,14 +234,14 @@ Run the example:
 dotnet run -c Release --project InterfaceDb.ConsoleApp
 ```
 
-Run the fair embedded-storage quick gate:
+Run the canonical fresh managed object-materialization quick gate:
 
 ```powershell
-.\Scripts\Test-ProductionGate.ps1 -Quick
+.\Scripts\Test-ProductionGate.ps1 -Quick -Cache metadata
 ```
 
 Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are intentionally ignored. Curated, reproducible results belong in `documentation/performance-results.md`.
 
 ## Project Status
 
-The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.4`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview.
+The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.5`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, configurable versioned hash routing, reusable repository lifecycles, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview.

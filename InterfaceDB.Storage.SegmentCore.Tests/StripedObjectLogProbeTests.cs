@@ -119,6 +119,101 @@ public sealed class StripedObjectLogProbeTests
     }
 
     [TestMethod]
+    public async Task EverySupportedHash_KeepsUpdatesOnOneStripeAcrossReopen()
+    {
+        foreach (var algorithm in Enum.GetValues<SegmentCoreHashAlgorithm>())
+        {
+            using var root = TestRoot.Create();
+            var options = Options(stripes: 8) with
+            {
+                HashAlgorithm = algorithm,
+                HashSeed = 0x1020_3040_5060_7080
+            };
+            StripedObjectLogRecordAddress first;
+            await using (var writer = await StripedObjectLogProbeWriter.OpenAsync(root.Path, options))
+            {
+                first = await writer.AppendAsync("stable-key", "version-one"u8.ToArray());
+            }
+
+            await using (var writer = await StripedObjectLogProbeWriter.OpenAsync(root.Path, options))
+            {
+                var second = await writer.AppendAsync("stable-key", "version-two"u8.ToArray());
+                Assert.AreEqual(first.Stripe, second.Stripe, algorithm.ToString());
+            }
+
+            var recovered = StripedObjectLogRecovery.Recover(root.Path);
+            CollectionAssert.AreEqual(
+                "version-two"u8.ToArray(),
+                recovered.Records["stable-key"].Payload,
+                algorithm.ToString());
+        }
+    }
+
+    [TestMethod]
+    public async Task Reopen_RejectsChangedHashAlgorithmOrSeed()
+    {
+        using var root = TestRoot.Create();
+        var original = Options(stripes: 8) with
+        {
+            HashAlgorithm = SegmentCoreHashAlgorithm.XxHash3,
+            HashSeed = 42
+        };
+        await using (var writer = await StripedObjectLogProbeWriter.OpenAsync(root.Path, original))
+        {
+            _ = await writer.AppendAsync("key", "value"u8.ToArray());
+        }
+
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => StripedObjectLogProbeWriter.OpenAsync(
+                root.Path,
+                original with { HashAlgorithm = SegmentCoreHashAlgorithm.Fnv1a64 }).AsTask());
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => StripedObjectLogProbeWriter.OpenAsync(
+                root.Path,
+                original with { HashSeed = 43 }).AsTask());
+    }
+
+    [TestMethod]
+    public async Task DefaultHash_PreservesLegacyManifestAndRouting()
+    {
+        using var root = TestRoot.Create();
+        var options = Options(stripes: 8);
+        await using (var writer = await StripedObjectLogProbeWriter.OpenAsync(root.Path, options))
+        {
+            foreach (var key in new[] { "a", "stable-key", "object/000001", "emoji-\U0001F680" })
+            {
+                var address = await writer.AppendAsync(key, "value"u8.ToArray());
+                Assert.AreEqual(LegacySelectStripe(key, options.StripeCount), address.Stripe, key);
+            }
+        }
+
+        Assert.AreEqual(
+            32,
+            new FileInfo(Path.Combine(root.Path, "striped-log.manifest")).Length,
+            "Default FNV-1a stores must retain the preview.3 manifest and routing format.");
+    }
+
+    [TestMethod]
+    public void SupportedHashes_DistributeCommonPrefixKeysAcrossPowerOfTwoStripes()
+    {
+        const int stripes = 16;
+        const int records = 100_000;
+        foreach (var algorithm in Enum.GetValues<SegmentCoreHashAlgorithm>())
+        {
+            var counts = new int[stripes];
+            for (var index = 0; index < records; index++)
+            {
+                var key = $"customer-common-prefix-{index:D8}";
+                counts[SegmentCoreHashRouter.SelectStripe(key, stripes, algorithm, seed: 0)]++;
+            }
+
+            var expected = records / (double)stripes;
+            var maximumDeviation = counts.Max(count => Math.Abs(count - expected) / expected);
+            Assert.IsLessThan(0.08, maximumDeviation, $"{algorithm}: {string.Join(',', counts)}");
+        }
+    }
+
+    [TestMethod]
     public async Task ConcurrentRotation_RecoversEveryStripeChain()
     {
         using var root = TestRoot.Create();
@@ -156,6 +251,42 @@ public sealed class StripedObjectLogProbeTests
 
         _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => StripedObjectLogProbeWriter.OpenAsync(root.Path, Options(stripes: 8)).AsTask());
+    }
+
+    [TestMethod]
+    public async Task PartialOpenFailureDrainsLaunchedStripesAndReleasesTheirWriterLeases()
+    {
+        using var root = TestRoot.Create();
+        var blockedStripeRoot = StripedObjectLogRecovery.StripeRoot(root.Path, stripe: 1);
+        var blocker = await ObjectLogProbeWriter.OpenAsync(blockedStripeRoot);
+        try
+        {
+            _ = await Assert.ThrowsExactlyAsync<IOException>(
+                () => StripedObjectLogProbeWriter.OpenAsync(
+                    root.Path,
+                    Options(stripes: 4)).AsTask());
+        }
+        finally
+        {
+            await blocker.DisposeAsync();
+        }
+
+        await using var reopened = await StripedObjectLogProbeWriter.OpenAsync(
+            root.Path,
+            Options(stripes: 4));
+        _ = await reopened.AppendAsync("after-failed-open", "value"u8.ToArray());
+    }
+
+    [TestMethod]
+    public async Task PublicWriter_RejectsWhitespaceKeysBeforeRouting()
+    {
+        using var root = TestRoot.Create();
+        await using var writer = await StripedObjectLogProbeWriter.OpenAsync(root.Path, Options(stripes: 4));
+
+        _ = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => writer.AppendAsync("   ", "value"u8.ToArray()).AsTask());
+        _ = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => writer.DeleteAsync("\t").AsTask());
     }
 
     [TestMethod]
@@ -232,6 +363,18 @@ public sealed class StripedObjectLogProbeTests
         MaximumBatchRecords = 64,
         MaxSegmentBytes = 1024 * 1024
     };
+
+    private static int LegacySelectStripe(string key, int stripeCount)
+    {
+        var hash = 2166136261u;
+        foreach (var character in key)
+        {
+            hash = (hash ^ (byte)character) * 16777619u;
+            hash = (hash ^ (byte)(character >> 8)) * 16777619u;
+        }
+
+        return (int)(hash & (uint)(stripeCount - 1));
+    }
 
     private sealed class CountingDurableFileSystem : IDurableFileSystem
     {

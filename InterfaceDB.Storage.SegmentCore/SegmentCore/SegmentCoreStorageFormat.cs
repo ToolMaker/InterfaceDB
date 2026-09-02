@@ -44,6 +44,15 @@ public static class SegmentCoreStorageFormat
         MutationWalVersion,
         CommitJournalVersion,
         RouterId);
+
+    internal static SegmentCoreStorageFormatInfo For(StripedObjectLogProbeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return Current with
+        {
+            RouterId = SegmentCoreHashRouter.GetRouterId(options.HashAlgorithm, options.HashSeed)
+        };
+    }
 }
 
 public sealed class SegmentCoreCompatibilityException : IOException
@@ -64,19 +73,24 @@ internal static class SegmentCoreStorageFormatManifest
 
     public static SegmentCoreStorageFormatInfo ReadOrCreate(
         string rootDirectory,
+        SegmentCoreStorageFormatInfo expected,
         IDurableFileSystem durableFileSystem)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
+        ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(durableFileSystem);
+        EnsureSupported(expected, "requested SegmentCore options");
         var root = Path.GetFullPath(rootDirectory);
         Directory.CreateDirectory(root);
         var path = Path.Combine(root, FileName);
         if (File.Exists(path))
         {
-            return Read(path);
+            var existing = Read(path);
+            EnsureCompatible(existing, expected, path);
+            return existing;
         }
 
-        var bytes = Create();
+        var bytes = Create(expected);
         var temporaryPath = $"{path}.creating-{Guid.NewGuid():N}";
         try
         {
@@ -100,7 +114,9 @@ internal static class SegmentCoreStorageFormatManifest
                 File.Delete(temporaryPath);
             }
 
-            return Read(path);
+            var published = Read(path);
+            EnsureCompatible(published, expected, path);
+            return published;
         }
         catch
         {
@@ -109,22 +125,22 @@ internal static class SegmentCoreStorageFormatManifest
         }
     }
 
-    private static byte[] Create()
+    private static byte[] Create(SegmentCoreStorageFormatInfo format)
     {
         var bytes = new byte[ManifestBytes];
         Magic.CopyTo(bytes);
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(8), ManifestVersion);
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(12), ManifestBytes);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(16), SegmentCoreStorageFormat.EngineMajor);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(20), SegmentCoreStorageFormat.EngineMinor);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(24), SegmentCoreStorageFormat.ObjectLogVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(28), SegmentCoreStorageFormat.PrimaryCheckpointVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(32), SegmentCoreStorageFormat.PrimaryDeltaVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(36), SegmentCoreStorageFormat.PrimaryPageMapVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(40), SegmentCoreStorageFormat.MutationWalVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(44), SegmentCoreStorageFormat.CommitJournalVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(16), format.EngineMajor);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(20), format.EngineMinor);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(24), format.ObjectLogVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(28), format.PrimaryCheckpointVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(32), format.PrimaryDeltaVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(36), format.PrimaryPageMapVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(40), format.MutationWalVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(44), format.CommitJournalVersion);
         var routerLength = Encoding.UTF8.GetBytes(
-            SegmentCoreStorageFormat.RouterId,
+            format.RouterId,
             bytes.AsSpan(60, MaximumRouterBytes));
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(56), routerLength);
         BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(108), DateTimeOffset.UtcNow.UtcTicks);
@@ -185,11 +201,26 @@ internal static class SegmentCoreStorageFormatManifest
             || info.PrimaryPageMapVersion > current.PrimaryPageMapVersion
             || info.MutationWalVersion > current.MutationWalVersion
             || info.CommitJournalVersion > current.CommitJournalVersion
-            || !string.Equals(info.RouterId, current.RouterId, StringComparison.Ordinal))
+            || !SegmentCoreHashRouter.TryParseRouterId(info.RouterId, out _))
         {
             throw new SegmentCoreCompatibilityException(
                 $"SegmentCore artifact '{context}' requires an unsupported storage format or router. "
                 + $"Store={info}; runtime={current}.");
+        }
+    }
+
+    internal static void EnsureCompatible(
+        SegmentCoreStorageFormatInfo actual,
+        SegmentCoreStorageFormatInfo expected,
+        string context)
+    {
+        EnsureSupported(actual, context);
+        EnsureSupported(expected, "requested SegmentCore options");
+        if (!string.Equals(actual.RouterId, expected.RouterId, StringComparison.Ordinal))
+        {
+            throw new SegmentCoreCompatibilityException(
+                $"SegmentCore artifact '{context}' uses placement algorithm '{actual.RouterId}' "
+                + $"and cannot be opened with '{expected.RouterId}'. Migrate into a new store to change routing.");
         }
     }
 

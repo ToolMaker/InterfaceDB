@@ -369,9 +369,20 @@ Repository equality queries that can be reduced to the logical storage key shoul
 
 The envelope cache is intentionally equality-only. It should not evaluate `>`, `>=`, `<`, `<=`, between, prefix, full-text, vector, or other range/similarity predicates. Those belong to the index layer.
 
-During initialization, the file repository scans the data root and stores skeleton envelopes. Hydration is optional and controlled by `StoragePolicy.HydrateOnInitialize`.
+During initialization, the file repository scans the data root and stores skeleton envelopes. Physical
+activation is concurrency-safe and single-flight: concurrent callers share one scan, and later calls
+use the ready fast path. Optional hydration, controlled by `StoragePolicy.HydrateOnInitialize`, is a
+separate one-time upgrade so a metadata-only index bootstrap cannot consume a later hydration request.
+The dependency-injection graph has one keyed disposable repository owner; unkeyed compatibility
+resolutions are non-owning facades over that owner.
 
 If hydration is disabled, envelopes can remain lightweight until query/read time.
+
+When a search-index rebuild already has to materialize every object, the file repository exposes one
+initialization/enumeration stream. Index construction therefore performs one payload-deserialization
+pass rather than a hydration pass followed by a second enumeration pass. SegmentCore uses the same
+shared index-bootstrap contract; providers with persistent catalogs can stay metadata-only on a valid
+warm catalog.
 
 The envelope metadata catalog is always maintained. Full object instances are retained only when one of these policies allows it:
 
@@ -552,15 +563,38 @@ It watches committed payload changes and ignores transient files:
 
 Events are debounced using `StoragePolicy.StorageChangeDebounce`.
 
-The source maintains a snapshot of committed payload length and last-write time. On watcher error, including internal buffer overflow, it publishes the error and rescans storage:
+Repository startup arms the source before the cache walk. It first captures changes by normalized
+provider path, reconciles a final filesystem snapshot against both the initial snapshot and the paths
+loaded by the repository, then changes from `Capturing` through `Reconciling` to `Live` under the same
+callback gate. Reconciliation reads current disk state instead of replaying raw event order, so a
+rename followed by recreation or deletion converges to the files that actually exist. Dirty bootstrap
+memory is bounded by the number of distinct paths.
+
+Path comparison is selected by a small capability probe against the configured data volume rather
+than by operating-system name. This matters because macOS and iOS volumes are commonly
+case-insensitive but can be case-sensitive. The source maintains a snapshot of committed payload
+length, last-write time, and exact provider-path spelling. The spelling component lets a case-only
+rename update the ordinal envelope key on a case-insensitive volume. On watcher error, including
+internal buffer overflow, it publishes the error and rescans storage:
 
 - missing snapshot paths emit `Deleted`;
 - new paths emit `Created`;
 - changed stamps emit `Changed`.
 
-`RescanAsync` exposes the same reconciliation explicitly. Rename events retain a separate debounce identity from changes to the new path, so an immediate rename/delete sequence still removes the old cache entry.
+`RescanAsync` exposes the same current-state reconciliation explicitly. The snapshot advances only
+after every registered handler succeeds, so a transient read/apply failure remains visible to a later
+signal or rescan.
 
-Before local saves and deletes, the repository acknowledges the provider locator. Matching watcher echoes are suppressed for `StoragePolicy.LocalStorageChangeSuppression`, while the internal snapshot is still updated. This prevents duplicate local repository notifications.
+Storage-change delivery is at-least-once. The repository publishes its local notification directly,
+and the watcher may publish a duplicate echo. A path-only acknowledgement cannot safely suppress that
+echo: another process can commit a newer revision between the local commit and acknowledgement, and
+marking that path as handled would lose the external update. `LocalStorageChangeSuppression` and the
+path-only acknowledgement hook remain compatibility placeholders until the coordinator can supply an
+immutable commit fingerprint. Subscribers must therefore be idempotent.
+
+When watching is disabled, or on iOS where `FileSystemWatcher` is not supported, initialization still
+performs its scan/final reconciliation. External mutations after activation require an explicit
+`RescanAsync` or a new repository lifetime.
 
 ## Storage Change Handling
 
@@ -570,6 +604,7 @@ Behavior:
 
 - `Created` / `Changed`
   - read committed envelope from disk;
+  - derive physical cache identity from the actual file name rather than serialized metadata;
   - update envelope cache;
   - publish repository stored/added events as appropriate.
 - `Deleted`
@@ -577,7 +612,7 @@ Behavior:
   - publish deleted event.
 - `Renamed`
   - remove old cache key;
-  - read new payload if valid;
+  - read the new payload if valid and make the new file name authoritative;
   - publish removed/stored/added events as appropriate.
 - `Error`
   - publishes the watcher error;
@@ -765,6 +800,8 @@ Benchmarks compare InterfaceDB file writes against:
 - EF Core.
 
 The embedded SQLite production gate is zero-service and runs by default. SQL Server comparisons remain opt-in because they require an external connection.
+
+Benchmark boundaries are reported explicitly. Repository query comparisons return complete objects for every engine and validate their fields; scalar SQL payloads are not substitutes. `MetadataOnly` is the canonical fresh managed object-materialization mode, while `StrongObject` measures a hot InterfaceDB object cache. Raw SegmentCore `byte[]` probes and their provider-open timings are storage-layer diagnostics and must not be presented as object-query results; those raw-provider open timings end before a first application object is materialized. The file-provider production-gate startup metric is different: InterfaceDB deserializes stored objects while rebuilding indexes, whereas the relational counterparts only open connections.
 
 ## Current Guarantees
 

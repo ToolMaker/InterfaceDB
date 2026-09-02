@@ -36,6 +36,9 @@ jobs:
       - name: Test SegmentCore provider
         run: dotnet test InterfaceDB.Storage.SegmentCore.Tests\InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
 
+      - name: Verify benchmark object-materialization contract
+        run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test
+
       - name: Run SegmentCore repository production pilot
         run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --segment-core-production-pilot --quick --output artifacts/segment-core/ci-production-pilot.json
 
@@ -70,6 +73,9 @@ jobs:
 
       - name: Test SegmentCore provider
         run: dotnet test InterfaceDB.Storage.SegmentCore.Tests/InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Verify benchmark object-materialization contract
+        run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test
 
       - name: Run integration harness
         run: dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationTests

@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Idb.Storage.SegmentCore;
 
 namespace Idb.Storage.SegmentCore.ObjectLog;
 
@@ -110,7 +111,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
 
         durableFileSystem ??= PlatformDurableFileSystem.Instance;
         var fullRoot = Path.GetFullPath(rootDirectory);
-        _ = StripedObjectLogManifest.ReadOrCreate(fullRoot, options.StripeCount, durableFileSystem);
+        _ = StripedObjectLogManifest.ReadOrCreate(fullRoot, options, durableFileSystem);
         var stripes = new StripeWorker[options.StripeCount];
         var replayGate = new object();
         Action<int, ObjectLogReplayRecord>? synchronizedReplay = replayRecord is null
@@ -121,8 +122,9 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 {
                     replayRecord(stripe, record);
                 }
-            };
+        };
         var openTasks = new Task<StripeWorker>[options.StripeCount];
+        var launchedTasks = 0;
         try
         {
             for (var stripe = 0; stripe < stripes.Length; stripe++)
@@ -136,18 +138,49 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                     recoveryPositions is null ? null : recoveryPositions[stripe],
                     synchronizedReplay,
                     cancellationToken).AsTask();
+                launchedTasks++;
             }
 
             stripes = await Task.WhenAll(openTasks).ConfigureAwait(false);
             return new StripedObjectLogProbeWriter(options, stripes);
         }
-        catch
+        catch (Exception openException)
         {
-            foreach (var openTask in openTasks)
+            for (var index = 0; index < launchedTasks; index++)
             {
-                if (openTask is { Status: TaskStatus.RanToCompletion })
+                StripeWorker? worker = null;
+                try
                 {
-                    await openTask.Result.DisposeAsync().ConfigureAwait(false);
+                    // A cancellation or synchronous launch failure can leave previously
+                    // launched stripe opens in flight. Drain each task before releasing any
+                    // successful writer so no lease can escape after this method returns.
+                    worker = await openTasks[index].ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Observe sibling failures while preserving the original open exception.
+                }
+
+                if (worker is null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await worker.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception cleanupException)
+                {
+                    try
+                    {
+                        openException.Data[$"Striped object-log cleanup failure: stripe {index}"] =
+                            cleanupException;
+                    }
+                    catch
+                    {
+                        // Cleanup diagnostics must never replace the original open failure.
+                    }
                 }
             }
 
@@ -158,8 +191,16 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
     public ValueTask<StripedObjectLogRecordAddress> AppendAsync(
         string key,
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken = default) =>
-        EnqueueAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        return AppendValidatedAsync(key, payload, cancellationToken);
+    }
+
+    internal ValueTask<StripedObjectLogRecordAddress> AppendValidatedAsync(
+        string key,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken = default) => EnqueueAsync(
             ObjectLogRecordKind.Put,
             key,
             payload,
@@ -169,8 +210,15 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
 
     public ValueTask<StripedObjectLogRecordAddress> DeleteAsync(
         string key,
-        CancellationToken cancellationToken = default) =>
-        EnqueueAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        return DeleteValidatedAsync(key, cancellationToken);
+    }
+
+    internal ValueTask<StripedObjectLogRecordAddress> DeleteValidatedAsync(
+        string key,
+        CancellationToken cancellationToken = default) => EnqueueAsync(
             ObjectLogRecordKind.Delete,
             key,
             ReadOnlyMemory<byte>.Empty,
@@ -327,15 +375,11 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
 
     internal int SelectStripe(string key)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        var hash = 2166136261u;
-        foreach (var character in key)
-        {
-            hash = (hash ^ (byte)character) * 16777619u;
-            hash = (hash ^ (byte)(character >> 8)) * 16777619u;
-        }
-
-        return (int)(hash & (uint)(_options.StripeCount - 1));
+        return SegmentCoreHashRouter.SelectStripe(
+            key,
+            _options.StripeCount,
+            _options.HashAlgorithm,
+            _options.HashSeed);
     }
 
     private ValueTask<StripedObjectLogRecordAddress> EnqueueAsync(

@@ -266,11 +266,14 @@ internal static class SegmentCoreProductionPilotRunner
         }
 
         var exactId = expected.Keys.OrderBy(static id => id, StringComparer.Ordinal).Last();
+        var queryKinds = Enum.GetValues<GateQueryKind>();
+        var requiredByKind = queryKinds
+            .ToDictionary(kind => kind, kind => ExpectedQuery(expected.Values, kind, exactId));
         var started = Stopwatch.GetTimestamp();
-        foreach (var kind in Enum.GetValues<GateQueryKind>())
+        foreach (var kind in queryKinds)
         {
             var actual = await store.QueryAsync(kind, exactId).ConfigureAwait(false);
-            var required = ExpectedQuery(expected.Values, kind, exactId);
+            var required = requiredByKind[kind];
             if (actual != required)
             {
                 throw new InvalidDataException(
@@ -278,7 +281,7 @@ internal static class SegmentCoreProductionPilotRunner
             }
         }
 
-        return CreateMetric(operation, Enum.GetValues<GateQueryKind>().Length, Stopwatch.GetElapsedTime(started));
+        return CreateMetric(operation, queryKinds.Length, Stopwatch.GetElapsedTime(started));
     }
 
     private static GateQueryResult ExpectedQuery(
@@ -551,7 +554,13 @@ internal sealed class SegmentCorePilotStore : IAsyncDisposable
         record.Revision);
 
     private static long MaterializedChecksum(IProductionGateRecord record) =>
-        record.Id.Length + record.Name.Length + record.Age + record.Role.Length + record.Content.Length + record.Revision;
+        GateRecordMaterialization.Checksum(
+            record.Id,
+            record.Name,
+            record.Age,
+            record.Role,
+            record.Content,
+            record.Revision);
 }
 
 internal sealed class SegmentCorePilotContractOptions : IDbContractConfigDto<IProductionGateRecord>

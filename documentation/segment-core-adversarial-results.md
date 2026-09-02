@@ -63,7 +63,7 @@ The complete scan also exposes a separate physical-layout problem: reading curre
 | Checkpoint reopen | 15.502 ms; 431,848 B allocated | 4.258 ms; 2,640 B allocated |
 | SegmentCore full recovery with checkpoint removed | 35.747 ms; 7,541,096 B allocated | No equivalent catalog-loss step required |
 
-At this small cardinality, SegmentCore checkpoint reopen was 3.6x slower and allocated about 164x more managed memory than SQLite reopen. Removing the checkpoint forced SegmentCore to scan 2,000 frames and more than doubled reopen time.
+At this small cardinality, SegmentCore checkpoint reopen was 3.6x slower and allocated about 164x more managed memory than SQLite reopen. The checkpoint/SQLite reopen rows stop after provider initialization and before the first application object is returned; the separately reported exact-read and scan cases perform complete `GateRecord` materialization. Removing the checkpoint forced SegmentCore to scan 2,000 frames and more than doubled reopen time.
 
 The 64 KiB payload confirmation made the recovery cost clearer: recovering only 500 live objects without a checkpoint took 76.880 ms and allocated approximately 132 MB. The current full-recovery implementation materializes payloads while rebuilding locators and performs overlapping recovery work when opening stripe writers. That is a concrete optimization target.
 
@@ -127,7 +127,8 @@ Single-writer ownership remains a product boundary. Store-local multi-object tra
 7. **Productionize transaction scoping** with coordinator-journal recycling, crash-window/power-loss qualification, repository-layer integration, and explicit capability boundaries.
 8. **Run cold-cache, larger-than-RAM, bare-metal Linux, and physical power-loss gates.**
 
-The future RadixForge-directed bucket experiment remains useful for write distribution and prefix locality, but it should follow compaction and secondary-index integration. It does not solve obsolete history, global checkpoint stalls, or atomicity.
+This historical result identified adaptive physical placement as a later experiment, but correctly
+warned that placement alone would not solve obsolete history, checkpoint stalls, or atomicity.
 
 ## Reproduce
 

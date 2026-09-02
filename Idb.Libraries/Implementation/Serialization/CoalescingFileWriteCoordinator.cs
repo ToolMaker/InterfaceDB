@@ -19,6 +19,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
     private readonly IStorageWriteLock _storageWriteLock;
     private readonly StoragePolicy _storagePolicy;
     private readonly string _storageRoot;
+    private readonly StringComparer _pathComparer;
     private int _localMigrationScopeActive;
 
     public CoalescingFileWriteCoordinator(
@@ -30,6 +31,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
             ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
+        _pathComparer = FileSystemPathIdentity.ResolveComparer(_storageRoot);
     }
 
     public async ValueTask<IAsyncDisposable> AcquireMigrationScopeAsync(
@@ -103,7 +105,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             var readyPath = CreateReadyPath(payloadPath);
             File.Move(writingPath, readyPath);
             var canonicalProposal = await DrainPendingWritesCoreAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-            return string.Equals(canonicalProposal, readyPath, StringComparison.OrdinalIgnoreCase);
+            return _pathComparer.Equals(canonicalProposal, readyPath);
         }
         catch
         {
@@ -158,7 +160,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         {
             var canonicalProposal = await DrainPendingWritesCoreAsync(payloadPath, cancellationToken).ConfigureAwait(false);
             return hadActiveStorage
-                && string.Equals(canonicalProposal, deleteProposal, StringComparison.OrdinalIgnoreCase);
+                && _pathComparer.Equals(canonicalProposal, deleteProposal);
         }
         catch
         {
@@ -269,7 +271,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             .EnumerateFiles(storageRoot, "*" + ReadySuffix, SearchOption.AllDirectories)
             .Select(TryGetPayloadPath)
             .Where(path => path is not null && path.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(_pathComparer)
             .Cast<string>()
             .ToArray();
 
@@ -316,7 +318,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
 
             foreach (var obsolete in readyFiles)
             {
-                if (!string.Equals(obsolete, newest, StringComparison.OrdinalIgnoreCase))
+                if (!_pathComparer.Equals(obsolete, newest))
                 {
                     TryDelete(obsolete);
                 }
@@ -324,7 +326,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         }
     }
 
-    private static string? CommitReadyFilesUnderLock(string payloadPath)
+    private string? CommitReadyFilesUnderLock(string payloadPath)
     {
         var readyFiles = EnumerateReadyFiles(payloadPath);
         if (readyFiles.Length == 0)
@@ -336,7 +338,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         CommitProposal(newest, payloadPath);
         foreach (var obsolete in readyFiles)
         {
-            if (!string.Equals(obsolete, newest, StringComparison.OrdinalIgnoreCase))
+            if (!_pathComparer.Equals(obsolete, newest))
             {
                 TryDelete(obsolete);
             }

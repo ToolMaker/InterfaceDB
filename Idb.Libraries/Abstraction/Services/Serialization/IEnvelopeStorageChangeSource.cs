@@ -13,7 +13,9 @@ public interface IEnvelopeStorageChangeSource<TContract> : IAsyncDisposable
     ValueTask StartAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Suppresses watcher echoes caused by a repository operation performed in this process.
+    /// Compatibility hook for acknowledging an exact locally committed revision. A provider must
+    /// not suppress changes from this path-only signal unless it can independently prove revision
+    /// identity; duplicate delivery is safer than losing another writer's update.
     /// </summary>
     void AcknowledgeLocalChange(string providerLocator);
 

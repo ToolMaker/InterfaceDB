@@ -45,7 +45,12 @@ public sealed class FileSystemEagerMigrationStrategy<TContract> : FileSystemMigr
         var legacyFiles = DataRootDirectory
             .EnumerateDirectories()
             .Where(d => !string.Equals(d.Name, ActiveVersion, StringComparison.OrdinalIgnoreCase))
-            .SelectMany(d => d.EnumerateFiles($"*{FileExtension}", SearchOption.TopDirectoryOnly))
+            .SelectMany(d => d
+                .EnumerateFiles("*", SearchOption.TopDirectoryOnly)
+                .Where(file => string.Equals(
+                    file.Extension,
+                    FileExtension,
+                    StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
         if (legacyFiles.Count == 0)

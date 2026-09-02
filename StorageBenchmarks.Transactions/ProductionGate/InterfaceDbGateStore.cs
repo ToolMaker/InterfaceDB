@@ -209,7 +209,13 @@ internal sealed class InterfaceDbGateStore : IProductionGateStore
         new(record.Id, record.Name, record.Age, record.Role, record.Content, record.Revision);
 
     private static long MaterializedChecksum(IProductionGateRecord record) =>
-        record.Id.Length + record.Name.Length + record.Age + record.Role.Length + record.Content.Length + record.Revision;
+        GateRecordMaterialization.Checksum(
+            record.Id,
+            record.Name,
+            record.Age,
+            record.Role,
+            record.Content,
+            record.Revision);
 }
 
 internal sealed class ProductionGateIdentityFactory : IEnvelopeStorageIdentityFactory<IProductionGateRecord>

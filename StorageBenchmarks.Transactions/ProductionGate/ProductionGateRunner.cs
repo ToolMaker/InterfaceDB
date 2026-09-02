@@ -19,8 +19,9 @@ internal static class ProductionGateRunner
             Processor = Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? "Unknown processor",
             Options = options
         };
-        report.Notes.Add("Query timings materialize complete records and validate count plus checksum against the source dataset.");
-        report.Notes.Add("Reopen timings include InterfaceDB in-memory index reconstruction, but the operating-system file cache remains warm.");
+        report.Notes.Add("Query timings materialize complete records, retain them through a deterministic all-field digest, and validate count plus digest against the source dataset.");
+        report.Notes.Add("MetadataOnly is the canonical InterfaceDB storage-to-fresh-object mode; StrongObject and WeakObject describe cache behavior and are reported separately.");
+        report.Notes.Add("Startup timings are provider-specific and the operating-system cache remains warm: InterfaceDB deserializes stored objects while rebuilding its in-memory indexes, while relational engines only reopen connections. The metric ends before any separately issued result query.");
         report.Notes.Add("Seed timings issue one independent write per object. SQL engines use one autocommit transaction per object; no encompassing transaction or bulk-copy operation is used.");
         report.Notes.Add("SQLite is measured through both direct Microsoft.Data.Sqlite commands and Dapper. SQL Server is opt-in because it requires the configured external service.");
         if (options.IncludeWriteAblations)
@@ -219,7 +220,7 @@ internal static class ProductionGateRunner
             report.Metrics.Add(await MeasureLifecycleAsync(
                 store,
                 source.Count,
-                "reopen-and-index-rebuild-os-cache-warm",
+                "provider-specific-startup-os-cache-warm-pre-query",
                 () => store.ReopenAsync()).ConfigureAwait(false));
             await ValidateSnapshotAsync(store, source, "after reopen").ConfigureAwait(false);
 
@@ -600,6 +601,20 @@ internal static class ProductionGateRunner
         }
 
         using var document = JsonDocument.Parse(File.ReadAllText(baselinePath));
+        if (!document.RootElement.TryGetProperty("MaterializationContract", out var contractElement)
+            || !string.Equals(
+                contractElement.GetString(),
+                report.MaterializationContract,
+                StringComparison.Ordinal))
+        {
+            var baselineContract = contractElement.ValueKind == JsonValueKind.String
+                ? contractElement.GetString()
+                : null;
+            throw new InvalidOperationException(
+                $"Baseline materialization contract '{baselineContract ?? "<missing>"}' is incompatible with "
+                + $"'{report.MaterializationContract}'. Generate a new baseline with the current benchmark code.");
+        }
+
         if (!document.RootElement.TryGetProperty("Metrics", out var metrics))
         {
             throw new InvalidOperationException("Baseline report does not contain Metrics.");

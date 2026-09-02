@@ -68,7 +68,6 @@ internal sealed class RawAppendPhaseZeroStore : IPhaseZeroStore
     private readonly string _root;
     private SafeFileHandle? _handle;
     private long _offset;
-    private readonly List<GateRecord> _records = [];
 
     public RawAppendPhaseZeroStore(string root)
     {
@@ -103,13 +102,40 @@ internal sealed class RawAppendPhaseZeroStore : IPhaseZeroStore
         await RandomAccess.WriteAsync(Handle, framed, _offset, cancellationToken).ConfigureAwait(false);
         RandomAccess.FlushToDisk(Handle);
         _offset += framed.Length;
-        _records.Add(record);
     }
 
-    public ValueTask<(int Count, long Checksum)> VerifyAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<(int Count, long Checksum)> VerifyAsync(CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult((_records.Count, _records.Sum(static record => record.MaterializedChecksum)));
+        var lengthBuffer = new byte[sizeof(int)];
+        var position = 0L;
+        var count = 0;
+        var checksum = 0L;
+        while (position < _offset)
+        {
+            await ReadExactlyAsync(Handle, lengthBuffer, position, cancellationToken).ConfigureAwait(false);
+            position += lengthBuffer.Length;
+            var payloadLength = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(lengthBuffer);
+            if (payloadLength <= 0 || payloadLength > _offset - position)
+            {
+                throw new InvalidDataException(
+                    $"Raw append log contains invalid payload length {payloadLength} at offset {position - lengthBuffer.Length}.");
+            }
+
+            var payload = new byte[payloadLength];
+            await ReadExactlyAsync(Handle, payload, position, cancellationToken).ConfigureAwait(false);
+            position += payloadLength;
+            var record = PhaseZeroCodec.Decode(payload);
+            count++;
+            checksum += record.MaterializedChecksum;
+            GC.KeepAlive(record);
+        }
+
+        if (position != _offset)
+        {
+            throw new InvalidDataException($"Raw append verification stopped at {position}; expected {_offset} bytes.");
+        }
+
+        return (count, checksum);
     }
 
     public PhaseZeroStorageStats GetStorageStats() => PhaseZeroStoreUtilities.GetDirectoryStats(_root);
@@ -122,6 +148,30 @@ internal sealed class RawAppendPhaseZeroStore : IPhaseZeroStore
     }
 
     private SafeFileHandle Handle => _handle ?? throw new InvalidOperationException("Raw store is not initialized.");
+
+    private static async ValueTask ReadExactlyAsync(
+        SafeFileHandle handle,
+        Memory<byte> buffer,
+        long offset,
+        CancellationToken cancellationToken)
+    {
+        var read = 0;
+        while (read < buffer.Length)
+        {
+            var current = await RandomAccess.ReadAsync(
+                handle,
+                buffer[read..],
+                offset + read,
+                cancellationToken).ConfigureAwait(false);
+            if (current == 0)
+            {
+                throw new EndOfStreamException(
+                    $"Raw append log ended at offset {offset + read}; expected {buffer.Length - read} more bytes.");
+            }
+
+            read += current;
+        }
+    }
 }
 
 internal sealed class FasterLogPhaseZeroStore : IPhaseZeroStore

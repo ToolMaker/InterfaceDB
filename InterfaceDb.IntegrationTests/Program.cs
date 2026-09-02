@@ -68,7 +68,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("repository registration storage identity factory controls file identity", RepositoryRegistrationStorageIdentityFactoryControlsFileIdentityAsync),
     ("default identity factory uses guid v7 file keys", DefaultIdentityFactoryUsesGuidV7KeysAsync),
     ("sequential identity factories create filename keys", SequentialIdentityFactoriesCreateFilenameKeysAsync),
-    ("watcher suppresses local notification echoes", WatcherSuppressesLocalNotificationEchoesAsync),
+    ("watcher delivers local notifications at least once", WatcherDeliversLocalNotificationsAtLeastOnceAsync),
     ("watcher synchronizes external create update and delete", WatcherSynchronizesExternalChangesAsync),
     ("watcher converges after rename delete race", WatcherConvergesAfterRenameDeleteRaceAsync),
     ("watcher rescan recovers missed storage changes", WatcherRescanRecoversMissedChangesAsync),
@@ -1121,7 +1121,7 @@ static async Task SequentialIdentityFactoriesCreateFilenameKeysAsync()
     }
 }
 
-static async Task WatcherSuppressesLocalNotificationEchoesAsync()
+static async Task WatcherDeliversLocalNotificationsAtLeastOnceAsync()
 {
     var testRoot = CreateTestRoot();
     try
@@ -1153,17 +1153,20 @@ static async Task WatcherSuppressesLocalNotificationEchoesAsync()
         var record = await repository.SaveAsync(
             new LockTestRecord { Id = "watch-local", Value = "one" }).ConfigureAwait(false);
         await Task.Delay(1200).ConfigureAwait(false);
-        Assert(added == 1, $"Local save should publish one added event, found {added}.");
-        Assert(stored == 1, $"Local save should publish one stored event, found {stored}.");
+        Assert(added >= 1, $"Local save should publish at least one added event, found {added}.");
+        Assert(stored >= 1, $"Local save should publish at least one stored event, found {stored}.");
 
+        var storedAfterCreate = stored;
         record.Value = "two";
         await repository.SaveAsync(record).ConfigureAwait(false);
         await Task.Delay(1200).ConfigureAwait(false);
-        Assert(stored == 2, $"Local update should add one stored event, found {stored} total.");
+        Assert(
+            stored > storedAfterCreate,
+            $"Local update should publish at least one additional stored event, found {stored} total.");
 
         await repository.DeleteAsync(record).ConfigureAwait(false);
         await Task.Delay(1200).ConfigureAwait(false);
-        Assert(deleted == 1, $"Local delete should publish one deleted event, found {deleted}.");
+        Assert(deleted >= 1, $"Local delete should publish at least one deleted event, found {deleted}.");
         AssertNoSidecarArtifacts(testRoot);
     }
     finally
@@ -1710,6 +1713,10 @@ static async Task MultiStepMigrationReachesActiveVersionAsync()
     try
     {
         var legacyPayloadPath = await SeedVersionedLegacyPayloadAsync(testRoot, "multi").ConfigureAwait(false);
+        var renamedLegacyPayloadPath = Path.Combine(
+            Path.GetDirectoryName(legacyPayloadPath)!,
+            "renamed-physical.mpk");
+        File.Move(legacyPayloadPath, renamedLegacyPayloadPath);
 
         await using var provider = BuildCustomMigrationProvider(
             testRoot,
@@ -1723,9 +1730,15 @@ static async Task MultiStepMigrationReachesActiveVersionAsync()
         var migrated = await repository.QuerySingleAsync(x => x.Id == "shared").ConfigureAwait(false);
         Assert(migrated.Value == "multi:one:two", $"Unexpected multi-step value '{migrated.Value}'.");
         Assert(migrated.Envelope?.VersionTag == "3.0.0", "Multi-step migration should reach the active version.");
-        Assert(migrated.Envelope?.EnvelopeCacheKey == "shared", "Multi-step migration should preserve storage identity.");
-        Assert(File.Exists(Path.Combine(testRoot, "3.0.0", "shared.mpk")), "Active payload should be written.");
-        Assert(!File.Exists(legacyPayloadPath), "Legacy payload should be removed after the complete chain succeeds.");
+        Assert(
+            migrated.Envelope?.EnvelopeCacheKey == "renamed-physical",
+            "Migration should use the legacy file name as its physical identity, not stale serialized metadata.");
+        Assert(
+            File.Exists(Path.Combine(testRoot, "3.0.0", "renamed-physical.mpk")),
+            "Active payload should retain the externally renamed physical identity.");
+        Assert(
+            !File.Exists(renamedLegacyPayloadPath),
+            "Renamed legacy payload should be removed after the complete chain succeeds.");
         AssertNoSidecarArtifacts(testRoot);
     }
     finally

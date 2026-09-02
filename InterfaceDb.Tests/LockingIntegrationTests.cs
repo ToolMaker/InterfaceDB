@@ -64,7 +64,7 @@ public sealed class LockingIntegrationTests
         StringAssert.Contains(standardOutput, "PASS repository registration storage identity factory controls file identity");
         StringAssert.Contains(standardOutput, "PASS default identity factory uses guid v7 file keys");
         StringAssert.Contains(standardOutput, "PASS sequential identity factories create filename keys");
-        StringAssert.Contains(standardOutput, "PASS watcher suppresses local notification echoes");
+        StringAssert.Contains(standardOutput, "PASS watcher delivers local notifications at least once");
         StringAssert.Contains(standardOutput, "PASS watcher synchronizes external create update and delete");
         StringAssert.Contains(standardOutput, "PASS watcher converges after rename delete race");
         StringAssert.Contains(standardOutput, "PASS watcher rescan recovers missed storage changes");

@@ -392,6 +392,9 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetKeyedService<IMigrationStrategy<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeSource<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeHandler<TContract>>(key)));
+            services.TryAddKeyedSingleton<FileEnvelopeRepositoryFacade<TContract>>(databaseKey, (sp, key) =>
+                new FileEnvelopeRepositoryFacade<TContract>(
+                    sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key)));
             services.TryAddKeyedSingleton<IIndexManager<TContract>>(databaseKey, (sp, key) =>
                 SearchIndexDiscovery.Discover(typeof(TContract)).Count == 0
                     ? new PassthroughIndexManager<TContract>(
@@ -466,7 +469,7 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetRequiredKeyedService<IMigrationStrategy<TContract>>(databaseKey));
             }
             services.TryAddSingleton<IEnvelopeRepository<TContract>>(sp =>
-                sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(databaseKey));
+                sp.GetRequiredKeyedService<FileEnvelopeRepositoryFacade<TContract>>(databaseKey));
             services.TryAddSingleton<IIndexManager<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IIndexManager<TContract>>(databaseKey));
             services.TryAddSingleton<IRepository<TContract>>(sp =>

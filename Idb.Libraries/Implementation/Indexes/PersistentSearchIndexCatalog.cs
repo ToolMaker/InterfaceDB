@@ -18,7 +18,7 @@ internal sealed record SearchIndexCatalogRecord(
 
 internal sealed record LoadedSearchIndexCatalogRecord(
     string PhysicalKey,
-    string RuntimeTypeName,
+    Type RuntimeType,
     object?[] ContractValues,
     byte[] RuntimeSchemaFingerprint,
     object?[] RuntimeValues);
@@ -176,6 +176,7 @@ internal static class PersistentSearchIndexCatalog
 
             var records = new List<LoadedSearchIndexCatalogRecord>(recordCount);
             var keys = new HashSet<string>(StringComparer.Ordinal);
+            var runtimeSchemas = new Dictionary<string, RuntimeSearchIndexCatalogSchema>(StringComparer.Ordinal);
             for (var index = 0; index < recordCount; index++)
             {
                 var physicalKey = ReadString(reader);
@@ -187,9 +188,18 @@ internal static class PersistentSearchIndexCatalog
 
                 var contractValues = ReadValues(reader, contractValueTypes, contractValueCount);
                 var runtimeFingerprint = reader.ReadBytes(FingerprintBytes);
-                var runtimeSchema = resolveRuntimeSchema(runtimeTypeName);
-                if (runtimeSchema is null
-                    || !runtimeFingerprint.AsSpan().SequenceEqual(runtimeSchema.SchemaFingerprint.Span))
+                if (!runtimeSchemas.TryGetValue(runtimeTypeName, out var runtimeSchema))
+                {
+                    runtimeSchema = resolveRuntimeSchema(runtimeTypeName);
+                    if (runtimeSchema is null)
+                    {
+                        return null;
+                    }
+
+                    runtimeSchemas.Add(runtimeTypeName, runtimeSchema);
+                }
+
+                if (!runtimeFingerprint.AsSpan().SequenceEqual(runtimeSchema.SchemaFingerprint.Span))
                 {
                     return null;
                 }
@@ -200,7 +210,7 @@ internal static class PersistentSearchIndexCatalog
                     runtimeSchema.ValueTypes.Count);
                 records.Add(new LoadedSearchIndexCatalogRecord(
                     physicalKey,
-                    runtimeTypeName,
+                    runtimeSchema.RuntimeType,
                     contractValues,
                     runtimeFingerprint,
                     runtimeValues));
@@ -437,5 +447,6 @@ internal static class PersistentSearchIndexCatalog
 }
 
 internal sealed record RuntimeSearchIndexCatalogSchema(
+    Type RuntimeType,
     ReadOnlyMemory<byte> SchemaFingerprint,
     IReadOnlyList<Type> ValueTypes);

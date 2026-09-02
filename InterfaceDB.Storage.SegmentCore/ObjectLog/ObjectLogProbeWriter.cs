@@ -6,8 +6,10 @@ namespace Idb.Storage.SegmentCore.ObjectLog;
 
 public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
 {
+    // Keep this lexical guard ordinal. Windows can host case-sensitive directories,
+    // while the FileShare.None lease supplies filesystem-identity contention.
     private static readonly ConcurrentDictionary<string, byte> ActiveWriterRoots =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
     private readonly ObjectLogProbeOptions _options;
     private readonly IDurableFileSystem _durableFileSystem;
     private readonly string _rootDirectory;
@@ -125,40 +127,27 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
         FileStream writerLease;
         try
         {
-            // FileStream.Lock is unsupported on Apple platforms. FileShare.None is still
-            // implemented by .NET as an exclusive advisory flock on Unix and supplies the
-            // cross-process writer lease there. Other qualified platforms retain the
-            // existing byte-range lock in addition to the in-process root guard.
-            var usesExclusiveOpenLease = OperatingSystem.IsMacOS() || OperatingSystem.IsIOS();
+            if (!OperatingSystem.IsWindows()
+                && !OperatingSystem.IsLinux()
+                && !OperatingSystem.IsAndroid()
+                && !OperatingSystem.IsMacOS()
+                && !OperatingSystem.IsIOS()
+                && !OperatingSystem.IsMacCatalyst())
+            {
+                throw new PlatformNotSupportedException(
+                    "The Phase 0 writer lease is implemented only for Windows, Linux, Android, macOS, iOS, and Mac Catalyst.");
+            }
+
             writerLease = new FileStream(
                 Path.Combine(fullRoot, "writer.lock"),
                 FileMode.OpenOrCreate,
                 FileAccess.ReadWrite,
-                usesExclusiveOpenLease ? FileShare.None : FileShare.Read,
+                FileShare.None,
                 bufferSize: 1,
                 FileOptions.WriteThrough);
-            try
-            {
-                if (!usesExclusiveOpenLease)
-                {
-                    if (!OperatingSystem.IsWindows()
-                        && !OperatingSystem.IsLinux()
-                        && !OperatingSystem.IsAndroid())
-                    {
-                        throw new PlatformNotSupportedException(
-                            "The Phase 0 writer lease is implemented only for Windows, Linux, Android, macOS, iOS, and Mac Catalyst.");
-                    }
-
-#pragma warning disable CA1416 // Phase 0 explicitly rejects platforms without FileStream locking above.
-                    writerLease.Lock(0, 1);
-#pragma warning restore CA1416
-                }
-            }
-            catch
-            {
-                writerLease.Dispose();
-                throw;
-            }
+            // FileShare.None is deliberate. On Unix, .NET maps this to an open-description
+            // flock, so symlink/bind-mount aliases still contend and closing an unrelated
+            // descriptor cannot release this lease. Deployments must not disable .NET file locking.
         }
         catch (Exception exception)
         {
