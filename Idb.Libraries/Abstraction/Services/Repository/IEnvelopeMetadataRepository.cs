@@ -1,0 +1,41 @@
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
+
+namespace Idb.Libraries.Abstractions.Services.Repository;
+
+/// <summary>
+/// Adds an atomic save operation for callers that need to persist opaque envelope metadata
+/// with a contract payload while retaining the standard repository surface.
+/// </summary>
+/// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
+public interface IEnvelopeMetadataRepository<TContract> : IRepository<TContract>
+    where TContract : class, IStoredContract<TContract>
+{
+    /// <summary>
+    /// Gets the durability guarantee in effect when a completed metadata-aware save returns.
+    /// </summary>
+    StorageDurabilityMode CommitDurability { get; }
+
+    /// <summary>
+    /// Saves a detached contract payload and its optional opaque envelope metadata in one provider write.
+    /// </summary>
+    /// <param name="detachedEntity">Contract instance to save. It must not already have an envelope.</param>
+    /// <param name="existingEnvelopeCacheKey">
+    /// Existing provider cache key for an update, or <see langword="null"/> for an insert.
+    /// </param>
+    /// <param name="extensionMetadata">
+    /// Opaque bytes to persist without interpretation. The value cannot exceed
+    /// <see cref="EnvelopeExtensionMetadataLimits.MaximumByteLength"/> bytes.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token for the save operation.</param>
+    /// <remarks>
+    /// Validation failures that occur before staging leave <paramref name="detachedEntity"/> detached.
+    /// Once staging begins, the candidate is consumed and must not be reused, even when persistence
+    /// fails; construct a new detached candidate for a retry.
+    /// </remarks>
+    ValueTask<TContract> SaveWithExtensionMetadataAsync(
+        TContract detachedEntity,
+        string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata,
+        CancellationToken cancellationToken = default);
+}

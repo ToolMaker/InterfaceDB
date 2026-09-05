@@ -5,6 +5,7 @@ using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
+using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -20,6 +21,310 @@ namespace InterfaceDb.Tests;
 [TestClass]
 public sealed class FileEnvelopeRepositoryLifecycleTests
 {
+    [TestMethod]
+    [DataRow(StorageObjectCacheMode.MetadataOnly)]
+    [DataRow(StorageObjectCacheMode.WeakObject)]
+    [DataRow(StorageObjectCacheMode.StrongObject)]
+    public async Task BatchedPhysicalReads_PreserveOrderAndKeepMaterializedResultsAlive(
+        StorageObjectCacheMode cacheMode)
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var config = new TestConfig<IIndexedTestRecord>(root, "batch-read", TestStoragePolicy(false) with
+            {
+                ObjectCacheMode = cacheMode,
+                MaxReadConcurrency = 2
+            });
+            var keys = new List<string>();
+            var services = new ServiceCollection();
+            services.AddFileRepository(config);
+            await using (var provider = services.BuildServiceProvider())
+            {
+                var repository = provider.GetRequiredService<IRepository<IIndexedTestRecord>>();
+                for (var index = 0; index < 4; index++)
+                {
+                    var saved = await repository.SaveAsync(new IndexedTestRecord { Id = $"item-{index}" });
+                    keys.Add(saved.Envelope!.EnvelopeCacheKey);
+                }
+            }
+
+            var reopenServices = new ServiceCollection();
+            reopenServices.AddFileRepository(config);
+            await using var reopenedProvider = reopenServices.BuildServiceProvider();
+            var envelopes = reopenedProvider.GetRequiredService<IEnvelopeRepository<IIndexedTestRecord>>();
+            await envelopes.InitializeAsync();
+            Assert.IsInstanceOfType<IBatchedEnvelopeRepository<IIndexedTestRecord>>(envelopes);
+            var batched = (IBatchedEnvelopeRepository<IIndexedTestRecord>)envelopes;
+            var results = await batched.GetPhysicalManyAsync([keys[2], "missing", keys[0], keys[2], keys[3]]);
+            Assert.AreSame(results[0], results[2], "Duplicate keys should reuse one materialization within the batch.");
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            CollectionAssert.AreEqual(
+                new[] { "item-2", "item-0", "item-2", "item-3" },
+                results.Select(envelope =>
+                {
+                    Assert.IsTrue(StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var instance));
+                    return instance!.Id;
+                }).ToArray());
+
+            var held = results[0].ObjectInstance!;
+            var again = await batched.GetPhysicalManyAsync([keys[2]]);
+            if (cacheMode != StorageObjectCacheMode.MetadataOnly)
+            {
+                Assert.AreSame(held, again[0].ObjectInstance);
+            }
+
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+                batched.GetPhysicalManyAsync(keys, cancellation.Token).AsTask());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task MetadataRepository_FirstInsertAndLocatedUpdatePersistMetadataAcrossReopen()
+    {
+        var root = CreateTemporaryDirectory();
+        var config = new TestConfig<IIndexedTestRecord>(
+            root,
+            "metadata-first-insert",
+            TestStoragePolicy(hydrateOnInitialize: false) with
+            {
+                DurabilityMode = StorageDurabilityMode.Durable,
+                ObjectCacheMode = StorageObjectCacheMode.StrongObject
+            });
+        var initialMetadata = new byte[] { 1, 2, 3, 4 };
+        string persistedLocation;
+        string persistedKey;
+
+        try
+        {
+            var services = new ServiceCollection();
+            var failingEncryptor = new SwitchableEncryptor();
+            services.AddSingleton<IEncryptor>(failingEncryptor);
+            services.AddFileRepository(config);
+            await using (var provider = services.BuildServiceProvider())
+            {
+                var metadataRepository = provider
+                    .GetRequiredService<IEnvelopeMetadataRepository<IIndexedTestRecord>>();
+                Assert.AreEqual(StorageDurabilityMode.Durable, metadataRepository.CommitDurability);
+                Assert.AreSame(
+                    metadataRepository,
+                    provider.GetRequiredService<IRepository<IIndexedTestRecord>>());
+                var envelopeRepository = provider
+                    .GetRequiredService<IEnvelopeRepository<IIndexedTestRecord>>();
+                var addedNotifications = 0;
+                var storedNotifications = 0;
+                using var addedSubscription = envelopeRepository.SubscribeToAdded(_ =>
+                {
+                    addedNotifications++;
+                    return ValueTask.CompletedTask;
+                });
+                using var storedSubscription = envelopeRepository.SubscribeToStored(_ =>
+                {
+                    storedNotifications++;
+                    return ValueTask.CompletedTask;
+                });
+
+                var saved = await metadataRepository.SaveWithExtensionMetadataAsync(
+                    new IndexedTestRecord { Id = "metadata-record" },
+                    existingEnvelopeCacheKey: null,
+                    initialMetadata);
+                initialMetadata[0] = 99;
+                CollectionAssert.AreEqual(
+                    new byte[] { 1, 2, 3, 4 },
+                    saved.Envelope?.ExtensionMetadata);
+                Assert.AreEqual(1, addedNotifications);
+                Assert.AreEqual(1, storedNotifications);
+                persistedLocation = saved.Envelope?.Location
+                    ?? throw new AssertFailedException("The saved envelope requires a provider locator.");
+                persistedKey = saved.Envelope.EnvelopeCacheKey;
+
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        saved,
+                        persistedKey,
+                        new byte[] { 9 }).AsTask());
+                var invalidKeyCandidate = new IndexedTestRecord { Id = "invalid-key" };
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        invalidKeyCandidate,
+                        "   ",
+                        new byte[] { 9 }).AsTask());
+                Assert.IsNull(invalidKeyCandidate.Envelope);
+
+                var traversalCandidate = new IndexedTestRecord { Id = "traversal-key" };
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        traversalCandidate,
+                        $"..{Path.DirectorySeparatorChar}..{Path.DirectorySeparatorChar}outside",
+                        new byte[] { 9 }).AsTask());
+                Assert.IsNull(traversalCandidate.Envelope);
+
+                var unknownKeyCandidate = new IndexedTestRecord { Id = "unknown-key" };
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        unknownKeyCandidate,
+                        "not-an-existing-physical-key",
+                        new byte[] { 9 }).AsTask());
+                Assert.IsNull(unknownKeyCandidate.Envelope);
+
+                var oversizedMetadataCandidate = new IndexedTestRecord { Id = "oversized-metadata" };
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        oversizedMetadataCandidate,
+                        existingEnvelopeCacheKey: null,
+                        new byte[EnvelopeExtensionMetadataLimits.MaximumByteLength + 1]).AsTask());
+                Assert.IsNull(
+                    oversizedMetadataCandidate.Envelope,
+                    "Metadata-size validation must happen before the candidate is staged.");
+
+                var failedCandidate = new IndexedTestRecord { Id = "metadata-record-failed" };
+                failingEncryptor.FailEncryption = true;
+                await Assert.ThrowsExactlyAsync<IOException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        failedCandidate,
+                        persistedKey,
+                        new byte[] { 9, 9, 9 }).AsTask());
+                Assert.IsTrue(
+                    failingEncryptor.FailedEncryptionObserved,
+                    "The failure must occur while the staged candidate is being serialized for storage.");
+                Assert.IsNotNull(
+                    failedCandidate.Envelope,
+                    "A candidate is consumed once staging begins, even when the provider write fails.");
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        failedCandidate,
+                        persistedKey,
+                        new byte[] { 9, 9, 9 }).AsTask());
+
+                CollectionAssert.AreEqual(
+                    new byte[] { 1, 2, 3, 4 },
+                    saved.Envelope.ExtensionMetadata,
+                    "A failed detached update must not mutate the prior canonical envelope.");
+                var unchanged = await metadataRepository.QueryFirstAsync(
+                    record => record.Id == "metadata-record");
+                Assert.IsNotNull(unchanged);
+                CollectionAssert.AreEqual(
+                    new byte[] { 1, 2, 3, 4 },
+                    unchanged.Envelope?.ExtensionMetadata);
+
+                failingEncryptor.FailEncryption = false;
+                var updateCandidate = new IndexedTestRecord { Id = "metadata-record-updated" };
+                var updated = await metadataRepository.SaveWithExtensionMetadataAsync(
+                    updateCandidate,
+                    persistedKey,
+                    new byte[] { 5, 6, 7 });
+                Assert.AreEqual(persistedKey, updated.Envelope?.EnvelopeCacheKey);
+                Assert.AreEqual(persistedLocation, updated.Envelope?.Location);
+                Assert.AreEqual(1, addedNotifications);
+                Assert.AreEqual(2, storedNotifications);
+                Assert.HasCount(
+                    1,
+                    Directory.EnumerateFiles(root, "*.mpk", SearchOption.AllDirectories).ToArray(),
+                    "A located envelope must use the existing-object path rather than allocate another object.");
+            }
+
+            var reopenServices = new ServiceCollection();
+            reopenServices.AddFileRepository(config);
+            await using var reopenedProvider = reopenServices.BuildServiceProvider();
+            var reopened = reopenedProvider.GetRequiredService<IRepository<IIndexedTestRecord>>();
+            await reopened.InitializeAsync();
+            var loaded = await reopened.QueryFirstAsync(record => record.Id == "metadata-record-updated");
+
+            Assert.IsNotNull(loaded);
+            CollectionAssert.AreEqual(new byte[] { 5, 6, 7 }, loaded.Envelope?.ExtensionMetadata);
+            Assert.AreEqual(persistedLocation, loaded.Envelope?.Location);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task OrdinarySave_AfterMetadataAwareSave_PreservesExtensionMetadata()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var config = new TestConfig<IIndexedTestRecord>(
+                root,
+                "metadata-ordinary-save",
+                TestStoragePolicy(hydrateOnInitialize: false));
+            var services = new ServiceCollection();
+            services.AddFileRepository(config);
+
+            await using (var provider = services.BuildServiceProvider())
+            {
+                var metadataRepository = provider
+                    .GetRequiredService<IEnvelopeMetadataRepository<IIndexedTestRecord>>();
+                var saved = await metadataRepository.SaveWithExtensionMetadataAsync(
+                    new IndexedTestRecord { Id = "before" },
+                    existingEnvelopeCacheKey: null,
+                    new byte[] { 4, 3, 2, 1 });
+
+                saved.Id = "after";
+                var ordinarilySaved = await metadataRepository.SaveAsync(saved);
+
+                CollectionAssert.AreEqual(
+                    new byte[] { 4, 3, 2, 1 },
+                    ordinarilySaved.Envelope?.ExtensionMetadata);
+            }
+
+            var reopenServices = new ServiceCollection();
+            reopenServices.AddFileRepository(config);
+            await using var reopenedProvider = reopenServices.BuildServiceProvider();
+            var reopened = reopenedProvider.GetRequiredService<IRepository<IIndexedTestRecord>>();
+            await reopened.InitializeAsync();
+            var loaded = await reopened.QueryFirstAsync(record => record.Id == "after");
+
+            Assert.IsNotNull(loaded);
+            CollectionAssert.AreEqual(new byte[] { 4, 3, 2, 1 }, loaded.Envelope?.ExtensionMetadata);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(StorageDurabilityMode.Performance)]
+    [DataRow(StorageDurabilityMode.Durable)]
+    public void MetadataRepository_ReportsConfiguredFileCommitDurability(
+        StorageDurabilityMode durabilityMode)
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var config = new TestConfig<IIndexedTestRecord>(
+                root,
+                $"metadata-durability-{durabilityMode}",
+                TestStoragePolicy(hydrateOnInitialize: false) with
+                {
+                    DurabilityMode = durabilityMode
+                });
+            var services = new ServiceCollection();
+            services.AddFileRepository(config);
+            using var provider = services.BuildServiceProvider();
+
+            var repository = provider
+                .GetRequiredService<IEnvelopeMetadataRepository<IIndexedTestRecord>>();
+
+            Assert.AreEqual(durabilityMode, repository.CommitDurability);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task InitializeAsync_ConcurrentWaitersShareActivationAndDisposalWaitsForWatcherStart()
     {
@@ -1099,6 +1404,25 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
         public IObjectEnvelope<TContract> Deserialize(byte[] data) => envelope;
     }
 
+    private sealed class SwitchableEncryptor : IEncryptor
+    {
+        public bool FailEncryption { get; set; }
+        public bool FailedEncryptionObserved { get; private set; }
+
+        public byte[] Encrypt(ReadOnlySpan<byte> plain)
+        {
+            if (FailEncryption)
+            {
+                FailedEncryptionObserved = true;
+                throw new IOException("Simulated envelope encryption failure.");
+            }
+
+            return plain.ToArray();
+        }
+
+        public byte[] Decrypt(ReadOnlySpan<byte> cipher) => cipher.ToArray();
+    }
+
     private sealed class RejectingEnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
         where TContract : class, IStoredContract<TContract>
     {
@@ -1165,7 +1489,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
         string Id { get; set; }
     }
 
-    private sealed class IndexedTestRecord : IIndexedTestRecord
+    public sealed class IndexedTestRecord : IIndexedTestRecord
     {
         public string Id { get; set; } = string.Empty;
         public IObjectEnvelope<IIndexedTestRecord>? Envelope { get; set; }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using Idb.Storage.SegmentCore.ObjectLog;
@@ -82,23 +83,48 @@ internal static class PrimaryIndexDeltaCheckpoint
                     writer.WriteUInt32(0);
                 }
 
-                foreach (var pair in changes)
+                byte[]? entryBuffer = null;
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var keyBytes = Encoding.UTF8.GetBytes(pair.Key);
-                    if (keyBytes.Length is <= 0 or > MaximumKeyBytes)
+                    foreach (var pair in changes)
                     {
-                        throw new ArgumentOutOfRangeException(nameof(changes));
-                    }
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var keyLength = Encoding.UTF8.GetByteCount(pair.Key);
+                        if (keyLength is <= 0 or > MaximumKeyBytes)
+                        {
+                            throw new ArgumentOutOfRangeException(nameof(changes));
+                        }
 
-                    writer.WriteInt32(keyBytes.Length);
-                    writer.Write(keyBytes);
-                    writer.WriteInt32(pair.Value.IsDelete ? -1 : pair.Value.Address.Stripe);
-                    var address = pair.Value.IsDelete ? default : pair.Value.Address.Address;
-                    writer.WriteInt64(address.SegmentId);
-                    writer.WriteInt64(address.Offset);
-                    writer.WriteInt32(address.FrameLength);
-                    writer.WriteInt64(address.Lsn);
+                        var entryLength = checked(36 + keyLength);
+                        if (entryBuffer is null || entryBuffer.Length < entryLength)
+                        {
+                            if (entryBuffer is not null)
+                            {
+                                ArrayPool<byte>.Shared.Return(entryBuffer, clearArray: false);
+                            }
+                            entryBuffer = ArrayPool<byte>.Shared.Rent(entryLength);
+                        }
+
+                        var entry = entryBuffer.AsSpan(0, entryLength);
+                        BinaryPrimitives.WriteInt32LittleEndian(entry, keyLength);
+                        var keyBytes = entry.Slice(sizeof(int), keyLength);
+                        _ = Encoding.UTF8.GetBytes(pair.Key, keyBytes);
+                        var locator = entry[(sizeof(int) + keyLength)..];
+                        BinaryPrimitives.WriteInt32LittleEndian(locator, pair.Value.IsDelete ? -1 : pair.Value.Address.Stripe);
+                        var address = pair.Value.IsDelete ? default : pair.Value.Address.Address;
+                        BinaryPrimitives.WriteInt64LittleEndian(locator[4..], address.SegmentId);
+                        BinaryPrimitives.WriteInt64LittleEndian(locator[12..], address.Offset);
+                        BinaryPrimitives.WriteInt32LittleEndian(locator[20..], address.FrameLength);
+                        BinaryPrimitives.WriteInt64LittleEndian(locator[24..], address.Lsn);
+                        writer.Write(entry);
+                    }
+                }
+                finally
+                {
+                    if (entryBuffer is not null)
+                    {
+                        ArrayPool<byte>.Shared.Return(entryBuffer, clearArray: false);
+                    }
                 }
 
                 writer.WriteChecksumFooter();

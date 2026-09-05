@@ -1,5 +1,11 @@
 # Current Performance Results
 
+## Latest Preview.6 Snapshot — 5 September 2026
+
+See [Preview.6 Performance Snapshot](performance-preview6-20260905.md) for the latest complete-object
+SegmentCore/SQLite grid, full File/SegmentCore repository measurements, before/after comparisons and
+explicit regressions. The sections below retain their original evidence dates and cache boundaries.
+
 ## Scope
 
 These numbers are reproducible development snapshots, not universal product rankings. The first gate covers the file provider, and the SegmentCore transaction/query sections use complete-object comparison contracts. Raw storage-core reads, locator reopen, and metadata-open measurements are identified separately; they are not substitutes for repository-to-object query results.

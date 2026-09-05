@@ -154,9 +154,14 @@ index was about 71.5 times faster than the full ordinal scan for its workload.
 BenchmarkDotNet writes the complete local report under
 `BenchmarkDotNet.Artifacts/results/QueryPlannerBenchmarks-report-github.md`.
 
+## Reusing Query Work
+
+Compiled predicates use a bounded reusable-shape cache where supported; their bound constants and captured objects remain query-specific. The planner separately weak-caches syntax for the same expression instance: flattened AND/OR terms, possible bounded-range pairs and member paths. Expressions and closures can still be collected.
+
+This does not cache answers or final cost-based plans. Captured bounds, string-comparison modes, index counts and access-path selection remain live on every execution. Reusing an expression can avoid parsing work; constructing a fresh expression each time does not reuse this syntax cache. See the [preview.6 measurements](performance-preview6-20260905.md) for scope and correctness evidence. The historical benchmark table above does not measure these changes.
+
 ## Next Improvements
 
-- Cache full compiled predicates by reusable expression shape where safe.
 - Add richer distribution/correlation statistics beyond cardinality estimates.
 - Expose a public custom index provider contract.
 - Add deterministic persistent/rebuild strategies for very large stores.

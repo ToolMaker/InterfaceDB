@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Encryption;
@@ -11,6 +12,9 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private static readonly IReadOnlyList<EncryptedFieldDefinition> Definitions = DiscoverDefinitions(typeof(TContract));
+    private static readonly IReadOnlyDictionary<string, EncryptedFieldDefinition> DefinitionsByName = Definitions.ToDictionary(
+        static definition => definition.Name, StringComparer.Ordinal);
+    private static readonly ConditionalWeakTable<Type, Lazy<PropertyInfo[]>> RuntimeProperties = new();
     private readonly IEncryptor _encryptor;
 
     public EncryptedStorageFieldProcessor(IEncryptor encryptor)
@@ -42,9 +46,10 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
         var source = UnwrapProxy(entity);
         var runtimeProperties = ResolveRuntimeProperties(source.GetType());
         envelope.EncryptedFields ??= new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
-        foreach (var definition in Definitions)
+        for (var index = 0; index < Definitions.Count; index++)
         {
-            var property = runtimeProperties.GetValueOrDefault(definition.Name) ?? definition.Property;
+            var definition = Definitions[index];
+            var property = runtimeProperties[index];
             var value = property.GetValue(source);
             if (value is null && envelope.EncryptedFields.ContainsKey(definition.Name))
             {
@@ -75,7 +80,7 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
 
         return Definitions.Count == 0
             ? entity
-            : EncryptedStorageDispatchProxy<TContract>.Create(entity, envelope, _encryptor, Definitions);
+            : EncryptedStorageDispatchProxy<TContract>.Create(entity, envelope, _encryptor, DefinitionsByName);
     }
 
     private static TContract UnwrapProxy(TContract entity)
@@ -86,14 +91,15 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
     private static object? GetDefault(Type type)
         => type.IsValueType ? Activator.CreateInstance(type) : null;
 
-    private static IReadOnlyDictionary<string, PropertyInfo> ResolveRuntimeProperties(Type runtimeType)
-        => runtimeType.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Where(static property => property.GetMethod is not null)
-            .GroupBy(static property => property.Name, StringComparer.Ordinal)
-            .ToDictionary(
-                static group => group.Key,
-                static group => group.First(),
-                StringComparer.Ordinal);
+    private static PropertyInfo[] ResolveRuntimeProperties(Type runtimeType)
+        => RuntimeProperties.GetValue(runtimeType, static type => new(() =>
+        {
+            var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(static property => property.GetMethod is not null)
+                .GroupBy(static property => property.Name, StringComparer.Ordinal)
+                .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
+            return Definitions.Select(definition => properties.GetValueOrDefault(definition.Name) ?? definition.Property).ToArray();
+        })).Value;
 
     private static bool HasEncryptedStorageAttribute(Type type)
         => GetContractTypes(type)

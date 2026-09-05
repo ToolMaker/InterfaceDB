@@ -12,7 +12,9 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// <summary>
 /// Provides helper methods to wrap and unwrap contracts into envelopes while avoiding circular references.
 /// </summary>
-public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
+public class EnvelopeLifecycle<TContract> :
+    IEnvelopeLifecycle<TContract>,
+    IEnvelopeMetadataStager<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
@@ -27,6 +29,44 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
         _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
         _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
         _encryptedFieldProcessor = new EncryptedStorageFieldProcessor<TContract>(encryptor);
+    }
+
+    IObjectEnvelope<TContract> IEnvelopeMetadataStager<TContract>.Stage(
+        TContract detachedEntity,
+        string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata)
+    {
+        ArgumentNullException.ThrowIfNull(detachedEntity);
+        if (extensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new ArgumentException(
+                $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.",
+                nameof(extensionMetadata));
+        }
+
+        if (detachedEntity.Envelope is not null)
+        {
+            throw new InvalidOperationException(
+                "Metadata-aware saves require a detached entity without an envelope.");
+        }
+
+        if (existingEnvelopeCacheKey is not null
+            && string.IsNullOrWhiteSpace(existingEnvelopeCacheKey))
+        {
+            throw new ArgumentException(
+                "An existing envelope cache key cannot be empty or whitespace.",
+                nameof(existingEnvelopeCacheKey));
+        }
+
+        var envelope = _envelopeFactory()
+            ?? throw new InvalidOperationException("Envelope factory returned null.");
+        envelope.EnvelopeCacheKey = existingEnvelopeCacheKey ?? string.Empty;
+        // Provider locators are always rebuilt by the configured identity factory. Callers can
+        // identify an existing object by its opaque cache key but cannot supply a storage path.
+        envelope.Location = null;
+        envelope.ExtensionMetadata = extensionMetadata?.ToArray();
+        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(detachedEntity, envelope);
+        return envelope;
     }
 
     public ValueTask<IObjectEnvelope<TContract>> WrapAsync(TContract entity)
@@ -48,11 +88,17 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
             wrappedEnvelope = entity.Envelope;
         }
 
+        if (wrappedEnvelope.ExtensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new InvalidOperationException(
+                $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.");
+        }
+
         var storageEntity = _encryptedFieldProcessor.PrepareForStorage(entity, wrappedEnvelope);
         StoredContractEnvelopeAccessor<TContract>.SetEnvelope(storageEntity, envelope: null);
         wrappedEnvelope.ObjectInstance = storageEntity;
         _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
-        
+
         return ValueTask.FromResult(wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."));
     }
 
@@ -61,6 +107,12 @@ public class EnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>
         if (envelope is null)
         {
             throw new ArgumentNullException(nameof(envelope));
+        }
+
+        if (envelope.ExtensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new InvalidDataException(
+                $"Stored envelope extension metadata exceeds the {EnvelopeExtensionMetadataLimits.MaximumByteLength}-byte limit.");
         }
 
         var entity = envelope.ObjectInstance
@@ -145,4 +197,3 @@ internal static class StoredContractEnvelopeAccessor<TContract>
             .Compile();
     }
 }
-

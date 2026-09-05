@@ -1,6 +1,6 @@
 # Security And Encryption
 
-InterfaceDB can encrypt complete envelopes or selected contract properties. Encryption is opt-in; the default `EncryptionNone` provider writes plaintext `IDB4` payloads.
+InterfaceDB can encrypt complete envelopes or selected contract properties. Encryption is opt-in; the default `EncryptionNone` provider writes plaintext `IDB5` payloads.
 
 ## Security Boundary
 
@@ -21,8 +21,8 @@ Use normal OS permissions, backup controls, process hardening, and secret-manage
 Whole-envelope encryption is applied after MessagePack serialization:
 
 ```text
-object -> envelope -> IDB4 bytes -> AES-GCM -> IDBE file
-IDBE file -> AES-GCM -> IDB4 bytes -> envelope -> object
+object -> envelope -> IDB5 bytes -> AES-GCM -> IDBE file
+IDBE file -> AES-GCM -> IDB5 bytes -> envelope -> object
 ```
 
 `AesGcmEncryptor` uses:
@@ -106,6 +106,10 @@ public interface IPerson : IStoredContract<IPerson>
 ```
 
 Before serialization, InterfaceDB serializes and encrypts each marked value into `Envelope.EncryptedFields`, then clears the concrete backing property. On read, a `DispatchProxy` decrypts an encrypted getter on demand and encrypts setter values back into the envelope.
+
+Field-level encryption does not encrypt opaque `Envelope.ExtensionMetadata`. Without whole-envelope
+AES-GCM, extension metadata is stored as plaintext in the `IDB5` payload. Do not place secrets there,
+or enable whole-envelope encryption for the repository.
 
 Current limitations:
 

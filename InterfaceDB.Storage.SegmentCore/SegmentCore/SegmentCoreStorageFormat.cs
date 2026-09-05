@@ -32,7 +32,7 @@ public static class SegmentCoreStorageFormat
     public const int MutationWalVersion = 1;
     public const int CommitJournalVersion = 1;
     public const string RouterId = "fnv1a-utf16le-hash-stripes-v1";
-    public const string EnvelopeSerializationId = "InterfaceDB.BinaryEnvelope.IDB4";
+    public const string EnvelopeSerializationId = "InterfaceDB.BinaryEnvelope.IDB5";
 
     public static SegmentCoreStorageFormatInfo Current { get; } = new(
         EngineMajor,

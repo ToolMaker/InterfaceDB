@@ -12,8 +12,9 @@ internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
     private TContract? _inner;
     private IObjectEnvelope<TContract>? _envelope;
     private IEncryptor? _encryptor;
-    private IReadOnlyDictionary<string, EncryptedFieldDefinition> _definitions =
+    private static readonly IReadOnlyDictionary<string, EncryptedFieldDefinition> EmptyDefinitions =
         new Dictionary<string, EncryptedFieldDefinition>(StringComparer.Ordinal);
+    private IReadOnlyDictionary<string, EncryptedFieldDefinition> _definitions = EmptyDefinitions;
 
     internal TContract Inner =>
         _inner ?? throw new InvalidOperationException("Encrypted storage proxy has not been initialized.");
@@ -22,17 +23,14 @@ internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
         TContract inner,
         IObjectEnvelope<TContract> envelope,
         IEncryptor encryptor,
-        IReadOnlyList<EncryptedFieldDefinition> definitions)
+        IReadOnlyDictionary<string, EncryptedFieldDefinition> definitions)
     {
         var proxy = DispatchProxy.Create<TContract, EncryptedStorageDispatchProxy<TContract>>();
         var typedProxy = (EncryptedStorageDispatchProxy<TContract>)(object)proxy;
         typedProxy._inner = inner ?? throw new ArgumentNullException(nameof(inner));
         typedProxy._envelope = envelope ?? throw new ArgumentNullException(nameof(envelope));
         typedProxy._encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
-        typedProxy._definitions = definitions.ToDictionary(
-            static definition => definition.Name,
-            static definition => definition,
-            StringComparer.Ordinal);
+        typedProxy._definitions = definitions ?? throw new ArgumentNullException(nameof(definitions));
         return proxy;
     }
 

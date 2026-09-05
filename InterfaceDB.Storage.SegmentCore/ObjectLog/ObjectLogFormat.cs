@@ -75,18 +75,55 @@ internal static class ObjectLogFormat
         ReadOnlySpan<byte> payload,
         long auxiliary = 0)
     {
+        var frameLength = GetFrameLength(key, payload.Length);
+        var buffer = ArrayPool<byte>.Shared.Rent(frameLength);
+        try
+        {
+            WriteFrame(buffer.AsSpan(0, frameLength), kind, lsn, key, payload, auxiliary);
+            return new PooledFrame(buffer, frameLength);
+        }
+        catch
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+            throw;
+        }
+    }
+
+    internal static int GetFrameLength(string? key, int payloadLength)
+    {
         var keyLength = string.IsNullOrEmpty(key) ? 0 : Encoding.UTF8.GetByteCount(key);
-        var minimumLength = checked(FrameHeaderSize + keyLength + payload.Length + FrameFooterSize);
+        return GetFrameLength(keyLength, payloadLength);
+    }
+
+    private static int GetFrameLength(int keyLength, int payloadLength)
+    {
+        var minimumLength = checked(FrameHeaderSize + keyLength + payloadLength + FrameFooterSize);
         var frameLength = Align(minimumLength, FrameAlignment);
         if (frameLength > MaximumFrameBytes)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(payload),
+                nameof(payloadLength),
                 $"Phase 0 frame length {frameLength:N0} exceeds {MaximumFrameBytes:N0} bytes.");
         }
 
-        var buffer = ArrayPool<byte>.Shared.Rent(frameLength);
-        var frame = buffer.AsSpan(0, frameLength);
+        return frameLength;
+    }
+
+    internal static void WriteFrame(
+        Span<byte> frame,
+        ObjectLogRecordKind kind,
+        long lsn,
+        string? key,
+        ReadOnlySpan<byte> payload,
+        long auxiliary = 0)
+    {
+        var keyLength = string.IsNullOrEmpty(key) ? 0 : Encoding.UTF8.GetByteCount(key);
+        var frameLength = GetFrameLength(keyLength, payload.Length);
+        if (frame.Length != frameLength)
+        {
+            throw new ArgumentException("Destination must match the encoded frame length.", nameof(frame));
+        }
+
         frame.Clear();
         BinaryPrimitives.WriteUInt32LittleEndian(frame, FrameMagic);
         BinaryPrimitives.WriteUInt16LittleEndian(frame[4..], FormatVersion);
@@ -116,7 +153,6 @@ internal static class ObjectLogFormat
         BinaryPrimitives.WriteInt64LittleEndian(footer[8..], lsn);
         BinaryPrimitives.WriteUInt32LittleEndian(footer[16..], dataChecksum);
         BinaryPrimitives.WriteUInt32LittleEndian(footer[20..], CommitMarker);
-        return new PooledFrame(buffer, frameLength);
     }
 
     public static FrameHeader ParseFrameHeader(ReadOnlySpan<byte> header, string path, long offset)

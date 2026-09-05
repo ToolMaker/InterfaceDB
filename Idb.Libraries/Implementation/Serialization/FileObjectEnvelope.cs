@@ -39,6 +39,8 @@ public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
     public IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
         = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
 
+    public byte[]? ExtensionMetadata { get; set; }
+
     public string? Location { get; set; }
 
     public StorageObjectState State { get; set; }

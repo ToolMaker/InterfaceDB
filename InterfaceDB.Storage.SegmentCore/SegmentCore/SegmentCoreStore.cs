@@ -29,6 +29,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
     private readonly TaskCompletionSource _disposeCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private PrimaryIndexCheckpointState? _latestCheckpoint;
+    private readonly Dictionary<long, PrimaryIndexCheckpointFingerprint> _validatedCheckpointRoots = [];
     private long _checkpointGeneration;
     private int _tailRecordsReplayed;
     private readonly long _fullRecoveryFramesScanned;
@@ -1081,6 +1082,15 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             ? SaveAsync(key, payload, cancellationToken)
             : RequireOwnedTransaction(transaction).SaveAsync(key, payload, cancellationToken);
 
+    internal ValueTask SaveOwnedAsync(
+        string key,
+        byte[] payload,
+        IStorageTransaction? transaction,
+        CancellationToken cancellationToken = default) =>
+        transaction is null
+            ? SaveAsync(key, payload, cancellationToken)
+            : RequireOwnedTransaction(transaction).SaveOwnedAsync(key, payload, cancellationToken);
+
     public async ValueTask<bool> DeleteAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -1152,6 +1162,42 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             }
 
             return await _reader.ReadPayloadAsync(key, locator, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeReads);
+        }
+    }
+
+    // Results carry logical keys and follow physical read order; missing keys are omitted.
+    internal async ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadManyAsync(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var snapshot = new List<KeyValuePair<string, StripedObjectLogRecordAddress>>(keys.Count);
+            _indexVisibility.EnterReadLock();
+            try
+            {
+                foreach (var key in keys)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ArgumentException.ThrowIfNullOrWhiteSpace(key);
+                    if (_primaryIndex.TryGetValue(key, out var locator))
+                    {
+                        snapshot.Add(new KeyValuePair<string, StripedObjectLogRecordAddress>(key, locator));
+                    }
+                }
+            }
+            finally
+            {
+                _indexVisibility.ExitReadLock();
+            }
+
+            return await _reader.ReadManyAsync(snapshot, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -2094,9 +2140,9 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     StringComparer.Ordinal);
             }
 
-            changeSnapshot = new Dictionary<string, PrimaryIndexChange>(
-                _checkpointChanges,
-                StringComparer.Ordinal);
+            // Transfer the old map to this capture while holding the writer lock. New
+            // mutations use the replacement; failure restoration never mutates the capture.
+            changeSnapshot = _checkpointChanges;
             _checkpointChanges = new Dictionary<string, PrimaryIndexChange>(StringComparer.Ordinal);
         }
         finally
@@ -2155,7 +2201,8 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 _rootDirectory,
                 _options.LogOptions.StripeCount,
                 state,
-                _options.CheckpointGenerationsToKeep);
+                _options.CheckpointGenerationsToKeep,
+                _validatedCheckpointRoots);
             try
             {
                 await _transactionWal.RecycleAsync(
@@ -2414,21 +2461,9 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             var transactionId = _transactionWal?.ReserveTransactionId()
                 ?? _transactionJournal!.ReserveTransactionId();
             storageStarted = true;
-            var appendTasks = mutations.Select(mutation =>
-                (_transactionWal is null
-                    ? _writer.AppendTransactionalAsync(
-                        mutation.Kind,
-                        mutation.Key,
-                        mutation.Payload,
-                        transactionId,
-                        cancellationToken)
-                    : _writer.AppendDerivedTransactionalAsync(
-                        mutation.Kind,
-                        mutation.Key,
-                        mutation.Payload,
-                        transactionId,
-                        cancellationToken)).AsTask()).ToArray();
-            var addresses = await Task.WhenAll(appendTasks).ConfigureAwait(false);
+            var addresses = await _writer.AppendTransactionBatchAsync(
+                mutations, transactionId, requiresDurabilityFlush: _transactionWal is null,
+                cancellationToken).ConfigureAwait(false);
             if (_transactionWal is null)
             {
                 var identities = new TransactionMutationIdentity[mutations.Count];
@@ -2515,19 +2550,9 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 var transactionId = _transactionWal!.ReserveTransactionId();
                 storageStarted = true;
-                var appendTasks = new Task<StripedObjectLogRecordAddress>[mutations.Count];
-                for (var index = 0; index < mutations.Count; index++)
-                {
-                    var mutation = mutations[index];
-                    appendTasks[index] = _writer.AppendDerivedTransactionalAsync(
-                        mutation.Kind,
-                        mutation.Key,
-                        mutation.Payload,
-                        transactionId,
-                        cancellationToken).AsTask();
-                }
-
-                addresses = await Task.WhenAll(appendTasks).ConfigureAwait(false);
+                addresses = await _writer.AppendTransactionBatchAsync(
+                    mutations, transactionId, requiresDurabilityFlush: false,
+                    cancellationToken).ConfigureAwait(false);
                 durableCommit = _transactionWal.AppendCommitAsync(
                     transactionId,
                     mutations,

@@ -51,9 +51,15 @@ namespace Idb.Libraries.Implementation.Serialization
                 : null;
         }
 
-        public async ValueTask<TContract> WriteAsync(
+        public ValueTask<TContract> WriteAsync(
         TContract objectInstance,
         CancellationToken cancellationToken = default)
+            => WriteCoreAsync(objectInstance, batchScope: null, cancellationToken);
+
+        private async ValueTask<TContract> WriteCoreAsync(
+            TContract objectInstance,
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
+            CancellationToken cancellationToken)
         {
             if (objectInstance is null)
             {
@@ -67,7 +73,8 @@ namespace Idb.Libraries.Implementation.Serialization
                     objectInstance.Envelope.Location);
             }
 
-            var isNewStorageObject = objectInstance.Envelope is null;
+            var isNewStorageObject = objectInstance.Envelope is null
+                || string.IsNullOrWhiteSpace(objectInstance.Envelope.EnvelopeCacheKey);
             var envelope = await _envelopeLifecycle
             .WrapAsync(objectInstance)
             .ConfigureAwait(false);
@@ -76,13 +83,16 @@ namespace Idb.Libraries.Implementation.Serialization
                 ? await AcquireIdentitySemaphoreAsync(envelope, cancellationToken).ConfigureAwait(false)
                 : null;
             var semaphore = _writeSemaphore;
-            if (semaphore is not null)
-            {
-                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
+            var ownsWriteSemaphore = false;
 
             try
             {
+                if (semaphore is not null)
+                {
+                    await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    ownsWriteSemaphore = true;
+                }
+
                 if (isNewStorageObject)
                 {
                     ResolveNewStorageIdentity(envelope);
@@ -114,40 +124,42 @@ namespace Idb.Libraries.Implementation.Serialization
                     return savedObject;
                 }
 
-                var proposalIsCanonical = await _fileWriteCoordinator.PublishAndCommitAsync(
-                    path,
-                    requireNewPayload: isNewStorageObject,
-                    async (proposalPath, token) =>
+                async ValueTask WriteProposalAsync(string proposalPath, CancellationToken token)
+                {
+                    if (_storagePolicy.UseSingleWriteBuffer)
                     {
-                        if (_storagePolicy.UseSingleWriteBuffer)
+                        // WriteThrough already directs the write through intermediate caches.
+                        var payload = _serializer.Serialize(envelope);
+                        using var handle = File.OpenHandle(
+                            proposalPath,
+                            FileMode.CreateNew,
+                            FileAccess.Write,
+                            FileShare.None,
+                            options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
+                        await RandomAccess.WriteAsync(handle, payload, 0, token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var fso = new FileStreamOptions
                         {
-                            // WriteThrough already directs the write through intermediate caches.
-                            var payload = _serializer.Serialize(envelope);
-                            using var handle = File.OpenHandle(
-                                proposalPath,
-                                FileMode.CreateNew,
-                                FileAccess.Write,
-                                FileShare.None,
-                                options: FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough);
-                            await RandomAccess.WriteAsync(handle, payload, 0, token).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            var fso = new FileStreamOptions
-                            {
-                                Mode = FileMode.CreateNew,
-                                Access = FileAccess.Write,
-                                Share = FileShare.None,
-                                Options = FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough,
-                                BufferSize = _storagePolicy.NormalizedBufferSize
-                            };
+                            Mode = FileMode.CreateNew,
+                            Access = FileAccess.Write,
+                            Share = FileShare.None,
+                            Options = FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough,
+                            BufferSize = _storagePolicy.NormalizedBufferSize
+                        };
 
-                            await using var stream = new FileStream(proposalPath, fso);
-                            await _serializer.SerializeAsync(envelope, stream, token).ConfigureAwait(false);
-                            await stream.FlushAsync(token).ConfigureAwait(false);
-                        }
-                    },
-                    cancellationToken).ConfigureAwait(false);
+                        await using var stream = new FileStream(proposalPath, fso);
+                        await _serializer.SerializeAsync(envelope, stream, token).ConfigureAwait(false);
+                        await stream.FlushAsync(token).ConfigureAwait(false);
+                    }
+                }
+
+                var proposalIsCanonical = batchScope is null
+                    ? await _fileWriteCoordinator.PublishAndCommitAsync(
+                        path, isNewStorageObject, WriteProposalAsync, cancellationToken).ConfigureAwait(false)
+                    : await batchScope.PublishAndCommitAsync(
+                        path, isNewStorageObject, WriteProposalAsync, cancellationToken).ConfigureAwait(false);
 
                 var canonicalEnvelope = proposalIsCanonical
                     ? envelope
@@ -163,7 +175,7 @@ namespace Idb.Libraries.Implementation.Serialization
             }
             finally
             {
-                semaphore?.Release();
+                if (ownsWriteSemaphore) { semaphore!.Release(); }
                 identityLease?.Dispose();
             }
 
@@ -234,11 +246,35 @@ namespace Idb.Libraries.Implementation.Serialization
             int concurrency,
             CancellationToken cancellationToken)
         {
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? acquiredScope = null;
+            if (batchEnd - batchStart > 1
+                && _storagePolicy.DurabilityMode != StorageDurabilityMode.Performance
+                && _fileWriteCoordinator is CoalescingFileWriteCoordinator<TContract> coordinator)
+            {
+                try
+                {
+                    acquiredScope = await coordinator.AcquireWriterBatchScopeAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    for (var index = batchStart; index < batchEnd; index++)
+                    {
+                        failures.Add(CreateFailure(index, materialized[index], exception));
+                    }
+                    return;
+                }
+            }
+
+            await using var batchScope = acquiredScope;
             if (concurrency <= 1)
             {
                 for (var index = batchStart; index < batchEnd; index++)
                 {
-                    await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
+                    await TryWriteBatchItemAsync(materialized, results, failures, index, batchScope, cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -257,6 +293,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     failures,
                     start,
                     end,
+                    batchScope,
                     cancellationToken);
             }
 
@@ -269,11 +306,12 @@ namespace Idb.Libraries.Implementation.Serialization
             ConcurrentBag<StorageBulkOperationFailure> failures,
             int start,
             int end,
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
             CancellationToken cancellationToken)
         {
             for (var index = start; index < end; index++)
             {
-                await TryWriteBatchItemAsync(materialized, results, failures, index, cancellationToken)
+                await TryWriteBatchItemAsync(materialized, results, failures, index, batchScope, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -283,13 +321,14 @@ namespace Idb.Libraries.Implementation.Serialization
             TContract?[] results,
             ConcurrentBag<StorageBulkOperationFailure> failures,
             int index,
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var instance = materialized[index];
             try
             {
-                results[index] = await WriteAsync(instance, cancellationToken).ConfigureAwait(false);
+                results[index] = await WriteCoreAsync(instance, batchScope, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -306,7 +345,7 @@ namespace Idb.Libraries.Implementation.Serialization
             TContract instance,
             Exception exception)
         {
-            var envelope = instance.Envelope;
+            var envelope = instance?.Envelope;
             return new StorageBulkOperationFailure(
                 index,
                 envelope?.EnvelopeCacheKey,
@@ -494,6 +533,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 cached.ImplementationTypeName = envelope.ImplementationTypeName;
                 cached.CacheObjectInstance = envelope.CacheObjectInstance;
                 cached.EncryptedFields = envelope.EncryptedFields;
+                cached.ExtensionMetadata = envelope.ExtensionMetadata?.ToArray();
                 StorageObjectCachePolicy.StoreObjectReference(cached, envelope.ObjectInstance, _storagePolicy);
                 return;
             }
@@ -506,6 +546,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 ImplementationTypeName = envelope.ImplementationTypeName,
                 CacheObjectInstance = envelope.CacheObjectInstance,
                 EncryptedFields = envelope.EncryptedFields,
+                ExtensionMetadata = envelope.ExtensionMetadata?.ToArray(),
                 ObjectInstance = null,
                 State = envelope.State
             };

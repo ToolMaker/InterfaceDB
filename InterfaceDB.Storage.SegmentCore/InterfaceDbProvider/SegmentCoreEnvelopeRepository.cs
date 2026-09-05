@@ -22,6 +22,7 @@ namespace Idb.Storage.SegmentCore;
 /// </summary>
 public sealed class SegmentCoreEnvelopeRepository<TContract> :
     IEnvelopeRepository<TContract>,
+    IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
     IPersistentSearchIndexCatalogRepository,
     ISegmentCoreRepositoryMaintenance<TContract>,
@@ -232,7 +233,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             {
                 foreach (var item in prepared)
                 {
-                    await transaction.SaveAsync(item.Envelope.EnvelopeCacheKey, item.Payload, cancellationToken)
+                    await Store.SaveOwnedAsync(item.Envelope.EnvelopeCacheKey, item.Payload, transaction, cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -355,6 +356,99 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         return MaterializeAndCache(physicalStorageKey, payload);
     }
 
+    public async ValueTask<IReadOnlyList<IObjectEnvelope<TContract>>> GetPhysicalManyAsync(
+        IReadOnlyList<string> physicalStorageKeys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(physicalStorageKeys);
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
+        if (physicalStorageKeys.Count == 0)
+        {
+            return Array.Empty<IObjectEnvelope<TContract>>();
+        }
+        var batch = new OrderedReadBatch<IObjectEnvelope<TContract>>(physicalStorageKeys, cancellationToken);
+        List<string>? missing = null;
+        foreach (var entry in batch.UniqueKeys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = entry.Key;
+            if (_envelopes.TryGetValue(key, out var cached)
+                && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var instance)
+                && instance is not null)
+            {
+                // Keep a weak-cache hit alive for the lifetime of this materialized batch.
+                if (cached.ObjectInstance is null)
+                {
+                    var readEnvelope = _envelopeFactory();
+                    readEnvelope.EnvelopeCacheKey = cached.EnvelopeCacheKey;
+                    readEnvelope.VersionTag = cached.VersionTag;
+                    readEnvelope.Location = cached.Location;
+                    readEnvelope.State = cached.State;
+                    readEnvelope.ImplementationTypeName = cached.ImplementationTypeName;
+                    readEnvelope.CacheObjectInstance = cached.CacheObjectInstance;
+                    readEnvelope.EncryptedFields = cached.EncryptedFields;
+                    readEnvelope.ExtensionMetadata = cached.ExtensionMetadata;
+                    readEnvelope.ObjectInstance = instance;
+                    batch.Set(entry.Value, readEnvelope);
+                }
+                else
+                {
+                    batch.Set(entry.Value, cached);
+                }
+            }
+            else
+            {
+                (missing ??= new List<string>()).Add(key);
+            }
+        }
+
+        if (missing is not null)
+        {
+            var records = await Store.ReadManyAsync(missing, cancellationToken).ConfigureAwait(false);
+            foreach (var record in records)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                batch.Set(record.Key, MaterializeAndCache(record.Key, record.Payload));
+            }
+        }
+
+        if (missing is not null)
+        {
+            foreach (var key in missing)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!batch.HasValue(key))
+                {
+                    RemoveCachedEnvelope(key);
+                }
+            }
+        }
+        return batch.Complete(cancellationToken);
+    }
+
+    private async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumeratePartiallyCachedAsync(
+        IReadOnlyList<string> keys,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        for (var start = 0; start < keys.Count;)
+        {
+            var count = Math.Min(start == 0 ? 1 : 256, keys.Count - start);
+            var window = new string[count];
+            for (var index = 0; index < count; index++)
+            {
+                window[index] = keys[start + index];
+            }
+            var envelopes = await GetPhysicalManyAsync(window, cancellationToken).ConfigureAwait(false);
+            foreach (var envelope in envelopes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return envelope;
+            }
+            start += count;
+        }
+    }
+
     public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -393,6 +487,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 yield return envelope;
             }
 
+            yield break;
+        }
+
+        var cachedCount = cachedEnvelopes.Count(static envelope =>
+            StorageObjectCachePolicy.TryGetObjectInstance(envelope, out _));
+        if (cachedCount > 0 && cachedCount >= cachedEnvelopes.Count / 2)
+        {
+            var keys = Store.GetKeysSnapshot();
+            await foreach (var envelope in EnumeratePartiallyCachedAsync(keys, cancellationToken).ConfigureAwait(false))
+            {
+                yield return envelope;
+            }
             yield break;
         }
 
@@ -511,7 +617,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
             try
             {
-                var migratedContract = engine.Migrate(record.Key, sourceVersion, record.Payload);
+                var migrationResult = engine.Migrate(record.Key, sourceVersion, record.Payload);
+                var migratedContract = migrationResult.Contract;
                 var envelope = await _envelopeLifecycle.WrapAsync(migratedContract).ConfigureAwait(false);
                 envelope.EnvelopeCacheKey = record.Key;
                 envelope.VersionTag = activeVersion;
@@ -519,6 +626,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 envelope.ImplementationTypeName = migratedContract.GetType().AssemblyQualifiedName
                     ?? migratedContract.GetType().FullName
                     ?? migratedContract.GetType().Name;
+                envelope.ExtensionMetadata = migrationResult.ExtensionMetadata?.ToArray();
                 envelope.State = StorageObjectState.Active;
                 pending.Add(_envelopeLifecycle.Unwrap(envelope));
                 if (pending.Count == options.BatchSize)
@@ -758,7 +866,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             return;
         }
 
-        var records = await Store.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
+        var records = await Store.ReadManyAsync(hydrationCandidates.Keys.ToArray(), CancellationToken.None).ConfigureAwait(false);
         await Parallel.ForEachAsync(
             records,
             new ParallelOptions
@@ -822,7 +930,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             throw new InvalidOperationException("A deleted storage object cannot be written again.");
         }
 
-        var isNew = instance.Envelope is null;
+        var isNew = instance.Envelope is null
+            || string.IsNullOrWhiteSpace(instance.Envelope.EnvelopeCacheKey);
         var existingPhysicalKey = instance.Envelope?.EnvelopeCacheKey;
         var envelope = await _envelopeLifecycle.WrapAsync(instance).ConfigureAwait(false);
         var reserved = false;
@@ -1034,6 +1143,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             cached.EncryptedFields = new Dictionary<string, EncryptedFieldValue>(
                 hydrated.EncryptedFields,
                 StringComparer.Ordinal);
+            cached.ExtensionMetadata = hydrated.ExtensionMetadata?.ToArray();
             cached.State = hydrated.State;
             StorageObjectCachePolicy.StoreObjectReference(cached, instance, _storagePolicy);
         }

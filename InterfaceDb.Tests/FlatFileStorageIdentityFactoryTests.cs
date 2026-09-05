@@ -35,6 +35,25 @@ public sealed class FlatFileStorageIdentityFactoryTests
         Assert.AreEqual("customer_000001", envelope.EnvelopeCacheKey);
     }
 
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow("   ")]
+    public void InitEnvelope_WhenEnvelopeCacheKeyIsBlank_AssignsProviderIdentity(string? cacheKey)
+    {
+        var envelope = CreateEnvelope("customer-000002");
+        envelope.EnvelopeCacheKey = cacheKey!;
+        envelope.Location = null;
+        var factory = CreateFactory();
+
+        factory.InitEnvelope(envelope);
+
+        Assert.AreEqual("customer-000002", envelope.EnvelopeCacheKey);
+        Assert.AreEqual(
+            Path.Combine("identity-tests", "1.0.0", "customer-000002.mpk"),
+            envelope.Location);
+    }
+
     private static FlatFileStorageIdentityFactory<TestStoredContract, string> CreateFactory()
         => new(new TestContractConfig(), new TestKeyFactory());
 

@@ -17,6 +17,8 @@ Use the focused guides when needed:
 - [Query Planning](query-planning.md): expression routing, cardinality estimates, intersections, unions, and residual predicates.
 - [Search Index Strategies](search-index-strategies.md): exact, range, prefix, suffix, and contains structures.
 - [Current Performance Results](performance-results.md): reproducible measurements and honest interpretation.
+- [Preview.6 Performance Snapshot](performance-preview6-20260905.md): latest complete-object SQLite comparison, repository timings, allocations and regressions.
+- [Preview.6 Release Notes](preview6-release-notes.md): changes, IDB5 compatibility and release qualification.
 - [SegmentCore Storage Provider](segment-core-storage-provider.md): installation, registration, atomic writes, paged locators, migration, online backup/restore, compatibility policy, qualification, performance, and supported boundaries.
 - [Object-Native Storage Engine Research And Plan](object-native-storage-engine-plan.md): source-backed architecture decision, recovery design, benchmarks, and go/no-go gates for a journal provider.
 - [Object-Native Storage Phase 0 Results](object-log-phase-zero-results.md): implemented admission probe, fault/recovery evidence, measured Windows/Linux results, and the no-go decision.

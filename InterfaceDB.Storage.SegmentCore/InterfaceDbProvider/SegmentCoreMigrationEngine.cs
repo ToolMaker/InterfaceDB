@@ -1,4 +1,5 @@
 using Idb.Libraries.Abstractions.Dtos;
+using System.Buffers;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Migrations;
@@ -35,7 +36,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         ValidateDefinitions();
     }
 
-    public TContract Migrate(
+    public (TContract Contract, byte[]? ExtensionMetadata) Migrate(
         string physicalKey,
         string sourceVersion,
         byte[] storedPayload)
@@ -44,7 +45,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceVersion);
         ArgumentNullException.ThrowIfNull(storedPayload);
         var chain = BuildChain(sourceVersion);
-        var envelope = ReadEnvelope(_encryptor.Decrypt(storedPayload));
+        var envelope = ReadEnvelope(_encryptor.Decrypt(storedPayload), physicalKey);
         if (!string.IsNullOrWhiteSpace(envelope.CacheKey)
             && !string.Equals(envelope.CacheKey, physicalKey, StringComparison.Ordinal))
         {
@@ -93,7 +94,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
             }
         }
 
-        return migrated as TContract
+        var contract = migrated as TContract
             ?? throw new MigrationExecutionException(
                 chain[^1].MigrationType,
                 sourceVersion,
@@ -102,6 +103,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                 physicalKey,
                 new InvalidCastException(
                     $"Migration result does not implement '{typeof(TContract).FullName}'."));
+        return (contract, envelope.ExtensionMetadata?.ToArray());
     }
 
     private IReadOnlyList<MigrationDescriptor> BuildChain(string sourceVersion)
@@ -171,19 +173,20 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         }
     }
 
-    private static SerializedEnvelope ReadEnvelope(byte[] payload)
+    private static SerializedEnvelope ReadEnvelope(byte[] payload, string physicalKey)
     {
         if (payload.Length < 4
             || payload[0] != (byte)'I'
             || payload[1] != (byte)'D'
             || payload[2] != (byte)'B'
-            || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4'))
+            || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5'))
         {
-            return new SerializedEnvelope(string.Empty, payload);
+            return new SerializedEnvelope(string.Empty, payload, null);
         }
 
-        var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4';
-        var hasEncryptedFields = payload[3] == (byte)'4';
+        var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5';
+        var hasEncryptedFields = payload[3] is (byte)'4' or (byte)'5';
+        var hasExtensionMetadata = payload[3] == (byte)'5';
         using var stream = new MemoryStream(payload, writable: false);
         stream.Position = 4;
         _ = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
@@ -201,12 +204,38 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                 SerializerOptions);
         }
 
+        var extensionMetadata = hasExtensionMetadata
+            ? ReadExtensionMetadata(payload, stream, physicalKey)
+            : null;
+
         var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
         stream.ReadExactly(objectPayload);
-        return new SerializedEnvelope(cacheKey, objectPayload);
+        return new SerializedEnvelope(cacheKey, objectPayload, extensionMetadata);
     }
 
-    private sealed record SerializedEnvelope(string CacheKey, byte[] ObjectPayload);
+    private static byte[]? ReadExtensionMetadata(
+        byte[] payload,
+        MemoryStream stream,
+        string physicalKey)
+    {
+        var unread = payload.AsMemory(checked((int)stream.Position));
+        var reader = new MessagePackReader(unread);
+        var extensionMetadata = reader.ReadBytes();
+        stream.Position += checked((long)reader.Consumed);
+        if (extensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new InvalidDataException(
+                $"SegmentCore envelope extension metadata for key '{physicalKey}' exceeds the " +
+                $"{EnvelopeExtensionMetadataLimits.MaximumByteLength}-byte limit.");
+        }
+
+        return extensionMetadata?.ToArray();
+    }
+
+    private sealed record SerializedEnvelope(
+        string CacheKey,
+        byte[] ObjectPayload,
+        byte[]? ExtensionMetadata);
 
     private sealed record MigrationDescriptor
     {

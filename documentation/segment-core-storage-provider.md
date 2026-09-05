@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.5`. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.6`. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
@@ -672,7 +672,7 @@ others:
    manifests fail before mutation with `SegmentCoreCompatibilityException`. Router identity and
    transaction protocol are immutable for an existing store.
 3. **Serialized contract envelopes.** New writes use
-   `InterfaceDB.BinaryEnvelope.IDB4`; readers retain `IDB2` and `IDB3` compatibility. Application
+   `InterfaceDB.BinaryEnvelope.IDB5`; readers retain `IDB2`, `IDB3`, and `IDB4` compatibility. Application
    contract changes use versioned contracts and registered adjacent `IMigration` steps. Old readers
    are not promised forward compatibility with a newer envelope. Do not remove a legacy reader or
    migration step while any live store or supported backup may still contain that version.

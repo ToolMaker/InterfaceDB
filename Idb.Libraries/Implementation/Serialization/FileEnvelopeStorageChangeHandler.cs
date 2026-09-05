@@ -137,6 +137,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
                 ImplementationTypeName = envelope.ImplementationTypeName,
                 CacheObjectInstance = envelope.CacheObjectInstance,
                 EncryptedFields = envelope.EncryptedFields,
+                ExtensionMetadata = envelope.ExtensionMetadata?.ToArray(),
                 ObjectInstance = null,
                 ObjectInstanceWeakReference = null,
                 State = envelope.State

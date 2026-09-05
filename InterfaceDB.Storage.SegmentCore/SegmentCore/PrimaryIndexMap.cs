@@ -11,7 +11,7 @@ internal sealed class PrimaryIndexMap :
     IDisposable
 {
     private readonly IReadOnlyDictionary<string, StripedObjectLogRecordAddress> _basis;
-    private readonly Dictionary<string, PrimaryIndexChange> _changes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, OverlayChange> _changes = new(StringComparer.Ordinal);
     private int _count;
     private int _disposed;
 
@@ -113,7 +113,7 @@ internal sealed class PrimaryIndexMap :
 
         foreach (var pair in _changes)
         {
-            if (!pair.Value.IsDelete && !_basis.ContainsKey(pair.Key))
+            if (!pair.Value.IsDelete && !pair.Value.ExistedInBasis)
             {
                 yield return new KeyValuePair<string, StripedObjectLogRecordAddress>(
                     pair.Key,
@@ -135,8 +135,11 @@ internal sealed class PrimaryIndexMap :
     private void Set(string key, StripedObjectLogRecordAddress value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        var exists = TryGetValue(key, out _);
-        _changes[key] = new PrimaryIndexChange(false, value);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        var hasChange = _changes.TryGetValue(key, out var previous);
+        var existedInBasis = hasChange ? previous.ExistedInBasis : _basis.ContainsKey(key);
+        var exists = hasChange ? !previous.IsDelete : existedInBasis;
+        _changes[key] = new OverlayChange(false, value, existedInBasis);
         if (!exists)
         {
             _count++;
@@ -145,9 +148,12 @@ internal sealed class PrimaryIndexMap :
 
     private void RemoveKnown(string key)
     {
-        if (_basis.ContainsKey(key))
+        var existedInBasis = _changes.TryGetValue(key, out var previous)
+            ? previous.ExistedInBasis
+            : _basis.ContainsKey(key);
+        if (existedInBasis)
         {
-            _changes[key] = new PrimaryIndexChange(true, default);
+            _changes[key] = new OverlayChange(true, default, true);
         }
         else
         {
@@ -156,4 +162,9 @@ internal sealed class PrimaryIndexMap :
 
         _count--;
     }
+
+    private readonly record struct OverlayChange(
+        bool IsDelete,
+        StripedObjectLogRecordAddress Address,
+        bool ExistedInBasis);
 }

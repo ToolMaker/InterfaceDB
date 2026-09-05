@@ -44,7 +44,7 @@ public sealed class SegmentCoreCompatibilityTests
         Assert.AreEqual(1, SegmentCoreStorageFormat.ObjectLogVersion);
         Assert.AreEqual(2, SegmentCoreStorageFormat.PrimaryCheckpointVersion);
         Assert.AreEqual("fnv1a-utf16le-hash-stripes-v1", SegmentCoreStorageFormat.RouterId);
-        Assert.AreEqual("InterfaceDB.BinaryEnvelope.IDB4", SegmentCoreStorageFormat.EnvelopeSerializationId);
+        Assert.AreEqual("InterfaceDB.BinaryEnvelope.IDB5", SegmentCoreStorageFormat.EnvelopeSerializationId);
         var serializerMagic = typeof(BinaryObjectSerializer<>).GetField(
             "CurrentMagic",
             BindingFlags.NonPublic | BindingFlags.Static)?.GetRawConstantValue();
@@ -171,7 +171,7 @@ public sealed class SegmentCoreCompatibilityTests
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
         Assert.AreEqual(
-            "3DF03F1DBB96790470B99FC3B584389A8FBA14F2F3D349ACA947BB4A0E25AF3A",
+            "F66B59D3D4BB002CE053F5699FDD2CE3E7CF788451C310446ABD0A534F0B94DC",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

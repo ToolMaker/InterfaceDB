@@ -1,3 +1,4 @@
+using System.Buffers;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
@@ -76,6 +77,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     cached.ImplementationTypeName = deserialized.ImplementationTypeName;
                     cached.CacheObjectInstance = deserialized.CacheObjectInstance;
                     cached.EncryptedFields = deserialized.EncryptedFields;
+                    cached.ExtensionMetadata = deserialized.ExtensionMetadata?.ToArray();
                     StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
                     return unwrapped;
                 }
@@ -96,6 +98,24 @@ namespace Idb.Libraries.Implementation.Serialization
             FileInfo file,
             CancellationToken cancellationToken)
         {
+            if (_serializer is IMemoryObjectSerializer<TContract> memorySerializer
+                && _serializer is not IRotationAwareObjectSerializer<TContract>)
+            {
+                await using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
+                    FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var length = checked((int)stream.Length);
+                var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, length));
+                try
+                {
+                    await stream.ReadExactlyAsync(buffer.AsMemory(0, length), cancellationToken).ConfigureAwait(false);
+                    return memorySerializer.DeserializeMemory(buffer.AsMemory(0, length));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                }
+            }
+
             var payload = await File.ReadAllBytesAsync(file.FullName, cancellationToken).ConfigureAwait(false);
             if (_serializer is not IRotationAwareObjectSerializer<TContract> rotationAwareSerializer)
             {

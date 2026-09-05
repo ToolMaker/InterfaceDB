@@ -16,7 +16,7 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
     private readonly string _segmentsDirectory;
     private readonly FileStream _writerLease;
     private readonly SemaphoreSlim _appendGate = new(1, 1);
-    private readonly List<ObjectLogFormat.PooledFrame> _pendingBatchFrames = [];
+    private readonly List<ObjectLogAppendRequest> _pendingBatchFrames = [];
     private readonly List<ObjectLogRecordAddress> _pendingBatchAddresses = [];
     private SafeFileHandle _segmentHandle;
     private string _activeSegmentPath;
@@ -311,48 +311,29 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
                     throw new ArgumentOutOfRangeException(nameof(requests));
                 }
 
-                var frame = ObjectLogFormat.CreateFrame(
-                    request.Kind,
-                    checked(_lastLsn + pendingFrames.Count + 1),
-                    request.Key,
-                    request.Payload.Span,
-                    request.TransactionId);
+                var frameLength = ObjectLogFormat.GetFrameLength(request.Key, request.Payload.Length);
                 if ((_activeOffset > ObjectLogFormat.SegmentHeaderSize || pendingFrames.Count > 0)
-                    && _activeOffset + pendingBytes + frame.Length > _options.NormalizedMaxSegmentBytes)
+                    && _activeOffset + pendingBytes + frameLength > _options.NormalizedMaxSegmentBytes)
                 {
-                    frame.Dispose();
                     await FlushPendingFramesAsync(pendingFrames, pendingAddresses).ConfigureAwait(false);
                     pendingBytes = 0;
                     await RotateAsync().ConfigureAwait(false);
-                    frame = ObjectLogFormat.CreateFrame(
-                        request.Kind,
-                        checked(_lastLsn + 1),
-                        request.Key,
-                        request.Payload.Span,
-                        request.TransactionId);
                 }
                 else if (pendingFrames.Count > 0
-                         && pendingBytes + frame.Length > _options.NormalizedMaximumCombinedWriteBytes)
+                         && pendingBytes + frameLength > _options.NormalizedMaximumCombinedWriteBytes)
                 {
-                    frame.Dispose();
                     await FlushPendingFramesAsync(pendingFrames, pendingAddresses).ConfigureAwait(false);
                     pendingBytes = 0;
-                    frame = ObjectLogFormat.CreateFrame(
-                        request.Kind,
-                        checked(_lastLsn + 1),
-                        request.Key,
-                        request.Payload.Span,
-                        request.TransactionId);
                 }
 
                 var address = new ObjectLogRecordAddress(
                     _activeSegmentId,
                     checked(_activeOffset + pendingBytes),
-                    frame.Length,
+                    frameLength,
                     checked(_lastLsn + pendingFrames.Count + 1));
-                pendingFrames.Add(frame);
+                pendingFrames.Add(request);
                 pendingAddresses.Add(address);
-                pendingBytes = checked(pendingBytes + frame.Length);
+                pendingBytes = checked(pendingBytes + frameLength);
                 results[index] = address;
             }
 
@@ -365,11 +346,6 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
         }
         finally
         {
-            foreach (var frame in pendingFrames)
-            {
-                frame.Dispose();
-            }
-
             pendingFrames.Clear();
             pendingAddresses.Clear();
             _appendGate.Release();
@@ -560,7 +536,7 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
     }
 
     private async ValueTask FlushPendingFramesAsync(
-        List<ObjectLogFormat.PooledFrame> frames,
+        List<ObjectLogAppendRequest> frames,
         List<ObjectLogRecordAddress> addresses)
     {
         if (frames.Count == 0)
@@ -568,16 +544,24 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
             return;
         }
 
-        var length = frames.Sum(static frame => frame.Length);
+        var length = checked((int)(addresses[^1].Offset + addresses[^1].FrameLength - _activeOffset));
         var buffer = ArrayPool<byte>.Shared.Rent(length);
         try
         {
             var destination = buffer.AsMemory(0, length);
             var copied = 0;
-            foreach (var frame in frames)
+            for (var index = 0; index < frames.Count; index++)
             {
-                frame.Memory.CopyTo(destination[copied..]);
-                copied += frame.Length;
+                var request = frames[index];
+                var address = addresses[index];
+                ObjectLogFormat.WriteFrame(
+                    destination.Span.Slice(copied, address.FrameLength),
+                    request.Kind,
+                    address.Lsn,
+                    request.Key,
+                    request.Payload.Span,
+                    request.TransactionId);
+                copied += address.FrameLength;
             }
 
             await RandomAccess.WriteAsync(
@@ -591,11 +575,6 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
-            foreach (var frame in frames)
-            {
-                frame.Dispose();
-            }
-
             frames.Clear();
             addresses.Clear();
         }

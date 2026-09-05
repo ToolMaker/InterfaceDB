@@ -122,7 +122,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 {
                     replayRecord(stripe, record);
                 }
-        };
+            };
         var openTasks = new Task<StripeWorker>[options.StripeCount];
         var launchedTasks = 0;
         try
@@ -289,6 +289,90 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             transactionId: 0,
             requiresDurabilityFlush: false,
             cancellationToken);
+
+    internal async ValueTask<StripedObjectLogRecordAddress[]> AppendTransactionBatchAsync(
+        IReadOnlyList<SegmentCorePendingMutation> mutations,
+        long transactionId,
+        bool requiresDurabilityFlush,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(transactionId);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (mutations.Count == 0)
+        {
+            return [];
+        }
+
+        var completion = new BatchAppendCompletion(mutations.Count);
+        var submitted = 0;
+        try
+        {
+            for (; submitted < mutations.Count; submitted++)
+            {
+                var mutation = mutations[submitted];
+                await _stripes[SelectStripe(mutation.Key)].EnqueueBatchItemAsync(
+                    mutation,
+                    transactionId,
+                    requiresDurabilityFlush,
+                    completion,
+                    submitted,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception)
+        {
+            completion.FailUnsubmitted(exception, mutations.Count - submitted);
+        }
+
+        // Drain every admitted record, even after admission fails, before releasing payloads
+        // or the transaction preparation gate. Queue capacity continues to count records.
+        return await completion.Task.ConfigureAwait(false);
+    }
+
+    private sealed class BatchAppendCompletion
+    {
+        private readonly StripedObjectLogRecordAddress[] _addresses;
+        private readonly TaskCompletionSource<StripedObjectLogRecordAddress[]> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Exception? _failure;
+        private int _remaining;
+
+        public BatchAppendCompletion(int count)
+        {
+            _addresses = new StripedObjectLogRecordAddress[count];
+            _remaining = count;
+        }
+
+        public Task<StripedObjectLogRecordAddress[]> Task => _completion.Task;
+
+        public void Succeed(int index, StripedObjectLogRecordAddress address)
+        {
+            _addresses[index] = address;
+            Complete(1);
+        }
+
+        public void FailUnsubmitted(Exception exception, int count)
+        {
+            Interlocked.CompareExchange(ref _failure, exception, null);
+            Complete(count);
+        }
+
+        private void Complete(int count)
+        {
+            if (Interlocked.Add(ref _remaining, -count) == 0)
+            {
+                if (_failure is { } failure)
+                {
+                    _completion.TrySetException(failure);
+                }
+                else
+                {
+                    _completion.TrySetResult(_addresses);
+                }
+            }
+        }
+    }
 
     internal async ValueTask FlushAllAsync(CancellationToken cancellationToken = default) =>
         await FlushStripesAsync(ulong.MaxValue, cancellationToken).ConfigureAwait(false);
@@ -495,12 +579,6 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             bool requiresDurabilityFlush,
             CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_failure is not null)
-            {
-                return ValueTask.FromException<StripedObjectLogRecordAddress>(_failure);
-            }
-
             var completion = new TaskCompletionSource<StripedObjectLogRecordAddress>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             var pending = new PendingWrite(
@@ -510,25 +588,57 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 transactionId,
                 requiresDurabilityFlush,
                 completion);
+            var admission = QueueAsync(pending, cancellationToken);
+            return admission.IsCompletedSuccessfully
+                ? new ValueTask<StripedObjectLogRecordAddress>(completion.Task)
+                : AwaitAdmissionAsync(admission, completion.Task);
+        }
+
+        public ValueTask EnqueueBatchItemAsync(
+            SegmentCorePendingMutation mutation,
+            long transactionId,
+            bool requiresDurabilityFlush,
+            BatchAppendCompletion completion,
+            int index,
+            CancellationToken cancellationToken) => QueueAsync(
+                new PendingWrite(mutation.Kind, mutation.Key, mutation.Payload, transactionId,
+                    requiresDurabilityFlush, null, completion, index), cancellationToken);
+
+        private static async ValueTask<StripedObjectLogRecordAddress> AwaitAdmissionAsync(
+            ValueTask admission,
+            Task<StripedObjectLogRecordAddress> completion)
+        {
+            await admission.ConfigureAwait(false);
+            return await completion.ConfigureAwait(false);
+        }
+
+        private ValueTask QueueAsync(PendingWrite pending, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_failure is { } priorFailure)
+            {
+                return ValueTask.FromException(priorFailure);
+            }
+
             var outstanding = Interlocked.Increment(ref _outstanding);
             if (_channel.Writer.TryWrite(pending))
             {
                 UpdateMaximum(ref _peakOutstanding, outstanding);
                 Interlocked.Increment(ref _submitted);
-                return new ValueTask<StripedObjectLogRecordAddress>(completion.Task);
+                return ValueTask.CompletedTask;
             }
 
             var failure = Volatile.Read(ref _failure);
             if (failure is not null)
             {
                 Interlocked.Decrement(ref _outstanding);
-                return ValueTask.FromException<StripedObjectLogRecordAddress>(failure);
+                return ValueTask.FromException(failure);
             }
 
             if (Volatile.Read(ref _completed) != 0)
             {
                 Interlocked.Decrement(ref _outstanding);
-                return ValueTask.FromException<StripedObjectLogRecordAddress>(
+                return ValueTask.FromException(
                     new ObjectDisposedException(nameof(StripedObjectLogProbeWriter)));
             }
 
@@ -536,7 +646,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             {
                 Interlocked.Decrement(ref _outstanding);
                 Interlocked.Increment(ref _rejected);
-                return ValueTask.FromException<StripedObjectLogRecordAddress>(
+                return ValueTask.FromException(
                     new ObjectLogBackpressureException(
                         $"Object-log stripe {_stripe} has reached its {_options.QueueCapacityPerStripe:N0}-write queue capacity."));
             }
@@ -546,7 +656,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             return EnqueueAfterCapacityAsync(pending, cancellationToken);
         }
 
-        private async ValueTask<StripedObjectLogRecordAddress> EnqueueAfterCapacityAsync(
+        private async ValueTask EnqueueAfterCapacityAsync(
             PendingWrite pending,
             CancellationToken cancellationToken)
         {
@@ -560,8 +670,6 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 Interlocked.Decrement(ref _outstanding);
                 throw;
             }
-
-            return await pending.Completion.Task.ConfigureAwait(false);
         }
 
         public void Complete()
@@ -656,7 +764,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
 
                     for (var index = 0; index < batch.Count; index++)
                     {
-                        batch[index].Completion.TrySetResult(
+                        batch[index].Succeed(
                             new StripedObjectLogRecordAddress(_stripe, addresses[index]));
                         requests[index] = default;
                         Interlocked.Decrement(ref _outstanding);
@@ -668,13 +776,13 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 _failure = exception;
                 foreach (var pending in batch)
                 {
-                    pending.Completion.TrySetException(exception);
+                    pending.Fail(exception);
                     Interlocked.Decrement(ref _outstanding);
                 }
 
                 while (_channel.Reader.TryRead(out var pending))
                 {
-                    pending.Completion.TrySetException(exception);
+                    pending.Fail(exception);
                     Interlocked.Decrement(ref _outstanding);
                 }
 
@@ -698,12 +806,39 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             }
         }
 
-        private sealed record PendingWrite(
+        private readonly record struct PendingWrite(
             ObjectLogRecordKind Kind,
             string Key,
             ReadOnlyMemory<byte> Payload,
             long TransactionId,
             bool RequiresDurabilityFlush,
-            TaskCompletionSource<StripedObjectLogRecordAddress> Completion);
+            TaskCompletionSource<StripedObjectLogRecordAddress>? Completion,
+            BatchAppendCompletion? Batch = null,
+            int BatchIndex = 0)
+        {
+            public void Succeed(StripedObjectLogRecordAddress address)
+            {
+                if (Completion is not null)
+                {
+                    Completion.TrySetResult(address);
+                }
+                else
+                {
+                    Batch!.Succeed(BatchIndex, address);
+                }
+            }
+
+            public void Fail(Exception exception)
+            {
+                if (Completion is not null)
+                {
+                    Completion.TrySetException(exception);
+                }
+                else
+                {
+                    Batch!.FailUnsubmitted(exception, 1);
+                }
+            }
+        }
     }
 }

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
@@ -9,6 +10,7 @@ using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Migrations;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Serialization;
+using Idb.Libraries.Implementation.Encryption;
 using Idb.Storage.SegmentCore;
 using Idb.Storage.SegmentCore.ObjectLog;
 using MessagePack;
@@ -19,6 +21,76 @@ namespace Idb.Storage.SegmentCore.Tests;
 [TestClass]
 public sealed class SegmentCoreProviderTests
 {
+    [TestMethod]
+    public async Task MetadataRepository_FirstInsertAndLocatedUpdatePersistMetadataAcrossReopen()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var config = new ProviderConfig(root.Path);
+        var options = ProviderOptions();
+        string persistedKey;
+
+        await using (var provider = BuildProvider(config, options))
+        {
+            var metadataRepository = provider.GetRequiredService<IEnvelopeMetadataRepository<IProviderRecord>>();
+            Assert.AreEqual(StorageDurabilityMode.Durable, metadataRepository.CommitDurability);
+            Assert.AreSame(metadataRepository, provider.GetRequiredService<IRepository<IProviderRecord>>());
+
+            var saved = await metadataRepository.SaveWithExtensionMetadataAsync(
+                new ProviderRecord { Id = "metadata", Name = "First", Score = 1 },
+                existingEnvelopeCacheKey: null,
+                new byte[] { 1, 2, 3, 4 });
+            persistedKey = saved.Envelope?.EnvelopeCacheKey
+                ?? throw new AssertFailedException("The saved envelope requires a provider key.");
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, saved.Envelope.ExtensionMetadata);
+
+            var oversizedCandidate = new ProviderRecord { Id = "oversized", Name = "Too large", Score = 0 };
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+                metadataRepository.SaveWithExtensionMetadataAsync(
+                    oversizedCandidate,
+                    existingEnvelopeCacheKey: null,
+                    new byte[EnvelopeExtensionMetadataLimits.MaximumByteLength + 1]).AsTask());
+            Assert.IsNull(oversizedCandidate.Envelope);
+
+            var failedCandidate = new ProviderRecord { Id = "metadata", Name = "Failed", Score = 2 };
+            using (var canceled = new CancellationTokenSource())
+            {
+                canceled.Cancel();
+                await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+                    metadataRepository.SaveWithExtensionMetadataAsync(
+                        failedCandidate,
+                        persistedKey,
+                        new byte[] { 9, 9, 9 },
+                        canceled.Token).AsTask());
+            }
+
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, saved.Envelope.ExtensionMetadata);
+            var unchanged = await metadataRepository.QueryFirstAsync(record => record.Id == "metadata");
+            Assert.IsNotNull(unchanged);
+            Assert.AreEqual("First", unchanged.Name);
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, unchanged.Envelope?.ExtensionMetadata);
+
+            var updated = await metadataRepository.SaveWithExtensionMetadataAsync(
+                new ProviderRecord { Id = "metadata", Name = "Updated", Score = 1 },
+                persistedKey,
+                new byte[] { 5, 6, 7 });
+            Assert.AreEqual(persistedKey, updated.Envelope?.EnvelopeCacheKey);
+            var integrity = await provider
+                .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
+                .VerifyIntegrityAsync();
+            Assert.AreEqual(1, integrity.EntriesChecked);
+        }
+
+        await using var reopenedProvider = BuildProvider(config, options);
+        var reopened = reopenedProvider.GetRequiredService<IRepository<IProviderRecord>>();
+        await reopened.InitializeAsync();
+        var loaded = await reopened.QueryFirstAsync(record => record.Id == "metadata");
+
+        Assert.IsNotNull(loaded);
+        Assert.AreEqual("Updated", loaded.Name);
+        Assert.AreEqual(persistedKey, loaded.Envelope?.EnvelopeCacheKey);
+        CollectionAssert.AreEqual(new byte[] { 5, 6, 7 }, loaded.Envelope?.ExtensionMetadata);
+    }
+
     [TestMethod]
     public async Task Registration_ResolvesStoragePolicyHardwareProfileIntoConcreteSegmentCoreOptions()
     {
@@ -528,6 +600,7 @@ public sealed class SegmentCoreProviderTests
                 EnvelopeCacheKey = "legacy-001-0",
                 VersionTag = "1.0.0",
                 Location = "legacy-001-0",
+                ExtensionMetadata = new byte[] { 8, 9, 10 },
                 ObjectInstance = legacy
             };
             await sourceStore.SaveAsync(envelope.EnvelopeCacheKey, serializer.Serialize(envelope));
@@ -557,11 +630,47 @@ public sealed class SegmentCoreProviderTests
         Assert.IsNotNull(migrated);
         Assert.AreEqual("Legacy migrated", migrated.Name);
         Assert.AreEqual(107, migrated.Score);
+        CollectionAssert.AreEqual(new byte[] { 8, 9, 10 }, migrated.Envelope?.ExtensionMetadata);
 
         var second = await maintenance.MigrateFromAsync(sourceRoot, "1.0.0");
         Assert.AreEqual(0, second.Migrated);
         Assert.AreEqual(1, second.AlreadyPresent);
         Assert.IsTrue(Directory.Exists(sourceRoot), "Provider-native migration must retain its source store.");
+    }
+
+    [TestMethod]
+    public void ProviderNativeMigration_RejectsOversizedExtensionMetadata()
+    {
+        var engine = new SegmentCoreMigrationEngine<IProviderRecord>(
+            "2.0.0",
+            new EncryptionNone(),
+            [new ProviderRecordMigration()]);
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
+            engine.Migrate(
+                "legacy-oversized",
+                "1.0.0",
+                CreateOversizedIdb5MigrationPayload("legacy-oversized")));
+
+        StringAssert.Contains(exception.Message, EnvelopeExtensionMetadataLimits.MaximumByteLength.ToString());
+    }
+
+    private static byte[] CreateOversizedIdb5MigrationPayload(string cacheKey)
+    {
+        using var stream = new MemoryStream();
+        stream.Write("IDB5"u8);
+        MessagePackSerializer.Serialize(stream, "1.0.0");
+        MessagePackSerializer.Serialize(stream, cacheKey);
+        MessagePackSerializer.Serialize(
+            stream,
+            typeof(ProviderRecordMigration).AssemblyQualifiedName!);
+        MessagePackSerializer.Serialize(stream, false);
+        stream.WriteByte(MessagePackCode.MinFixMap);
+        MessagePackSerializer.Serialize(
+            stream,
+            new byte[EnvelopeExtensionMetadataLimits.MaximumByteLength + 1]);
+        stream.WriteByte(MessagePackCode.Nil);
+        return stream.ToArray();
     }
 
     [TestMethod]
@@ -964,6 +1073,115 @@ public sealed class SegmentCoreProviderTests
         Assert.AreEqual(300, integrity.EntriesChecked);
     }
 
+    [TestMethod]
+    public async Task EnvelopeBatch_DiFacadePreservesOrderDuplicatesMissingKeysAndMetadataOnlyReads()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var config = new ProviderConfig(root.Path, StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.MetadataOnly,
+            HydrateOnInitialize = false,
+            RaiseNotifications = false
+        });
+        var options = ProviderOptions();
+        string[] keys;
+        await using (var writer = BuildProvider(config, options))
+        {
+            var saved = await writer.GetRequiredService<IEnvelopeRepository<IProviderRecord>>()
+                .WriteManyAsync(CreateRecords(5));
+            keys = saved.Select(static record => record.Envelope!.EnvelopeCacheKey).ToArray();
+        }
+
+        var serializer = new CountingObjectSerializer();
+        await using var provider = BuildProvider(config, options, serializer: serializer);
+        var repository = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+        Assert.IsInstanceOfType<IBatchedEnvelopeRepository<IProviderRecord>>(repository);
+        var batches = (IBatchedEnvelopeRepository<IProviderRecord>)repository;
+        await repository.InitializeAsync();
+        Assert.AreEqual(0, serializer.DeserializeCount);
+
+        var read = await batches.GetPhysicalManyAsync([keys[4], "missing-0", keys[1], keys[4]]);
+        CollectionAssert.AreEqual(new[] { keys[4], keys[1], keys[4] }, read.Select(static envelope => envelope.EnvelopeCacheKey).ToArray());
+        Assert.AreEqual(2, serializer.DeserializeCount, "Duplicate requests must share one disk materialization.");
+        Assert.AreSame(read[0], read[2]);
+        Assert.AreEqual(4, read[0].ObjectInstance!.Score);
+        Assert.AreEqual(1, read[1].ObjectInstance!.Score);
+        serializer.Reset();
+        var fresh = await batches.GetPhysicalManyAsync([keys[4], keys[1]]);
+        Assert.AreEqual(2, serializer.DeserializeCount, "MetadataOnly must not retain object instances.");
+        Assert.AreNotSame(read[0].ObjectInstance, fresh[0].ObjectInstance);
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        serializer.Reset();
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            batches.GetPhysicalManyAsync(keys, cancellation.Token).AsTask());
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            batches.GetPhysicalManyAsync([], cancellation.Token).AsTask());
+        Assert.AreEqual(0, serializer.DeserializeCount);
+    }
+
+    [TestMethod]
+    public async Task EnvelopeBatch_WeakHitsAndMissesStayAliveOnlyForReturnedBatchLifetime()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var config = new ProviderConfig(root.Path, StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.WeakObject,
+            HydrateOnInitialize = false,
+            RaiseNotifications = false
+        });
+        var options = ProviderOptions();
+        string key;
+        await using (var writer = BuildProvider(config, options))
+        {
+            var saved = await writer.GetRequiredService<IEnvelopeRepository<IProviderRecord>>()
+                .WriteManyAsync(CreateRecords(1));
+            key = saved[0].Envelope!.EnvelopeCacheKey;
+        }
+
+        var serializer = new CountingObjectSerializer();
+        await using var provider = BuildProvider(config, options, serializer: serializer);
+        var repository = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+        await repository.InitializeAsync();
+        var weak = ExerciseWeakBatchLifetime(repository, key, serializer);
+        ForceCollection();
+        Assert.IsFalse(weak.TryGetTarget(out _), "Returning a batch must not promote the provider's weak cache.");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<IProviderRecord> ExerciseWeakBatchLifetime(
+        IEnvelopeRepository<IProviderRecord> repository,
+        string key,
+        CountingObjectSerializer serializer)
+    {
+        var batches = (IBatchedEnvelopeRepository<IProviderRecord>)repository;
+        var miss = batches.GetPhysicalManyAsync([key]).AsTask().GetAwaiter().GetResult();
+        Assert.AreEqual(1, serializer.DeserializeCount);
+        Assert.IsNotNull(miss[0].ObjectInstance);
+        var weak = new WeakReference<IProviderRecord>(miss[0].ObjectInstance!);
+        ForceCollection();
+        Assert.IsTrue(weak.TryGetTarget(out _), "A newly materialized batch must own its objects.");
+        var hit = batches.GetPhysicalManyAsync([key]).AsTask().GetAwaiter().GetResult();
+        Assert.AreEqual(1, serializer.DeserializeCount);
+        Assert.AreSame(miss[0].ObjectInstance, hit[0].ObjectInstance);
+        miss = null;
+        ForceCollection();
+        Assert.IsNotNull(hit[0].ObjectInstance, "A weak-cache hit must stay materialized after earlier references disappear.");
+        Assert.IsTrue(repository.TryGet("record-000000", out var cached));
+        Assert.IsNull(cached[0].ObjectInstance, "The repository cache remains weak.");
+        Assert.IsNotNull(cached[0].ObjectInstanceWeakReference);
+        GC.KeepAlive(hit);
+        return weak;
+    }
+
+    private static void ForceCollection()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+    }
+
     private static ServiceProvider BuildProvider(
         ProviderConfig config,
         SegmentCoreRepositoryOptions options,
@@ -994,26 +1212,26 @@ public sealed class SegmentCoreProviderTests
         switch (resolutionOrder)
         {
             case "repository-maintenance-envelope":
-            {
-                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
-                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
-                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
-                return (repository, maintenance, envelope);
-            }
+                {
+                    var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                    var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                    var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                    return (repository, maintenance, envelope);
+                }
             case "maintenance-envelope-repository":
-            {
-                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
-                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
-                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
-                return (repository, maintenance, envelope);
-            }
+                {
+                    var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                    var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                    var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                    return (repository, maintenance, envelope);
+                }
             case "envelope-repository-maintenance":
-            {
-                var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
-                var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
-                var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
-                return (repository, maintenance, envelope);
-            }
+                {
+                    var envelope = provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
+                    var repository = provider.GetRequiredService<IRepository<IProviderRecord>>();
+                    var maintenance = provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>();
+                    return (repository, maintenance, envelope);
+                }
             default:
                 throw new ArgumentOutOfRangeException(nameof(resolutionOrder));
         }

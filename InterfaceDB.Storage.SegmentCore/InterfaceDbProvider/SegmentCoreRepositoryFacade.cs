@@ -12,12 +12,14 @@ namespace Idb.Storage.SegmentCore;
 /// </summary>
 internal sealed class SegmentCoreRepositoryFacade<TContract> :
     IEnvelopeRepository<TContract>,
+    IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
     IPersistentSearchIndexCatalogRepository,
     ISegmentCoreRepositoryMaintenance<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IEnvelopeRepository<TContract> _repository;
+    private readonly IBatchedEnvelopeRepository<TContract> _batchRepository;
     private readonly IEnvelopeRepositoryInitializationStream<TContract> _initializationStream;
     private readonly IPersistentSearchIndexCatalogRepository _persistentCatalog;
     private readonly ISegmentCoreRepositoryMaintenance<TContract> _maintenance;
@@ -25,6 +27,8 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
     public SegmentCoreRepositoryFacade(IEnvelopeRepository<TContract> repository)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        _batchRepository = repository as IBatchedEnvelopeRepository<TContract>
+            ?? throw new InvalidOperationException("SegmentCore repository has no batch read capability.");
         _initializationStream = repository as IEnvelopeRepositoryInitializationStream<TContract>
             ?? throw new InvalidOperationException("SegmentCore repository has no initialization stream.");
         _persistentCatalog = repository as IPersistentSearchIndexCatalogRepository
@@ -77,6 +81,11 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
     public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         CancellationToken cancellationToken = default) =>
         _repository.EnumerateAsync(cancellationToken);
+
+    public ValueTask<IReadOnlyList<IObjectEnvelope<TContract>>> GetPhysicalManyAsync(
+        IReadOnlyList<string> physicalStorageKeys,
+        CancellationToken cancellationToken = default) =>
+        _batchRepository.GetPhysicalManyAsync(physicalStorageKeys, cancellationToken);
 
     public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateByImplementationTypeAsync<TImplementation>(
         CancellationToken cancellationToken = default)

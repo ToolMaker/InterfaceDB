@@ -19,7 +19,6 @@ namespace Idb.Libraries.Implementation.Indexes;
 public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, IDisposable, IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
-    private static readonly ConditionalWeakTable<LambdaExpression, Delegate> CompiledPredicates = new();
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
     private readonly SearchQueryPlannerOptions _plannerOptions;
     private readonly bool _writesPublishStoredNotifications;
@@ -278,10 +277,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             yield break;
         }
 
-        foreach (var key in keys)
+        await foreach (var envelope in EnvelopeBatchEnumeration
+            .ReadAsync(_envelopeRepository, keys, cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var envelope = await _envelopeRepository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
             TContract? entity = null;
             if (envelope is not null)
             {
@@ -326,10 +324,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             yield break;
         }
 
-        foreach (var key in keys)
+        await foreach (var envelope in EnvelopeBatchEnumeration
+            .ReadAsync(_envelopeRepository, keys, cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var envelope = await _envelopeRepository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
             TContract? entity = null;
             if (envelope is not null)
             {
@@ -528,8 +525,11 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     private void ApplyDelete(string physicalKey)
     {
         _searchIndexes.Remove(physicalKey);
-        RemoveRuntimeSearchIndexes(physicalKey);
-        _runtimeTypesByPhysicalKey.TryRemove(physicalKey, out _);
+        if (_runtimeTypesByPhysicalKey.TryRemove(physicalKey, out var runtimeType)
+            && _runtimeSearchIndexes.TryGetValue(runtimeType, out var runtimeStore))
+        {
+            runtimeStore.Remove(physicalKey);
+        }
         Volatile.Write(ref _persistentCatalogDirty, 1);
     }
 
@@ -559,20 +559,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             runtimeType,
             type => new RuntimeSearchIndexStore(type, _plannerOptions));
 
-    private void RemoveRuntimeSearchIndexes(string physicalKey)
-    {
-        foreach (var store in _runtimeSearchIndexes.Values)
-        {
-            store.Remove(physicalKey);
-        }
-    }
-
     private static Func<TInput, bool> GetCompiledPredicate<TInput>(Expression<Func<TInput, bool>> predicate)
-    {
-        return (Func<TInput, bool>)CompiledPredicates.GetValue(
-            predicate,
-            static expression => ((Expression<Func<TInput, bool>>)expression).Compile());
-    }
+        => SearchPredicateCompiler<TInput>.Compile(predicate);
 
     private bool TryLoadPersistentCatalog(
         SearchIndexStorageIdentity storageIdentity,

@@ -12,6 +12,8 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     where TContract : class
 {
     private static readonly ConditionalWeakTable<Expression, Func<object?>> ConstantEvaluators = new();
+    private static readonly ConditionalWeakTable<Expression, QueryStructure> QueryStructures = new();
+    private static readonly ConditionalWeakTable<Expression, MemberPath> MemberPaths = new();
     private readonly IReadOnlyList<SearchIndexDefinition> _definitions;
     private readonly Dictionary<string, PropertySearchIndex> _indexes;
     private readonly PropertySearchIndex[] _indexesByDefinition;
@@ -126,7 +128,7 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
             return;
         }
 
-        UpsertValues(physicalKey, ExtractValues(entity));
+        UpsertOwnedValues(physicalKey, ExtractValues(entity));
     }
 
     internal object?[] ExtractValues(TContract entity)
@@ -156,22 +158,43 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
             return;
         }
 
+        var ownedValues = new object?[values.Count];
+        for (var index = 0; index < values.Count; index++)
+        {
+            ownedValues[index] = NormalizeValue(values[index]);
+        }
+
+        UpsertOwnedValues(physicalKey, ownedValues);
+    }
+
+    // Extraction already creates a private, normalized array. Catalog imports still copy above.
+    private void UpsertOwnedValues(string physicalKey, object?[] values)
+    {
         _lock.EnterWriteLock();
         try
         {
-            RemoveCore(physicalKey);
-            var ownedValues = new object?[values.Count];
-            for (var index = 0; index < values.Count; index++)
+            _valuesByPhysicalKey.TryGetValue(physicalKey, out var previousValues);
+            for (var index = 0; index < values.Length; index++)
             {
-                var value = NormalizeValue(values[index]);
-                ownedValues[index] = value;
+                var value = values[index];
+                var previousValue = previousValues?[index];
+                if (Equals(previousValue, value))
+                {
+                    continue;
+                }
+
+                if (previousValue is not null)
+                {
+                    _indexesByDefinition[index].Remove(previousValue, physicalKey);
+                }
+
                 if (value is not null)
                 {
                     _indexesByDefinition[index].Add(value, physicalKey);
                 }
             }
 
-            _valuesByPhysicalKey[physicalKey] = ownedValues;
+            _valuesByPhysicalKey[physicalKey] = values;
         }
         finally
         {
@@ -298,11 +321,11 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
     private SearchQueryPlan BuildAndPlan(Expression expression)
     {
-        var terms = new List<Expression>();
-        Flatten(expression, ExpressionType.AndAlso, terms);
+        var structure = GetQueryStructure(expression);
+        var terms = structure.Terms;
         var candidates = new List<SearchQueryPlan>(terms.Count);
         var coveredTerms = new bool[terms.Count];
-        var bestRanges = FindBestCombinedRanges(terms);
+        var bestRanges = FindBestCombinedRanges(structure);
         foreach (var combinedRange in bestRanges.Values)
         {
             candidates.Add(combinedRange.AccessPath.ToPlan());
@@ -395,8 +418,7 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
     private SearchQueryPlan BuildOrPlan(Expression expression)
     {
-        var branches = new List<Expression>();
-        Flatten(expression, ExpressionType.OrElse, branches);
+        var branches = GetQueryStructure(expression).Terms;
         var plans = new List<SearchQueryPlan>(branches.Count);
         foreach (var branch in branches)
         {
@@ -431,32 +453,110 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     }
 
     private Dictionary<string, CombinedRangeCandidate> FindBestCombinedRanges(
-        IReadOnlyList<Expression> terms)
+        QueryStructure structure)
     {
         var bestByPath = new Dictionary<string, CombinedRangeCandidate>(StringComparer.Ordinal);
+        var terms = structure.Terms;
+        if (structure.RangePairs is { } pairs)
+        {
+            foreach (var pair in pairs)
+            {
+                AddRange(pair.LeftIndex, pair.RightIndex);
+            }
+
+            return bestByPath;
+        }
+
+        // Very large conjunctions keep the uncached pairing path rather than retaining
+        // a quadratic array of pairs for the lifetime of the expression.
         for (var leftIndex = 0; leftIndex < terms.Count; leftIndex++)
         {
             for (var rightIndex = leftIndex + 1; rightIndex < terms.Count; rightIndex++)
             {
-                if (!TryCreateCombinedRangeAccessPath(
-                        terms[leftIndex],
-                        terms[rightIndex],
-                        out var path,
-                        out var accessPath))
-                {
-                    continue;
-                }
-
-                var candidate = new CombinedRangeCandidate(accessPath, leftIndex, rightIndex);
-                if (!bestByPath.TryGetValue(path, out var current)
-                    || candidate.AccessPath.EstimatedCount < current.AccessPath.EstimatedCount)
-                {
-                    bestByPath[path] = candidate;
-                }
+                AddRange(leftIndex, rightIndex);
             }
         }
 
         return bestByPath;
+
+        void AddRange(int leftIndex, int rightIndex)
+        {
+            if (!TryCreateCombinedRangeAccessPath(
+                    terms[leftIndex], terms[rightIndex], out var path, out var accessPath))
+            {
+                return;
+            }
+
+            var candidate = new CombinedRangeCandidate(accessPath, leftIndex, rightIndex);
+            if (!bestByPath.TryGetValue(path, out var current)
+                || candidate.AccessPath.EstimatedCount < current.AccessPath.EstimatedCount)
+            {
+                bestByPath[path] = candidate;
+            }
+        }
+    }
+
+    // Cache syntax only, never results, bound values, index instances or cardinalities.
+    // The weak key allows expressions and their closures to be collected together.
+    internal static object GetQueryStructureIdentity(Expression expression) => GetQueryStructure(expression);
+
+    private static QueryStructure GetQueryStructure(Expression expression)
+        => QueryStructures.GetValue(expression, static candidate =>
+        {
+            candidate = StripConvert(candidate);
+            var nodeType = candidate.NodeType;
+            var terms = new List<Expression>();
+            Flatten(candidate, nodeType, terms);
+            if (nodeType != ExpressionType.AndAlso)
+            {
+                return new QueryStructure(terms.ToArray(), []);
+            }
+
+            const int maximumCachedTerms = 64;
+            if (terms.Count > maximumCachedTerms)
+            {
+                return new QueryStructure(terms.ToArray(), null);
+            }
+
+            var ranges = terms.Select(static term => ReadRangeShape(term)).ToArray();
+            var pairs = new List<RangePair>();
+            for (var left = 0; left < ranges.Length; left++)
+            {
+                if (ranges[left] is not { } leftRange)
+                {
+                    continue;
+                }
+
+                for (var right = left + 1; right < ranges.Length; right++)
+                {
+                    if (ranges[right] is { } rightRange
+                        && leftRange.IsLower != rightRange.IsLower
+                        && string.Equals(leftRange.Path, rightRange.Path, StringComparison.Ordinal))
+                    {
+                        pairs.Add(new RangePair(left, right));
+                    }
+                }
+            }
+
+            return new QueryStructure(terms.ToArray(), pairs.ToArray());
+        });
+
+    private static RangeShape? ReadRangeShape(Expression expression)
+    {
+        if (StripConvert(expression) is not BinaryExpression binary
+            || !TryMapRangeOperator(binary.NodeType, out var comparison))
+        {
+            return null;
+        }
+
+        if (TryReadMemberPath(binary.Left, out var path))
+        {
+            return new RangeShape(path, IsLowerBound(comparison));
+        }
+
+        return TryReadMemberPath(binary.Right, out path)
+            ? new RangeShape(path, IsLowerBound(Reverse(comparison)))
+            : null;
     }
 
     private SearchIndexAccessPath? TryCreateAccessPath(Expression expression)
@@ -775,22 +875,32 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
     private static bool TryReadMemberPath(Expression expression, out string path)
     {
-        path = string.Empty;
+        var memberPath = MemberPaths.GetValue(expression, static candidate => ReadMemberPathCore(candidate));
+        path = memberPath.Path;
+        return path.Length != 0;
+    }
+
+    private static MemberPath ReadMemberPathCore(Expression expression)
+    {
         expression = StripConvert(expression);
         var parts = new Stack<string>();
         while (expression is MemberExpression member)
         {
             parts.Push(member.Member.Name);
-            expression = StripConvert(member.Expression!);
+            if (member.Expression is null)
+            {
+                return new MemberPath(string.Empty);
+            }
+
+            expression = StripConvert(member.Expression);
         }
 
         if (expression is not ParameterExpression || parts.Count == 0)
         {
-            return false;
+            return new MemberPath(string.Empty);
         }
 
-        path = string.Join(".", parts);
-        return true;
+        return new MemberPath(string.Join(".", parts));
     }
 
     private static bool TryEvaluate(Expression expression, out object? value)
@@ -813,7 +923,8 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
             var evaluator = ConstantEvaluators.GetValue(expression, static candidate =>
             {
                 var boxed = Expression.Convert(candidate, typeof(object));
-                return Expression.Lambda<Func<object?>>(boxed).Compile();
+                return Expression.Lambda<Func<object?>>(boxed)
+                    .Compile(preferInterpretation: !RuntimeFeature.IsDynamicCodeSupported);
             });
             value = evaluator();
             return true;
@@ -980,6 +1091,14 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
         SearchIndexAccessPath AccessPath,
         int LeftIndex,
         int RightIndex);
+
+    private sealed record QueryStructure(IReadOnlyList<Expression> Terms, RangePair[]? RangePairs);
+
+    private readonly record struct RangePair(int LeftIndex, int RightIndex);
+
+    private sealed record RangeShape(string Path, bool IsLower);
+
+    private sealed record MemberPath(string Path);
 
     private sealed class BulkLoadScope(SearchIndexStore<TContract> owner) : IDisposable
     {

@@ -137,18 +137,19 @@ The active version comes from contract config, usually `IDbContractConfigDto<TCo
 
 ## Serialization
 
-`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB4` payload format. Legacy `IDB2` and `IDB3` payloads remain readable for backward compatibility.
+`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB5` payload format. Legacy `IDB2`, `IDB3`, and `IDB4` payloads remain readable for backward compatibility.
 
 Serialization is already behind `IObjectSerializer<TContract>`. The default registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so future serializer implementations can be registered below the repository without changing `IRepository<TContract>` or the file reader/writer contracts.
 
 The current format stores:
 
-- magic prefix: `IDB4`
+- magic prefix: `IDB5`
 - version tag
 - envelope cache key
 - concrete runtime type name
 - per-object cache flag
 - encrypted field metadata
+- optional opaque extension metadata
 - serialized object payload
 
 Envelope references are guarded during serialization to avoid object-envelope-object cycles.
@@ -157,6 +158,25 @@ Envelope references are guarded during serialization to avoid object-envelope-ob
 
 `IDB4` differs from `IDB3` by persisting `IObjectEnvelope<TContract>.EncryptedFields`. That dictionary stores ciphertext for properties marked with `[EncryptedStorageField]`.
 
+`IDB5` differs from `IDB4` by persisting optional `IObjectEnvelope<TContract>.ExtensionMetadata` bytes. InterfaceDB copies and stores these bytes without interpreting them. One envelope may carry at most 64 KiB (`EnvelopeExtensionMetadataLimits.MaximumByteLength`); metadata-aware saves, serialization, deserialization, and migration reject larger values.
+
+`IEnvelopeMetadataRepository<TContract>.SaveWithExtensionMetadataAsync` is the supported way to write
+this metadata. It accepts a detached candidate and either a provider-issued exact cache key for an
+update or `null` for an insert. Staging is deliberately internal so a caller cannot use the envelope
+lifecycle to skip exact-key validation. Validation failures before staging leave the candidate
+detached. After staging starts, the candidate is consumed even if the provider write fails; create a
+new detached candidate for a retry.
+
+Exact-key validation is a precondition check, not a compare-and-swap operation. Its correctness
+depends on one logical writer for the object and on callers not bypassing the facade to mutate the
+same object through `IEnvelopeRepository<TContract>` between validation and commit. SegmentCore
+additionally retains its documented one-writer-process-per-live-root boundary.
+
+Compatibility is one-way during this preview transition: preview.6 readers accept `IDB2` through
+`IDB5`, but an `IDB5` payload written by preview.6 is not readable by the preview.5 reader. Do not
+roll a store back to preview.5 after preview.6 has written it unless a verified pre-upgrade backup is
+restored.
+
 Current limitation: payloads still depend on concrete .NET type names. Stable type aliases are a future hardening item.
 
 ## Encryption At Rest
@@ -164,11 +184,11 @@ Current limitation: payloads still depend on concrete .NET type names. Stable ty
 Encryption is applied after the complete envelope has been serialized and before its bytes are written:
 
 ```text
-object -> IDB4 serialization -> IEncryptor.Encrypt -> file
-file -> IEncryptor.Decrypt -> IDB4 deserialization -> object
+object -> IDB5 serialization -> IEncryptor.Encrypt -> file
+file -> IEncryptor.Decrypt -> IDB5 deserialization -> object
 ```
 
-`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB4` file format. Existing `IDB2` and `IDB3` files remain readable.
+`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB5` file format. Existing `IDB2`, `IDB3`, and `IDB4` files remain readable.
 
 `AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
 
@@ -212,6 +232,10 @@ public interface IPerson : IStoredContract<IPerson>
 On write, `EnvelopeLifecycle<TContract>` asks `EncryptedStorageFieldProcessor<TContract>` to inspect the contract metadata, encrypt marked property values, store ciphertext in `Envelope.EncryptedFields`, and clear the concrete backing property before serialization.
 
 On read, `EnvelopeLifecycle<TContract>` wraps the materialized object in `EncryptedStorageDispatchProxy<TContract>` when encrypted field definitions exist. Non-encrypted properties delegate to the concrete object. Encrypted getters decrypt the envelope field value on demand. Encrypted setters update the envelope ciphertext and clear the concrete backing property.
+
+Field-only encryption protects only values selected with `[EncryptedStorageField]`. It does not
+encrypt `ExtensionMetadata` or other envelope fields. Use whole-envelope encryption when extension
+metadata is sensitive.
 
 The attribute argument is a profile name, not a raw secret. It is intended to point to DI/configuration that resolves the actual key store and key selection policy. The first implementation stores the profile name in field metadata; a full encryption profile resolver remains roadmap work.
 

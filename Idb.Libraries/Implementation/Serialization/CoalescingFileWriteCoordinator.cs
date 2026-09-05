@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO.Enumeration;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
@@ -82,6 +83,24 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             ? NoopLease.Instance
             : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
 
+        return await PublishAndCommitCoreAsync(payloadPath, requireNewPayload, writeProposalAsync, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal async ValueTask<WriterBatchScope> AcquireWriterBatchScopeAsync(CancellationToken cancellationToken)
+    {
+        var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
+            ? NoopLease.Instance
+            : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+        return new WriterBatchScope(this, writerLease);
+    }
+
+    private async ValueTask<bool> PublishAndCommitCoreAsync(
+        string payloadPath,
+        bool requireNewPayload,
+        Func<string, CancellationToken, ValueTask> writeProposalAsync,
+        CancellationToken cancellationToken)
+    {
         var directory = Path.GetDirectoryName(payloadPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -267,13 +286,34 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             ? payloadExtension
             : "." + payloadExtension;
 
-        var payloadPaths = Directory
-            .EnumerateFiles(storageRoot, "*" + ReadySuffix, SearchOption.AllDirectories)
-            .Select(TryGetPayloadPath)
-            .Where(path => path is not null && path.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
-            .Distinct(_pathComparer)
-            .Cast<string>()
-            .ToArray();
+        var payloadPaths = new HashSet<string>(_pathComparer);
+        var writingPaths = new List<string>();
+        var comparison = _pathComparer.Equals("a", "A") ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        // Filter on the directory entry's name before allocating full paths for ordinary payloads.
+        var pendingFiles = new FileSystemEnumerable<string>(storageRoot,
+            static (ref FileSystemEntry entry) => entry.ToFullPath(),
+            new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 })
+        {
+            ShouldIncludePredicate = (ref FileSystemEntry entry) => !entry.IsDirectory
+                && (entry.FileName.EndsWith(ReadySuffix, comparison) || entry.FileName.EndsWith(WritingSuffix, comparison))
+        };
+        foreach (var path in pendingFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var suffix = Path.GetExtension(path);
+            if (_pathComparer.Equals(suffix, ReadySuffix))
+            {
+                var payload = TryGetPayloadPath(path);
+                if (payload is not null && payload.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    payloadPaths.Add(payload);
+                }
+            }
+            else if (_pathComparer.Equals(suffix, WritingSuffix))
+            {
+                writingPaths.Add(path);
+            }
+        }
 
         foreach (var payloadPath in payloadPaths)
         {
@@ -281,7 +321,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             await DrainPendingWritesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         }
 
-        CleanupStaleWritingFiles(storageRoot);
+        CleanupStaleWritingFiles(writingPaths);
     }
 
     public async ValueTask DrainPendingWritesAsync(
@@ -483,10 +523,10 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         return markerIndex <= 0 ? null : proposalPath[..markerIndex];
     }
 
-    private void CleanupStaleWritingFiles(string storageRoot)
+    private void CleanupStaleWritingFiles(IEnumerable<string> writingPaths)
     {
         var staleBefore = DateTimeOffset.UtcNow - _storagePolicy.NormalizedStaleWriteLockTimeout;
-        foreach (var path in Directory.EnumerateFiles(storageRoot, "*" + WritingSuffix, SearchOption.AllDirectories))
+        foreach (var path in writingPaths)
         {
             try
             {
@@ -559,6 +599,30 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             await _stream.DisposeAsync().ConfigureAwait(false);
             TryDelete(_path);
         }
+    }
+
+    // An explicit scope is owned by one bounded writer window and disposed only after all of its
+    // workers finish. It does not flow to callbacks or unrelated writes via ambient state.
+    internal sealed class WriterBatchScope(
+        CoalescingFileWriteCoordinator<TContract> owner,
+        IAsyncDisposable writerLease) : IAsyncDisposable
+    {
+        private int _disposed;
+
+        internal ValueTask<bool> PublishAndCommitAsync(
+            string payloadPath,
+            bool requireNewPayload,
+            Func<string, CancellationToken, ValueTask> writeProposalAsync,
+            CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            ArgumentException.ThrowIfNullOrWhiteSpace(payloadPath);
+            ArgumentNullException.ThrowIfNull(writeProposalAsync);
+            return owner.PublishAndCommitCoreAsync(payloadPath, requireNewPayload, writeProposalAsync, cancellationToken);
+        }
+
+        public ValueTask DisposeAsync()
+            => Interlocked.Exchange(ref _disposed, 1) == 0 ? writerLease.DisposeAsync() : ValueTask.CompletedTask;
     }
 
     private sealed class MigrationLease : IAsyncDisposable

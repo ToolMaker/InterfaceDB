@@ -7,8 +7,11 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Implementation.Indexes;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -16,17 +19,22 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// Repository facade that delegates persistence operations to the injected <see cref="IIndexManager{TContract}"/>.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class InterfaceRepositoryDb<TContract> : IRepository<TContract>
+public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataRepository<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
     private readonly ContractRepositoryType _repositoryType;
     private readonly StoragePolicy _storagePolicy;
+    private readonly IEnvelopeMetadataStager<TContract> _envelopeMetadataStager;
+    private readonly IEnvelopeRepository<TContract> _envelopeRepository;
 
     public InterfaceRepositoryDb(
         IIndexManager<TContract> indexManager,
         IDbContractConfigDto<TContract> contractConfig,
-        StoragePolicy storagePolicy)
+        StoragePolicy storagePolicy,
+        IEnvelopeLifecycle<TContract> envelopeLifecycle,
+        IEnvelopeRepository<TContract> envelopeRepository,
+        StorageDurabilityMode commitDurability)
     {
         _indexManager = indexManager ?? throw new ArgumentNullException(nameof(indexManager));
         if (contractConfig is null)
@@ -38,6 +46,17 @@ public sealed class InterfaceRepositoryDb<TContract> : IRepository<TContract>
             ? ContractRepositoryType.FileSystem
             : contractConfig.RepositoryType;
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        ArgumentNullException.ThrowIfNull(envelopeLifecycle);
+        _envelopeMetadataStager = envelopeLifecycle as IEnvelopeMetadataStager<TContract>
+            ?? throw new InvalidOperationException(
+                $"The configured envelope lifecycle for '{typeof(TContract).FullName}' does not support internal metadata staging.");
+        _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
+        if (!Enum.IsDefined(commitDurability))
+        {
+            throw new ArgumentOutOfRangeException(nameof(commitDurability));
+        }
+
+        CommitDurability = commitDurability;
 
         var contractType = typeof(TContract);
         if (!contractType.IsInterface)
@@ -53,6 +72,8 @@ public sealed class InterfaceRepositoryDb<TContract> : IRepository<TContract>
 
     public ContractRepositoryType RepositoryType => _repositoryType;
 
+    public StorageDurabilityMode CommitDurability { get; }
+
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         => _indexManager.InitializeAsync(cancellationToken);
 
@@ -61,6 +82,73 @@ public sealed class InterfaceRepositoryDb<TContract> : IRepository<TContract>
         CancellationToken cancellationToken = default)
     {
         return _indexManager.SaveAsync(entityToSave, cancellationToken);
+    }
+
+    public async ValueTask<TContract> SaveWithExtensionMetadataAsync(
+        TContract detachedEntity,
+        string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(detachedEntity);
+        if (detachedEntity.Envelope is not null)
+        {
+            throw new InvalidOperationException(
+                "Metadata-aware saves require a detached entity without an envelope.");
+        }
+
+        if (extensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new ArgumentException(
+                $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.",
+                nameof(extensionMetadata));
+        }
+
+        if (existingEnvelopeCacheKey is not null)
+        {
+            if (string.IsNullOrWhiteSpace(existingEnvelopeCacheKey))
+            {
+                throw new ArgumentException(
+                    "An existing envelope cache key cannot be empty or whitespace.",
+                    nameof(existingEnvelopeCacheKey));
+            }
+
+            await _envelopeRepository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var existingEnvelope = await _envelopeRepository
+                .GetPhysicalAsync(existingEnvelopeCacheKey, cancellationToken)
+                .ConfigureAwait(false);
+            if (existingEnvelope is null
+                || existingEnvelope.State != StorageObjectState.Active
+                || !string.Equals(
+                    existingEnvelope.EnvelopeCacheKey,
+                    existingEnvelopeCacheKey,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"No active storage object exists for envelope cache key '{existingEnvelopeCacheKey}'.");
+            }
+        }
+
+        var stagedEnvelope = _envelopeMetadataStager.Stage(
+            detachedEntity,
+            existingEnvelopeCacheKey,
+            extensionMetadata);
+        try
+        {
+            return await _indexManager.SaveAsync(detachedEntity, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Wrapping detaches the candidate before persistence. Reattach the private staged
+            // identity on failure so an ambiguous insert/update outcome cannot be retried as a
+            // fresh object accidentally.
+            if (detachedEntity.Envelope is null)
+            {
+                StoredContractEnvelopeAccessor<TContract>.SetEnvelope(detachedEntity, stagedEnvelope);
+            }
+
+            throw;
+        }
     }
 
     public async ValueTask<IReadOnlyList<TContract>> SaveManyAsync(

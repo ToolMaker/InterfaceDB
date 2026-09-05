@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.Intrinsics.X86;
+using ArmCrc32 = System.Runtime.Intrinsics.Arm.Crc32;
 
 namespace Idb.Storage.SegmentCore.ObjectLog;
 
@@ -50,6 +51,39 @@ internal static class Crc32C
             return crc;
         }
 
+        if (ArmCrc32.IsSupported)
+        {
+            if (ArmCrc32.Arm64.IsSupported)
+            {
+                while (source.Length - offset >= sizeof(ulong))
+                {
+                    crc = ArmCrc32.Arm64.ComputeCrc32C(
+                        crc,
+                        BinaryPrimitives.ReadUInt64LittleEndian(source[offset..]));
+                    offset += sizeof(ulong);
+                }
+            }
+
+            while (source.Length - offset >= sizeof(uint))
+            {
+                crc = ArmCrc32.ComputeCrc32C(crc, BinaryPrimitives.ReadUInt32LittleEndian(source[offset..]));
+                offset += sizeof(uint);
+            }
+
+            while (offset < source.Length)
+            {
+                crc = ArmCrc32.ComputeCrc32C(crc, source[offset++]);
+            }
+
+            return crc;
+        }
+
+        return AppendPortable(crc, source);
+    }
+
+    internal static uint AppendPortable(uint crc, ReadOnlySpan<byte> source)
+    {
+        var offset = 0;
         while (offset < source.Length)
         {
             crc = Table[(crc ^ source[offset]) & 0xff] ^ (crc >> 8);

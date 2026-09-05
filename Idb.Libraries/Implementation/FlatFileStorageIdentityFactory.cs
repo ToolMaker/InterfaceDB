@@ -33,12 +33,11 @@ public class FlatFileStorageIdentityFactory<TContract, TKey> : IEnvelopeStorageI
     {
         ArgumentNullException.ThrowIfNull(envelope);
 
-        envelope.EnvelopeCacheKey = envelope.EnvelopeCacheKey switch
-        {
-            { Length: > 0 } => envelope.EnvelopeCacheKey,
-            _ when ObjectCardinality == StorageObjectCardinality.Single => ResolveSingleKey(),
-            _ => ResolveMultipleKey(envelope)
-        };
+        envelope.EnvelopeCacheKey = string.IsNullOrWhiteSpace(envelope.EnvelopeCacheKey)
+            ? ObjectCardinality == StorageObjectCardinality.Single
+                ? ResolveSingleKey()
+                : ResolveMultipleKey(envelope)
+            : envelope.EnvelopeCacheKey;
 
         if (envelope.Location is not null)
         {

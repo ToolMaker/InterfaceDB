@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -297,6 +298,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             EnvelopeCacheKey = Path.GetFileNameWithoutExtension(legacyFile.Name),
             VersionTag = ActiveVersion,
             Location = null,
+            ExtensionMetadata = serializedEnvelope.ExtensionMetadata?.ToArray(),
             ObjectInstance = migratedInstance
         };
         StoredContractEnvelopeAccessor<TContract>.SetEnvelope(migratedInstance, targetEnvelope);
@@ -399,13 +401,14 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             || payload[0] != (byte)'I'
             || payload[1] != (byte)'D'
             || payload[2] != (byte)'B'
-            || (payload[3] != (byte)'2' && payload[3] != (byte)'3' && payload[3] != (byte)'4'))
+            || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5'))
         {
-            return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload);
+            return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload, null);
         }
 
-        var hasCacheFlag = payload[3] == (byte)'3' || payload[3] == (byte)'4';
-        var hasEncryptedFields = payload[3] == (byte)'4';
+        var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5';
+        var hasEncryptedFields = payload[3] is (byte)'4' or (byte)'5';
+        var hasExtensionMetadata = payload[3] == (byte)'5';
         using var stream = new MemoryStream(payload, writable: false);
         stream.Position = 4;
         _ = MessagePackSerializer.Deserialize<string>(stream, ContractSerializerOptions);
@@ -421,9 +424,32 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             _ = MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(stream, ContractSerializerOptions);
         }
 
+        var extensionMetadata = hasExtensionMetadata
+            ? ReadExtensionMetadata(payload, stream, file.FullName)
+            : null;
+
         var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
         stream.ReadExactly(objectPayload);
-        return new SerializedEnvelope(cacheKey, objectPayload);
+        return new SerializedEnvelope(cacheKey, objectPayload, extensionMetadata);
+    }
+
+    private static byte[]? ReadExtensionMetadata(
+        byte[] payload,
+        MemoryStream stream,
+        string source)
+    {
+        var unread = payload.AsMemory(checked((int)stream.Position));
+        var reader = new MessagePackReader(unread);
+        var extensionMetadata = reader.ReadBytes();
+        stream.Position += checked((long)reader.Consumed);
+        if (extensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
+        {
+            throw new InvalidDataException(
+                $"Envelope extension metadata in '{source}' exceeds the " +
+                $"{EnvelopeExtensionMetadataLimits.MaximumByteLength}-byte limit.");
+        }
+
+        return extensionMetadata?.ToArray();
     }
 
     protected static async ValueTask DeleteLegacyFileAsync(FileInfo legacyFile, CancellationToken cancellationToken)
@@ -516,6 +542,8 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         internal Version TargetVersionParsed { get; }
     }
 
-    private sealed record SerializedEnvelope(string CacheKey, byte[] ObjectPayload);
+    private sealed record SerializedEnvelope(
+        string CacheKey,
+        byte[] ObjectPayload,
+        byte[]? ExtensionMetadata);
 }
-

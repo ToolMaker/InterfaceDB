@@ -63,10 +63,17 @@ jobs:
       - name: Run integration harness
         run: dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationTests
 
+      - name: Verify complete-repository smoke matrix
+        run: dotnet run -c Release --project StorageBenchmarks.Repository -- --smoke --records 200 --batch 32 --output artifacts/repository-smoke.json
+
       - name: Pack public packages
         run: |
           dotnet pack Idb.Libraries/Idb.Libraries.csproj -c Release --no-build --no-restore --output artifacts/packages
           dotnet pack InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore --output artifacts/packages
+
+      - name: Verify public package boundary
+        shell: pwsh
+        run: ./Scripts/Test-PublicPackageBoundary.ps1 -Version ($env:GITHUB_REF_NAME.Substring(1))
 
       - name: Acquire temporary NuGet credential
         uses: NuGet/login@v1

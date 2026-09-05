@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Text;
 using Idb.Storage.SegmentCore.ObjectLog;
 
@@ -16,7 +15,15 @@ internal sealed record PrimaryIndexCheckpointState(
     public bool IsFull { get; init; } = true;
 
     public int ChainDepth { get; init; }
+
+    public uint? FileChecksum { get; init; }
 }
+
+internal sealed record PrimaryIndexCheckpointFingerprint(
+    long TransactionWatermark,
+    int StripeCount,
+    long FileBytes,
+    uint FileChecksum);
 
 internal static class PrimaryIndexCheckpoint
 {
@@ -82,32 +89,58 @@ internal static class PrimaryIndexCheckpoint
         string rootDirectory,
         int expectedStripeCount,
         PrimaryIndexCheckpointState justWritten,
-        int generationsToKeep)
+        int generationsToKeep,
+        Dictionary<long, PrimaryIndexCheckpointFingerprint>? validatedRoots = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         ArgumentNullException.ThrowIfNull(justWritten);
         var checkpointDirectory = Path.Combine(Path.GetFullPath(rootDirectory), DirectoryName);
         var candidates = EnumerateAllPublished(checkpointDirectory);
-        var byGeneration = candidates.ToDictionary(static item => item.Generation);
-        var retained = new List<PrimaryIndexCheckpointState>();
-        foreach (var candidate in candidates)
+        validatedRoots ??= new Dictionary<long, PrimaryIndexCheckpointFingerprint>();
+        var publishedFullGenerations = candidates.Where(static candidate => !candidate.IsDelta)
+            .Select(static candidate => candidate.Generation).ToHashSet();
+        foreach (var generation in validatedRoots.Keys.Where(generation => !publishedFullGenerations.Contains(generation)).ToArray())
+        {
+            validatedRoots.Remove(generation);
+        }
+
+        long? oldestWatermark = null;
+        // A valid delta cannot precede its full base's watermark; all of its bases remain
+        // published. Validating every retained full root therefore gives a conservative
+        // recycle boundary without composing/allocating delta indexes.
+        foreach (var candidate in candidates.Where(static candidate => !candidate.IsDelta))
         {
             try
             {
-                var loaded = candidate.Generation == justWritten.Generation
-                    ? justWritten
-                    : LoadComposed(
-                        candidate.Generation,
-                        byGeneration,
-                        new Dictionary<long, PrimaryIndexCheckpointState>(),
-                        pagingOptions: null);
-                if (loaded.Generation != candidate.Generation
-                    || loaded.Positions.Count != expectedStripeCount)
+                PrimaryIndexCheckpointFingerprint fingerprint;
+                var wasCached = validatedRoots.TryGetValue(candidate.Generation, out var cached);
+                if (wasCached
+                    && ValidateCheckpointChecksum(candidate.Path, cached!.FileBytes, cached.FileChecksum))
                 {
-                    continue;
+                    fingerprint = cached!;
+                }
+                else
+                {
+                    validatedRoots.Remove(candidate.Generation);
+                    var loaded = !wasCached && candidate.Generation == justWritten.Generation
+                        ? justWritten
+                        : Read(candidate.Path, pagingOptions: null);
+                    if (loaded.Generation != candidate.Generation
+                        || loaded.Positions.Count != expectedStripeCount
+                        || loaded.FileChecksum is not uint checksum)
+                    {
+                        continue;
+                    }
+
+                    fingerprint = new PrimaryIndexCheckpointFingerprint(
+                        loaded.TransactionWatermark, loaded.Positions.Count, loaded.FileBytes, checksum);
+                    validatedRoots[candidate.Generation] = fingerprint;
                 }
 
-                retained.Add(loaded);
+                if (fingerprint.StripeCount == expectedStripeCount)
+                {
+                    oldestWatermark = Math.Min(oldestWatermark ?? long.MaxValue, fingerprint.TransactionWatermark);
+                }
             }
             catch (ObjectLogCorruptionException)
             {
@@ -115,13 +148,13 @@ internal static class PrimaryIndexCheckpoint
             }
         }
 
-        if (retained.Count == 0)
+        if (oldestWatermark is null)
         {
             throw new ObjectLogCorruptionException(
                 "No valid retained primary-index checkpoint exists after checkpoint publication.");
         }
 
-        return retained.Min(static state => state.TransactionWatermark);
+        return oldestWatermark.Value;
     }
 
     public static async ValueTask<PrimaryIndexCheckpointState> WriteOptimizedAsync(
@@ -416,7 +449,8 @@ internal static class PrimaryIndexCheckpoint
                 fileBytes)
             {
                 IsFull = true,
-                ChainDepth = 0
+                ChainDepth = 0,
+                FileChecksum = checkpointChecksum
             };
         }
         catch
@@ -606,10 +640,7 @@ internal static class PrimaryIndexCheckpoint
             };
         }
 
-        var entries = new ConcurrentDictionary<string, StripedObjectLogRecordAddress>(
-            concurrencyLevel: Math.Max(1, Environment.ProcessorCount),
-            capacity: Math.Max(1, entryCount),
-            comparer: StringComparer.Ordinal);
+        var entries = new Dictionary<string, StripedObjectLogRecordAddress>(entryCount, StringComparer.Ordinal);
         byte[]? keyBuffer = null;
         try
         {
@@ -679,7 +710,8 @@ internal static class PrimaryIndexCheckpoint
             stream.Length)
         {
             IsFull = true,
-            ChainDepth = 0
+            ChainDepth = 0,
+            FileChecksum = expectedChecksum
         };
     }
 
@@ -1130,6 +1162,7 @@ internal static class PrimaryIndexCheckpoint
     {
         private readonly IReadOnlyDictionary<string, StripedObjectLogRecordAddress> _basis;
         private readonly IReadOnlyDictionary<string, PrimaryIndexChange> _changes;
+        private readonly HashSet<string> _insertedKeys = new(StringComparer.Ordinal);
         private readonly int _count;
 
         public PrimaryIndexOverlay(
@@ -1152,6 +1185,7 @@ internal static class PrimaryIndexCheckpoint
                 else if (!existed)
                 {
                     count++;
+                    _insertedKeys.Add(pair.Key);
                 }
             }
 
@@ -1201,7 +1235,7 @@ internal static class PrimaryIndexCheckpoint
 
             foreach (var pair in _changes)
             {
-                if (!pair.Value.IsDelete && !_basis.ContainsKey(pair.Key))
+                if (!pair.Value.IsDelete && _insertedKeys.Contains(pair.Key))
                 {
                     yield return new KeyValuePair<string, StripedObjectLogRecordAddress>(
                         pair.Key,

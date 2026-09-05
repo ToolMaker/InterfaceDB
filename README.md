@@ -32,6 +32,10 @@ dotnet add package InterfaceDB --prerelease
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
 ```
 
+> Preview.6 writes `IDB5` envelopes and reads `IDB2` through `IDB5`. Preview.5 cannot read new
+> `IDB5` writes. Keep a pre-upgrade backup if rollback is required. APIs and formats can still
+> change before stable `1.0.0`; see the [preview.6 release notes](documentation/preview6-release-notes.md).
+
 Define a versioned interface in the application contract layer:
 
 ```csharp
@@ -149,7 +153,7 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Cross-process last-operation-wins coordination and abandoned-proposal recovery.
 - Performance and Durable file-write modes.
 - Eager strict, eager tolerant, and lazy runtime migrations.
-- MessagePack `IDB4` envelopes with backward reads for `IDB2` and `IDB3`.
+- MessagePack `IDB5` envelopes with bounded optional extension metadata and backward reads for `IDB2`, `IDB3`, and `IDB4`.
 - Whole-envelope and selected-field AES-GCM encryption.
 - Active and historical key handling, lazy rotation, and full-store rotation.
 - Windows Credential Manager key storage.
@@ -167,6 +171,10 @@ final iPhone and Mac runtime durability qualification still requires a Mac with 
 before selecting a mobile data root or application-lifecycle policy.
 
 ## Current Performance Snapshot
+
+The [5 September preview.6 measurements](documentation/performance-preview6-20260905.md) record the
+latest File/SegmentCore results, complete-object SQLite comparisons and observed regressions.
+The older measurements below remain historical snapshots, not measurements of every preview.6 path.
 
 On the repository's Windows/NVMe development machine, the current 1,000-object quick gate measured one independent Durable write per object at a 5.574 ms median. The equivalent SQLite FULL autocommit measurements were 1.927 ms through `Microsoft.Data.Sqlite` and 1.936 ms through Dapper. The optimized file protocol is 2.74 times faster than InterfaceDB's earlier 15.299 ms Durable baseline while preserving all forced-process recovery and cross-process tests.
 
@@ -244,4 +252,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.5`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, configurable versioned hash routing, reusable repository lifecycles, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview.
+The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.6`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, configurable versioned hash routing, reusable repository lifecycles, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and prior Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview. The preview.6 verification and compatibility boundary are recorded in the release notes.

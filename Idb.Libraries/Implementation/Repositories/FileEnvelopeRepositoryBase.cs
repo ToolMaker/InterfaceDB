@@ -18,6 +18,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 public abstract class FileEnvelopeRepositoryBase<TContract> :
     IEnvelopeRepository<TContract>,
+    IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
     IDisposable,
     IAsyncDisposable
@@ -112,7 +113,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     {
         ArgumentNullException.ThrowIfNull(objectInstance);
 
-        var isNewStorageObject = objectInstance.Envelope is null;
+        var isNewStorageObject = objectInstance.Envelope is null
+            || string.IsNullOrWhiteSpace(objectInstance.Envelope.EnvelopeCacheKey);
         objectInstance = await ReaderAndWriter.Writer.WriteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         var envelope = objectInstance.Envelope ?? throw new InvalidOperationException("Object instance must have a valid envelope after writing.");
 
@@ -145,7 +147,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         for (var index = 0; index < materialized.Count; index++)
         {
             var instance = materialized[index] ?? throw new ArgumentNullException(nameof(objectInstances));
-            isNew[index] = instance.Envelope is null;
+            isNew[index] = instance.Envelope is null
+                || string.IsNullOrWhiteSpace(instance.Envelope.EnvelopeCacheKey);
 
         }
 
@@ -378,30 +381,115 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         }
     }
 
-    public async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
+    public ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
         string physicalStorageKey,
         CancellationToken cancellationToken = default)
+        => GetPhysicalCoreAsync(physicalStorageKey, pinInstance: false, cancellationToken);
+
+    private async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalCoreAsync(
+        string physicalStorageKey,
+        bool pinInstance,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(physicalStorageKey))
         {
             throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(physicalStorageKey));
         }
 
         return _envelopes.TryGetValue(physicalStorageKey, out var envelope)
-            ? await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false)
+            ? await MaterializeEnvelopeAsync(envelope, cancellationToken, pinInstance).ConfigureAwait(false)
             : null;
     }
 
-    public async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async ValueTask<IReadOnlyList<IObjectEnvelope<TContract>>> GetPhysicalManyAsync(
+        IReadOnlyList<string> physicalStorageKeys,
+        CancellationToken cancellationToken = default)
     {
-        foreach (var envelope in _envelopes.Values)
+        ArgumentNullException.ThrowIfNull(physicalStorageKeys);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (physicalStorageKeys.Count == 0)
+        {
+            return Array.Empty<IObjectEnvelope<TContract>>();
+        }
+        var batch = new OrderedReadBatch<IObjectEnvelope<TContract>>(physicalStorageKeys, cancellationToken);
+        List<int>? missingIndexes = null;
+        foreach (var entry in batch.UniqueKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (_envelopes.TryGetValue(entry.Key, out var cached)
+                && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var instance)
+                && instance is not null)
+            {
+                batch.Set(entry.Value, PinReadEnvelope(cached, instance));
+            }
+            else
+            {
+                (missingIndexes ??= new List<int>()).Add(entry.Value);
+            }
+        }
+        if (missingIndexes is not null)
+        {
+            await Parallel.ForEachAsync(
+            missingIndexes,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = _storagePolicy.NormalizedReadConcurrency,
+                CancellationToken = cancellationToken
+            },
+            async (index, token) =>
+            {
+                batch.Set(index, await GetPhysicalCoreAsync(physicalStorageKeys[index], pinInstance: true, token)
+                    .ConfigureAwait(false));
+            }).ConfigureAwait(false);
+        }
+        return batch.Complete(cancellationToken);
+    }
 
-            var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
-            if (currentEnvelope is null
-                || !StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out _))
+    public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
+        CancellationToken cancellationToken = default)
+        => EnumerateCachedOrBatchedAsync(cached: null, cancellationToken);
+
+    private async IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateCachedOrBatchedAsync(
+        IEnumerable<IObjectEnvelope<TContract>>? cached,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Defer the full-store snapshot until enumeration starts, without an extra
+        // forwarding async iterator on every ordinary contract scan.
+        cached ??= _envelopes.Values;
+        if (cached.All(static envelope => envelope.ObjectInstance is not null))
+        {
+            foreach (var envelope in cached)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return envelope;
+            }
+            yield break;
+        }
+
+        if (cached.All(static envelope => StorageObjectCachePolicy.TryGetObjectInstance(envelope, out _)))
+        {
+            // Live weak-cache scans need neither disk prefetch nor per-window lookup maps.
+            // Recheck each entry while reading: a target may be collected after this test.
+            foreach (var envelope in cached)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var current = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
+                if (current is not null)
+                {
+                    yield return current;
+                }
+            }
+            yield break;
+        }
+
+        await foreach (var currentEnvelope in EnvelopeBatchEnumeration.ReadAsync(
+            this,
+            cached.Select(static envelope => envelope.EnvelopeCacheKey),
+            cancellationToken).ConfigureAwait(false))
+        {
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out _))
             {
                 continue;
             }
@@ -425,19 +513,14 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         }
 
         var expectedTypeName = GetImplementationTypeName(typeof(TImplementation));
-        foreach (var envelope in _envelopes.Values)
+        var candidates = _envelopes.Values.Where(envelope =>
+            string.IsNullOrWhiteSpace(envelope.ImplementationTypeName)
+            || string.Equals(envelope.ImplementationTypeName, expectedTypeName, StringComparison.Ordinal));
+        await foreach (var currentEnvelope in EnumerateCachedOrBatchedAsync(candidates, cancellationToken)
+            .ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            if (!string.IsNullOrWhiteSpace(envelope.ImplementationTypeName)
-                && !string.Equals(envelope.ImplementationTypeName, expectedTypeName, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var currentEnvelope = await MaterializeEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
-            if (currentEnvelope is null
-                || !StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance)
+            if (!StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance)
                 || instance is not TImplementation)
             {
                 continue;
@@ -450,7 +533,8 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
     private async ValueTask<IObjectEnvelope<TContract>?> MaterializeEnvelopeAsync(
         IObjectEnvelope<TContract>? envelope,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool pinInstance = false)
     {
         if (envelope is null)
         {
@@ -485,6 +569,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             {
                 currentEnvelope.ImplementationTypeName = hydratedEnvelope.ImplementationTypeName;
                 currentEnvelope.EncryptedFields = hydratedEnvelope.EncryptedFields;
+                currentEnvelope.ExtensionMetadata = hydratedEnvelope.ExtensionMetadata?.ToArray();
                 currentEnvelope.CacheObjectInstance |= hydratedEnvelope.CacheObjectInstance;
                 if (!ReferenceEquals(hydratedEnvelope, currentEnvelope))
                 {
@@ -498,6 +583,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 envelope.ImplementationTypeName = hydrated.Envelope?.ImplementationTypeName;
                 envelope.EncryptedFields = hydrated.Envelope?.EncryptedFields
                     ?? envelope.EncryptedFields;
+                envelope.ExtensionMetadata = hydrated.Envelope?.ExtensionMetadata?.ToArray();
                 envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
                 StorageObjectCachePolicy.StoreObjectReference(envelope, hydrated, _storagePolicy);
                 currentEnvelope = envelope;
@@ -509,7 +595,33 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             currentEnvelope.ImplementationTypeName = GetImplementationTypeName(instance.GetType());
         }
 
+        if (pinInstance && instance is not null && currentEnvelope.ObjectInstance is null)
+        {
+            // A batch owns its materialized results until the consumer releases it. Keep a weak
+            // cache target alive there without promoting the repository's weak cache to strong.
+            return PinReadEnvelope(currentEnvelope, instance);
+        }
+
         return instance is null ? null : currentEnvelope;
+    }
+
+    private IObjectEnvelope<TContract> PinReadEnvelope(IObjectEnvelope<TContract> envelope, TContract instance)
+    {
+        if (envelope.ObjectInstance is not null)
+        {
+            return envelope;
+        }
+        var readEnvelope = _envelopeFactory();
+        readEnvelope.EnvelopeCacheKey = envelope.EnvelopeCacheKey;
+        readEnvelope.VersionTag = envelope.VersionTag;
+        readEnvelope.Location = envelope.Location;
+        readEnvelope.State = envelope.State;
+        readEnvelope.ImplementationTypeName = envelope.ImplementationTypeName;
+        readEnvelope.CacheObjectInstance = envelope.CacheObjectInstance;
+        readEnvelope.EncryptedFields = envelope.EncryptedFields;
+        readEnvelope.ExtensionMetadata = envelope.ExtensionMetadata;
+        readEnvelope.ObjectInstance = instance;
+        return readEnvelope;
     }
 
     private static string GetImplementationTypeName(Type type)
@@ -740,6 +852,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             env.ObjectInstanceWeakReference = null;
             env.ImplementationTypeName = null;
             env.EncryptedFields = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
+            env.ExtensionMetadata = null;
             return env;
         }
 

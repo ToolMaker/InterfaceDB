@@ -1,4 +1,6 @@
+using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Idb.Libraries.Abstractions.Attributes;
 using Idb.Libraries.Abstractions.Enums;
 
@@ -6,13 +8,17 @@ namespace Idb.Libraries.Implementation.Indexes;
 
 internal static class SearchIndexDiscovery
 {
+    private static readonly ConditionalWeakTable<Type, Lazy<IReadOnlyList<SearchIndexDefinition>>> Definitions = new();
+
     public static IReadOnlyList<SearchIndexDefinition> Discover(Type contractType)
     {
         ArgumentNullException.ThrowIfNull(contractType);
-
-        var definitions = new List<SearchIndexDefinition>();
-        DiscoverType(contractType, inheritedIndexed: false, prefix: string.Empty, accessors: Array.Empty<MemberInfo>(), definitions);
-        return definitions;
+        return Definitions.GetValue(contractType, static type => new(() =>
+        {
+            var definitions = new List<SearchIndexDefinition>();
+            DiscoverType(type, inheritedIndexed: false, prefix: string.Empty, accessors: Array.Empty<MemberInfo>(), definitions);
+            return definitions.ToArray();
+        })).Value;
     }
 
     private static void DiscoverType(
@@ -99,31 +105,48 @@ internal static class SearchIndexDiscovery
             _ => throw new NotSupportedException($"Unsupported index member '{member.Name}'.")
         };
 
-    private static object? GetValue(MemberInfo member, object instance)
-        => member switch
-        {
-            PropertyInfo property => property.GetValue(instance),
-            FieldInfo field => field.GetValue(instance),
-            _ => throw new NotSupportedException($"Unsupported index member '{member.Name}'.")
-        };
-
-    private static Func<object, object?> CreateGetter(IReadOnlyList<MemberInfo> accessors)
+    internal static Func<object, object?> CreateGetter(
+        IReadOnlyList<MemberInfo> accessors,
+        bool? preferInterpretation = null)
     {
-        return instance =>
-        {
-            object? current = instance;
-            foreach (var accessor in accessors)
-            {
-                if (current is null)
-                {
-                    return null;
-                }
+        var instance = Expression.Parameter(typeof(object), "instance");
+        var body = ReadMember(Expression.Convert(instance, accessors[0].DeclaringType!), 0);
+        return Expression.Lambda<Func<object, object?>>(body, instance)
+            .Compile(preferInterpretation ?? !RuntimeFeature.IsDynamicCodeSupported);
 
-                current = GetValue(accessor, current);
+        Expression ReadMember(Expression current, int ordinal)
+        {
+            if (ordinal == accessors.Count)
+            {
+                return Expression.Convert(current, typeof(object));
             }
 
-            return current;
-        };
+            // Evaluate each getter once, including nullable parents and getters with side effects.
+            var value = Expression.Variable(current.Type, "parent" + ordinal);
+            Expression member = Expression.MakeMemberAccess(value, accessors[ordinal]);
+            if (accessors[ordinal] is PropertyInfo)
+            {
+                // Match PropertyInfo.GetValue's exception contract on the previous reflection path.
+                var exception = Expression.Parameter(typeof(Exception), "exception");
+                member = Expression.TryCatch(member, Expression.Catch(exception,
+                    Expression.Throw(Expression.New(
+                        typeof(TargetInvocationException).GetConstructor(new[] { typeof(Exception) })!,
+                        exception), member.Type)));
+            }
+
+            var next = ReadMember(member, ordinal + 1);
+            if (!value.Type.IsValueType || Nullable.GetUnderlyingType(value.Type) is not null)
+            {
+                next = Expression.Condition(
+                    value.Type.IsValueType
+                        ? Expression.Not(Expression.Property(value, "HasValue"))
+                        : Expression.ReferenceEqual(value, Expression.Constant(null, value.Type)),
+                    Expression.Constant(null, typeof(object)),
+                    next);
+            }
+
+            return Expression.Block(new[] { value }, Expression.Assign(value, current), next);
+        }
     }
 
     private static bool IsComplexIndexCandidate(Type type)

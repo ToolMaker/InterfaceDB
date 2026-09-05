@@ -371,9 +371,8 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
     private async ValueTask PersistCommitBatchAsync(IReadOnlyList<PendingWalCommit> batch)
     {
         await _appendGate.WaitAsync().ConfigureAwait(false);
-        var records = new byte[batch.Count][];
+        var payloadLengths = new int[batch.Count];
         var locations = new WalRecordLocation[batch.Count];
-        byte[]? combinedBuffer = null;
         try
         {
             ThrowIfUnavailable();
@@ -389,48 +388,54 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
                 }
 
                 sequence = checked(sequence + 1);
-                var record = CreateRecord(
-                    pending.TransactionId,
-                    sequence,
+                var recordLength = GetRecordLength(
                     pending.Mutations,
-                    pending.PreparedAddresses);
-                records[index] = record;
+                    pending.PreparedAddresses,
+                    out payloadLengths[index]);
                 locations[index] = new WalRecordLocation(
                     pending.TransactionId,
                     sequence,
                     offset,
-                    record.Length);
-                offset += record.Length;
+                    recordLength);
+                offset = checked(offset + recordLength);
             }
 
-            var totalBytes = checked((int)(offset - _nextOffset));
-            if (records.Length > 1 && totalBytes <= _maximumGroupCommitBytes)
+            for (var first = 0; first < batch.Count;)
             {
-                combinedBuffer = ArrayPool<byte>.Shared.Rent(totalBytes);
-                var destination = combinedBuffer.AsMemory(0, totalBytes);
-                var copied = 0;
-                foreach (var record in records)
+                var end = first + 1;
+                var length = locations[first].RecordLength;
+                while (end < batch.Count && (long)length + locations[end].RecordLength <= _maximumGroupCommitBytes)
                 {
-                    record.CopyTo(destination[copied..]);
-                    copied += record.Length;
+                    length += locations[end++].RecordLength;
                 }
 
-                await RandomAccess.WriteAsync(
-                    _handle,
-                    destination,
-                    _nextOffset,
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            else
-            {
-                for (var index = 0; index < records.Length; index++)
+                var buffer = ArrayPool<byte>.Shared.Rent(length);
+                try
                 {
+                    var destination = buffer.AsMemory(0, length);
+                    var cursor = 0;
+                    for (var index = first; index < end; index++)
+                    {
+                        var pending = batch[index];
+                        var location = locations[index];
+                        WriteRecord(destination.Span.Slice(cursor, location.RecordLength),
+                            payloadLengths[index], pending.TransactionId, location.CommitSequence,
+                            pending.Mutations, pending.PreparedAddresses);
+                        cursor += location.RecordLength;
+                    }
+
                     await RandomAccess.WriteAsync(
                         _handle,
-                        records[index],
-                        locations[index].Offset,
+                        destination,
+                        locations[first].Offset,
                         CancellationToken.None).ConfigureAwait(false);
                 }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+                }
+
+                first = end;
             }
 
             if (!_writeThrough)
@@ -463,11 +468,6 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
         }
         finally
         {
-            if (combinedBuffer is not null)
-            {
-                ArrayPool<byte>.Shared.Return(combinedBuffer, clearArray: false);
-            }
-
             _appendGate.Release();
         }
     }
@@ -635,33 +635,51 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
                     + $"its highest durable transaction is {_highestDurableTransactionId:N0}.");
             }
 
-            var retained = _recordLocations
-                .Where(location => location.TransactionId > transactionWatermark)
-                .OrderBy(static location => location.CommitSequence)
-                .ToArray();
-            var reclaimableBytes = retained.Length == 0
+            // Locations are appended/recovered in commit order. Inspect the boundary before
+            // allocating replacement metadata; most checkpoints do not cross the recycle threshold.
+            var retainedStart = 0;
+            while (retainedStart < _recordLocations.Count
+                   && _recordLocations[retainedStart].TransactionId <= transactionWatermark)
+            {
+                retainedStart++;
+            }
+
+            var retainedCount = _recordLocations.Count - retainedStart;
+            var retainedOffset = retainedCount == 0 ? _nextOffset : _recordLocations[retainedStart].Offset;
+            var reclaimableBytes = retainedCount == 0
                 ? _nextOffset - FileHeaderBytes
-                : retained[0].Offset - FileHeaderBytes;
+                : retainedOffset - FileHeaderBytes;
             if (reclaimableBytes < minimumReclaimBytes
                 && _nextOffset < maximumBytesBeforeForcedRecycle)
             {
                 return;
             }
 
-            var baseCommitSequence = retained.Length == 0
+            var baseCommitSequence = retainedCount == 0
                 ? _highestCommitSequence
-                : checked(retained[0].CommitSequence - 1);
-            for (var index = 0; index < retained.Length; index++)
+                : checked(_recordLocations[retainedStart].CommitSequence - 1);
+            var expectedOffset = retainedOffset;
+            for (var index = 0; index < retainedCount; index++)
             {
-                if (retained[index].CommitSequence != checked(baseCommitSequence + index + 1))
+                var location = _recordLocations[retainedStart + index];
+                if (location.TransactionId <= transactionWatermark
+                    || location.CommitSequence != checked(baseCommitSequence + index + 1)
+                    || location.Offset != expectedOffset)
                 {
                     throw new ObjectLogCorruptionException(
                         "The mutation WAL cannot recycle a non-contiguous committed suffix.");
                 }
+
+                expectedOffset = checked(expectedOffset + location.RecordLength);
+            }
+
+            if (expectedOffset != _nextOffset)
+            {
+                throw new ObjectLogCorruptionException("The mutation WAL retained suffix has an invalid length.");
             }
 
             var generation = checked(_generation + 1);
-            var newLocations = new List<WalRecordLocation>(retained.Length);
+            var newLocations = new List<WalRecordLocation>(retainedCount);
             using (var replacement = File.OpenHandle(
                        temporaryPath,
                        FileMode.CreateNew,
@@ -673,14 +691,33 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
                     replacement,
                     CreateFileHeader(generation, transactionWatermark, baseCommitSequence),
                     0);
-                var nextOffset = (long)FileHeaderBytes;
-                foreach (var location in retained)
+                if (retainedCount > 0)
                 {
-                    var record = new byte[location.RecordLength];
-                    ReadExactly(_handle, record, location.Offset, _path);
-                    RandomAccess.Write(replacement, record, nextOffset);
-                    newLocations.Add(location with { Offset = nextOffset });
-                    nextOffset += record.Length;
+                    var buffer = ArrayPool<byte>.Shared.Rent(1024 * 1024);
+                    try
+                    {
+                        var sourceOffset = retainedOffset;
+                        var destinationOffset = (long)FileHeaderBytes;
+                        while (sourceOffset < _nextOffset)
+                        {
+                            var count = (int)Math.Min(buffer.Length, _nextOffset - sourceOffset);
+                            var chunk = buffer.AsSpan(0, count);
+                            ReadExactly(_handle, chunk, sourceOffset, _path);
+                            RandomAccess.Write(replacement, chunk, destinationOffset);
+                            sourceOffset += count;
+                            destinationOffset += count;
+                        }
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+                    }
+                }
+
+                for (var index = retainedStart; index < _recordLocations.Count; index++)
+                {
+                    var location = _recordLocations[index];
+                    newLocations.Add(location with { Offset = FileHeaderBytes + location.Offset - retainedOffset });
                 }
 
                 _durableFileSystem.FlushFile(replacement);
@@ -718,7 +755,7 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
             _recoveryPriorCommitSequence = baseCommitSequence;
             _recoveryPriorRecordOffset = 0;
             _recoveryPriorRecordLength = 0;
-            _nextOffset = FileHeaderBytes + retained.Sum(static location => (long)location.RecordLength);
+            _nextOffset = FileHeaderBytes + _nextOffset - retainedOffset;
             _recordLocations.Clear();
             _recordLocations.AddRange(newLocations);
             _committedTransactionIds.RemoveWhere(transactionId => transactionId <= transactionWatermark);
@@ -821,17 +858,12 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
         IReadOnlyList<StripedObjectLogRecordAddress> PreparedAddresses,
         TaskCompletionSource Completion);
 
-    private static byte[] CreateRecord(
-        long transactionId,
-        long sequence,
+    private static int GetRecordLength(
         IReadOnlyList<SegmentCorePendingMutation> mutations,
-        IReadOnlyList<StripedObjectLogRecordAddress> preparedAddresses)
+        IReadOnlyList<StripedObjectLogRecordAddress> preparedAddresses,
+        out int payloadBytes)
     {
-        var encoded = new (
-            SegmentCorePendingMutation Mutation,
-            StripedObjectLogRecordAddress PreparedAddress,
-            byte[] KeyBytes)[mutations.Count];
-        var payloadBytes = 0;
+        payloadBytes = 0;
         var keys = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < mutations.Count; index++)
         {
@@ -850,9 +882,8 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
                 throw new ArgumentException("The WAL mutation set is invalid or contains duplicate keys.", nameof(mutations));
             }
 
-            var keyBytes = Encoding.UTF8.GetBytes(mutation.Key);
-            encoded[index] = (mutation, preparedAddress, keyBytes);
-            payloadBytes = checked(payloadBytes + MutationHeaderBytes + keyBytes.Length + mutation.Payload.Length);
+            var keyLength = Encoding.UTF8.GetByteCount(mutation.Key);
+            payloadBytes = checked(payloadBytes + MutationHeaderBytes + keyLength + mutation.Payload.Length);
         }
 
         var minimumLength = checked(HeaderBytes + payloadBytes + FooterBytes);
@@ -864,50 +895,63 @@ internal sealed class TransactionWriteAheadLog : IAsyncDisposable
                 $"Transaction WAL record length {recordLength:N0} exceeds {ObjectLogFormat.MaximumFrameBytes:N0} bytes.");
         }
 
-        var record = new byte[recordLength];
-        var payload = record.AsSpan(HeaderBytes, payloadBytes);
+        return recordLength;
+    }
+
+    private static void WriteRecord(
+        Span<byte> record,
+        int payloadBytes,
+        long transactionId,
+        long sequence,
+        IReadOnlyList<SegmentCorePendingMutation> mutations,
+        IReadOnlyList<StripedObjectLogRecordAddress> preparedAddresses)
+    {
+        record.Clear();
+        var recordLength = record.Length;
+        var payload = record.Slice(HeaderBytes, payloadBytes);
         var cursor = 0;
-        foreach (var item in encoded)
+        for (var index = 0; index < mutations.Count; index++)
         {
+            var mutation = mutations[index];
+            var preparedAddress = preparedAddresses[index];
+            var keyLength = Encoding.UTF8.GetByteCount(mutation.Key);
             var header = payload.Slice(cursor, MutationHeaderBytes);
-            header[0] = (byte)item.Mutation.Kind;
-            BinaryPrimitives.WriteInt32LittleEndian(header[4..], item.PreparedAddress.Stripe);
-            BinaryPrimitives.WriteInt32LittleEndian(header[8..], item.KeyBytes.Length);
-            BinaryPrimitives.WriteInt32LittleEndian(header[12..], item.Mutation.Payload.Length);
-            BinaryPrimitives.WriteUInt32LittleEndian(
-                header[16..],
-                ObjectLogFormat.ComputeDataChecksum(item.Mutation.Key, item.Mutation.Payload));
-            BinaryPrimitives.WriteInt64LittleEndian(header[24..], item.PreparedAddress.Address.SegmentId);
-            BinaryPrimitives.WriteInt64LittleEndian(header[32..], item.PreparedAddress.Address.Offset);
-            BinaryPrimitives.WriteInt32LittleEndian(header[40..], item.PreparedAddress.Address.FrameLength);
-            BinaryPrimitives.WriteInt64LittleEndian(header[48..], item.PreparedAddress.Address.Lsn);
+            header[0] = (byte)mutation.Kind;
+            BinaryPrimitives.WriteInt32LittleEndian(header[4..], preparedAddress.Stripe);
+            BinaryPrimitives.WriteInt32LittleEndian(header[8..], keyLength);
+            BinaryPrimitives.WriteInt32LittleEndian(header[12..], mutation.Payload.Length);
+            BinaryPrimitives.WriteInt64LittleEndian(header[24..], preparedAddress.Address.SegmentId);
+            BinaryPrimitives.WriteInt64LittleEndian(header[32..], preparedAddress.Address.Offset);
+            BinaryPrimitives.WriteInt32LittleEndian(header[40..], preparedAddress.Address.FrameLength);
+            BinaryPrimitives.WriteInt64LittleEndian(header[48..], preparedAddress.Address.Lsn);
             cursor += MutationHeaderBytes;
-            item.KeyBytes.CopyTo(payload[cursor..]);
-            cursor += item.KeyBytes.Length;
-            item.Mutation.Payload.CopyTo(payload[cursor..]);
-            cursor += item.Mutation.Payload.Length;
+            var dataStart = cursor;
+            _ = Encoding.UTF8.GetBytes(mutation.Key, payload.Slice(cursor, keyLength));
+            cursor += keyLength;
+            mutation.Payload.CopyTo(payload[cursor..]);
+            cursor += mutation.Payload.Length;
+            BinaryPrimitives.WriteUInt32LittleEndian(header[16..], Crc32C.Compute(payload[dataStart..cursor]));
         }
 
         var payloadChecksum = Crc32C.Compute(payload);
         Magic.CopyTo(record);
-        BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(8), FormatVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(12), HeaderBytes);
-        BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(16), recordLength);
-        BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(20), mutations.Count);
-        BinaryPrimitives.WriteInt64LittleEndian(record.AsSpan(24), transactionId);
-        BinaryPrimitives.WriteInt64LittleEndian(record.AsSpan(32), sequence);
-        BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(40), payloadBytes);
-        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(48), payloadChecksum);
-        BinaryPrimitives.WriteInt64LittleEndian(record.AsSpan(56), DateTimeOffset.UtcNow.UtcTicks);
-        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(52), ComputeHeaderChecksum(record.AsSpan(0, HeaderBytes)));
+        BinaryPrimitives.WriteInt32LittleEndian(record[8..], FormatVersion);
+        BinaryPrimitives.WriteInt32LittleEndian(record[12..], HeaderBytes);
+        BinaryPrimitives.WriteInt32LittleEndian(record[16..], recordLength);
+        BinaryPrimitives.WriteInt32LittleEndian(record[20..], mutations.Count);
+        BinaryPrimitives.WriteInt64LittleEndian(record[24..], transactionId);
+        BinaryPrimitives.WriteInt64LittleEndian(record[32..], sequence);
+        BinaryPrimitives.WriteInt32LittleEndian(record[40..], payloadBytes);
+        BinaryPrimitives.WriteUInt32LittleEndian(record[48..], payloadChecksum);
+        BinaryPrimitives.WriteInt64LittleEndian(record[56..], DateTimeOffset.UtcNow.UtcTicks);
+        BinaryPrimitives.WriteUInt32LittleEndian(record[52..], ComputeHeaderChecksum(record[..HeaderBytes]));
 
-        var footer = record.AsSpan(recordLength - FooterBytes);
+        var footer = record[(recordLength - FooterBytes)..];
         BinaryPrimitives.WriteUInt32LittleEndian(footer, FooterMagic);
         BinaryPrimitives.WriteInt32LittleEndian(footer[4..], recordLength);
         BinaryPrimitives.WriteInt64LittleEndian(footer[8..], transactionId);
         BinaryPrimitives.WriteUInt32LittleEndian(footer[16..], payloadChecksum);
         BinaryPrimitives.WriteUInt32LittleEndian(footer[20..], CommitMarker);
-        return record;
     }
 
     private static WalRecovery Recover(

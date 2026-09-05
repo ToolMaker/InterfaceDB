@@ -406,7 +406,12 @@ namespace Idb.Libraries.Implementation.Extensions
                 new InterfaceRepositoryDb<TContract>(
                     sp.GetRequiredKeyedService<IIndexManager<TContract>>(key),
                     sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(key),
-                    sp.GetRequiredKeyedService<StoragePolicy>(key)));
+                    sp.GetRequiredKeyedService<StoragePolicy>(key),
+                    sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(key),
+                    sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key),
+                    sp.GetRequiredKeyedService<StoragePolicy>(key).DurabilityMode));
+            services.TryAddKeyedSingleton<IEnvelopeMetadataRepository<TContract>>(databaseKey, (sp, key) =>
+                (IEnvelopeMetadataRepository<TContract>)sp.GetRequiredKeyedService<IRepository<TContract>>(key));
 
             AddUnkeyedCompatibilityAliases<TContract>(
                 services,
@@ -474,6 +479,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 sp.GetRequiredKeyedService<IIndexManager<TContract>>(databaseKey));
             services.TryAddSingleton<IRepository<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IRepository<TContract>>(databaseKey));
+            services.TryAddSingleton<IEnvelopeMetadataRepository<TContract>>(sp =>
+                sp.GetRequiredKeyedService<IEnvelopeMetadataRepository<TContract>>(databaseKey));
         }
 
         private static bool TryAddRegistrationMarker<TContract>(

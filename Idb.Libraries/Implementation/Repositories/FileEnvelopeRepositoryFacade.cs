@@ -11,6 +11,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     IEnvelopeRepository<TContract>,
+    IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>
     where TContract : class, IStoredContract<TContract>
 {
@@ -49,6 +50,29 @@ internal sealed class FileEnvelopeRepositoryFacade<TContract> :
         string physicalStorageKey,
         CancellationToken cancellationToken = default) =>
         _repository.GetPhysicalAsync(physicalStorageKey, cancellationToken);
+
+    public async ValueTask<IReadOnlyList<IObjectEnvelope<TContract>>> GetPhysicalManyAsync(
+        IReadOnlyList<string> physicalStorageKeys,
+        CancellationToken cancellationToken = default)
+    {
+        if (_repository is IBatchedEnvelopeRepository<TContract> batched)
+        {
+            return await batched.GetPhysicalManyAsync(physicalStorageKeys, cancellationToken).ConfigureAwait(false);
+        }
+
+        ArgumentNullException.ThrowIfNull(physicalStorageKeys);
+        cancellationToken.ThrowIfCancellationRequested();
+        var results = new List<IObjectEnvelope<TContract>>(physicalStorageKeys.Count);
+        foreach (var key in physicalStorageKeys)
+        {
+            var envelope = await _repository.GetPhysicalAsync(key, cancellationToken).ConfigureAwait(false);
+            if (envelope is not null)
+            {
+                results.Add(envelope);
+            }
+        }
+        return results;
+    }
 
     public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateAsync(
         CancellationToken cancellationToken = default) =>

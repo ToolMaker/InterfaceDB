@@ -67,7 +67,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        return QueryInternalAsync(predicate.Compile(), cancellationToken);
+        return QueryInternalAsync(SearchPredicateCompiler<TContract>.Compile(predicate), cancellationToken);
     }
 
     public IAsyncEnumerable<TImplementation> SearchAsync<TImplementation>(
@@ -76,7 +76,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         where TImplementation : class, TContract
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        return QueryInternalAsync(predicate.Compile(), cancellationToken);
+        return QueryInternalAsync(SearchPredicateCompiler<TImplementation>.Compile(predicate), cancellationToken);
     }
 
     public SearchQueryPlanExplanation ExplainSearch(Expression<Func<TContract, bool>> predicate)

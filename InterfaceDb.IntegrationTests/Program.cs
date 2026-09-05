@@ -82,6 +82,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("initialization commits newest abandoned proposal", InitializationCommitsNewestAbandonedProposalAsync),
     ("eager migration drains proposals before migrating", EagerMigrationDrainsProposalsBeforeMigratingAsync),
     ("multi-step migration reaches the active version", MultiStepMigrationReachesActiveVersionAsync),
+    ("file migration rejects oversized extension metadata", FileMigrationRejectsOversizedExtensionMetadataAsync),
     ("strict migration rejects a missing chain link", StrictMigrationRejectsMissingLinkAsync),
     ("migration registration rejects ambiguous source versions", MigrationRegistrationRejectsAmbiguousSourcesAsync),
     ("migration registration rejects backward definitions", MigrationRegistrationRejectsBackwardDefinitionsAsync),
@@ -1712,7 +1713,11 @@ static async Task MultiStepMigrationReachesActiveVersionAsync()
     var testRoot = CreateTestRoot();
     try
     {
-        var legacyPayloadPath = await SeedVersionedLegacyPayloadAsync(testRoot, "multi").ConfigureAwait(false);
+        var migrationMetadata = new byte[] { 7, 6, 5, 4 };
+        var legacyPayloadPath = await SeedVersionedLegacyPayloadAsync(
+            testRoot,
+            "multi",
+            migrationMetadata).ConfigureAwait(false);
         var renamedLegacyPayloadPath = Path.Combine(
             Path.GetDirectoryName(legacyPayloadPath)!,
             "renamed-physical.mpk");
@@ -1731,6 +1736,9 @@ static async Task MultiStepMigrationReachesActiveVersionAsync()
         Assert(migrated.Value == "multi:one:two", $"Unexpected multi-step value '{migrated.Value}'.");
         Assert(migrated.Envelope?.VersionTag == "3.0.0", "Multi-step migration should reach the active version.");
         Assert(
+            migrated.Envelope?.ExtensionMetadata?.SequenceEqual(migrationMetadata) == true,
+            "Multi-step file migration should preserve opaque extension metadata.");
+        Assert(
             migrated.Envelope?.EnvelopeCacheKey == "renamed-physical",
             "Migration should use the legacy file name as its physical identity, not stale serialized metadata.");
         Assert(
@@ -1745,6 +1753,59 @@ static async Task MultiStepMigrationReachesActiveVersionAsync()
     {
         TryDeleteDirectory(testRoot);
     }
+}
+
+static async Task FileMigrationRejectsOversizedExtensionMetadataAsync()
+{
+    var testRoot = CreateTestRoot();
+    try
+    {
+        var legacyDirectory = Path.Combine(testRoot, "1.0.0");
+        Directory.CreateDirectory(legacyDirectory);
+        var legacyPayloadPath = Path.Combine(legacyDirectory, "oversized.mpk");
+        await File.WriteAllBytesAsync(
+            legacyPayloadPath,
+            CreateOversizedVersionedIdb5Payload("oversized")).ConfigureAwait(false);
+
+        await using var provider = BuildMigrationProvider(testRoot);
+        var repository = provider.GetRequiredService<IRepository<IVersionedTestRecord>>();
+        await AssertThrowsAsync<InvalidDataException>(
+            () => repository.InitializeAsync().AsTask(),
+            "File migration should reject extension metadata above the public envelope limit.").ConfigureAwait(false);
+
+        Assert(File.Exists(legacyPayloadPath), "A rejected migration must retain its legacy payload.");
+        Assert(
+            !File.Exists(Path.Combine(testRoot, "2.0.0", "oversized.mpk")),
+            "A rejected migration must not publish an active-version payload.");
+    }
+    finally
+    {
+        TryDeleteDirectory(testRoot);
+    }
+}
+
+static byte[] CreateOversizedVersionedIdb5Payload(string cacheKey)
+{
+    using var stream = new MemoryStream();
+    stream.Write("IDB5"u8);
+    MessagePackSerializer.Serialize(stream, "1.0.0");
+    MessagePackSerializer.Serialize(stream, cacheKey);
+    MessagePackSerializer.Serialize(
+        stream,
+        typeof(VersionedMigrationRecord).AssemblyQualifiedName!);
+    MessagePackSerializer.Serialize(stream, false);
+    stream.WriteByte(MessagePackCode.MinFixMap);
+    MessagePackSerializer.Serialize(
+        stream,
+        new byte[EnvelopeExtensionMetadataLimits.MaximumByteLength + 1]);
+    MessagePackSerializer.Serialize(
+        stream,
+        new VersionedMigrationRecord
+        {
+            Id = "shared",
+            Value = "oversized"
+        });
+    return stream.ToArray();
 }
 
 static async Task StrictMigrationRejectsMissingLinkAsync()
@@ -1913,7 +1974,10 @@ static async Task LazyMigrationUpgradesOnFirstQueryAsync()
     }
 }
 
-static async Task<string> SeedVersionedLegacyPayloadAsync(string testRoot, string value)
+static async Task<string> SeedVersionedLegacyPayloadAsync(
+    string testRoot,
+    string value,
+    byte[]? extensionMetadata = null)
 {
     var legacyDirectory = Path.Combine(testRoot, "1.0.0");
     Directory.CreateDirectory(legacyDirectory);
@@ -1927,7 +1991,8 @@ static async Task<string> SeedVersionedLegacyPayloadAsync(string testRoot, strin
         lifecycle,
         legacyPayloadPath,
         value,
-        "0000000000000000001").ConfigureAwait(false);
+        "0000000000000000001",
+        extensionMetadata).ConfigureAwait(false);
 
     var coordinator = writerProvider.GetRequiredService<IFileWriteCoordinator>();
     await coordinator.DrainPendingWritesAsync(legacyPayloadPath).ConfigureAwait(false);
@@ -2244,13 +2309,15 @@ static async Task WriteVersionedReadyProposalAsync(
     Idb.Libraries.Abstractions.Services.IEnvelopeLifecycle<IVersionedTestRecord> lifecycle,
     string payloadPath,
     string value,
-    string order)
+    string order,
+    byte[]? extensionMetadata = null)
 {
     var record = new VersionedTestRecord { Id = "shared", Value = value };
     var envelope = await lifecycle.WrapAsync(record).ConfigureAwait(false);
     envelope.EnvelopeCacheKey = "shared";
     envelope.Location = payloadPath;
     envelope.VersionTag = "1.0.0";
+    envelope.ExtensionMetadata = extensionMetadata?.ToArray();
 
     var proposalPath = payloadPath + ".pending." + order + "." + Guid.NewGuid().ToString("N") + ".ready";
     await File.WriteAllBytesAsync(proposalPath, serializer.Serialize(envelope)).ConfigureAwait(false);
@@ -2613,7 +2680,7 @@ static bool HasPlaintextEnvelopeHeader(byte[] bytes)
         && bytes[0] == (byte)'I'
         && bytes[1] == (byte)'D'
         && bytes[2] == (byte)'B'
-        && (bytes[3] == (byte)'2' || bytes[3] == (byte)'3' || bytes[3] == (byte)'4');
+        && bytes[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5';
 }
 
 static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)

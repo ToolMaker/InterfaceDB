@@ -357,6 +357,89 @@ public sealed class StripedObjectLogProbeTests
         Assert.HasCount(3, StripedObjectLogRecovery.Recover(root.Path).Records);
     }
 
+    [TestMethod]
+    public async Task TransactionBatch_RejectsByRecordAndDrainsAcceptedWritesBeforeFailure()
+    {
+        using var root = TestRoot.Create();
+        using var fileSystem = new BlockingDurableFileSystem();
+        await using var writer = await StripedObjectLogProbeWriter.OpenAsync(
+            root.Path,
+            Options(stripes: 1) with
+            {
+                MaximumBatchRecords = 1,
+                QueueCapacityPerStripe = 1,
+                QueueFullBehavior = ObjectLogQueueFullBehavior.Reject,
+                DurabilityStrategy = ObjectLogDurabilityStrategy.ExplicitFlush
+            },
+            fileSystem);
+        fileSystem.BlockFlushes();
+        var active = writer.AppendAsync("active", new byte[256]).AsTask();
+        fileSystem.WaitForBlockedFlush();
+        Task<StripedObjectLogRecordAddress[]> batch;
+        try
+        {
+            batch = writer.AppendTransactionBatchAsync(
+                [new("accepted", ObjectLogRecordKind.Put, new byte[256]),
+                 new("rejected", ObjectLogRecordKind.Put, new byte[256])],
+                1, requiresDurabilityFlush: true, CancellationToken.None).AsTask();
+            Assert.IsFalse(batch.IsCompleted, "Failure must wait for accepted writes to drain.");
+            Assert.AreEqual(1L, writer.Statistics.RejectedRecords);
+        }
+        finally
+        {
+            fileSystem.ReleaseFlushes();
+        }
+
+        await active;
+        await Assert.ThrowsExactlyAsync<ObjectLogBackpressureException>(() => batch);
+        Assert.AreEqual(0, writer.Statistics.CurrentOutstandingWrites);
+        var recovered = StripedObjectLogRecovery.Recover(root.Path);
+        Assert.IsTrue(recovered.TransactionRecords.Any(static record => record.Record.Key == "accepted"));
+        Assert.IsFalse(recovered.TransactionRecords.Any(static record => record.Record.Key == "rejected"));
+    }
+
+    [TestMethod]
+    public async Task TransactionBatch_CancelledAdmissionDrainsAcceptedWrites()
+    {
+        using var root = TestRoot.Create();
+        using var fileSystem = new BlockingDurableFileSystem();
+        using var cancellation = new CancellationTokenSource();
+        await using var writer = await StripedObjectLogProbeWriter.OpenAsync(
+            root.Path,
+            Options(stripes: 1) with
+            {
+                MaximumBatchRecords = 1,
+                QueueCapacityPerStripe = 1,
+                QueueFullBehavior = ObjectLogQueueFullBehavior.Wait,
+                DurabilityStrategy = ObjectLogDurabilityStrategy.ExplicitFlush
+            },
+            fileSystem);
+        fileSystem.BlockFlushes();
+        var active = writer.AppendAsync("active", new byte[256]).AsTask();
+        fileSystem.WaitForBlockedFlush();
+        Task<StripedObjectLogRecordAddress[]> batch;
+        try
+        {
+            batch = writer.AppendTransactionBatchAsync(
+                [new("accepted", ObjectLogRecordKind.Put, new byte[256]),
+                 new("cancelled", ObjectLogRecordKind.Put, new byte[256])],
+                1, requiresDurabilityFlush: true, cancellation.Token).AsTask();
+            cancellation.Cancel();
+            Assert.IsFalse(batch.IsCompleted);
+        }
+        finally
+        {
+            fileSystem.ReleaseFlushes();
+        }
+
+        await active;
+        await Assert.ThrowsAsync<OperationCanceledException>(() => batch);
+        Assert.AreEqual(0, writer.Statistics.CurrentOutstandingWrites);
+        var recovered = StripedObjectLogRecovery.Recover(root.Path);
+        Assert.IsTrue(recovered.TransactionRecords.Any(static record => record.Record.Key == "accepted"));
+        Assert.IsFalse(recovered.TransactionRecords.Any(static record => record.Record.Key == "cancelled"));
+    }
+
     private static StripedObjectLogProbeOptions Options(int stripes) => new()
     {
         StripeCount = stripes,

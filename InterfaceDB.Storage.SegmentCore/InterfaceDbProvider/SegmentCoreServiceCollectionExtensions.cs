@@ -139,7 +139,12 @@ public static class SegmentCoreServiceCollectionExtensions
             new InterfaceRepositoryDb<TContract>(
                 sp.GetRequiredKeyedService<IIndexManager<TContract>>(key),
                 sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(key),
-                sp.GetRequiredKeyedService<StoragePolicy>(key)));
+                sp.GetRequiredKeyedService<StoragePolicy>(key),
+                sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(key),
+                sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key),
+                StorageDurabilityMode.Durable));
+        services.TryAddKeyedSingleton<IEnvelopeMetadataRepository<TContract>>(databaseKey, (sp, key) =>
+            (IEnvelopeMetadataRepository<TContract>)sp.GetRequiredKeyedService<IRepository<TContract>>(key));
 
         services.TryAddSingleton<IDbContractConfigDto<TContract>>(sp =>
             sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(databaseKey));
@@ -165,6 +170,8 @@ public static class SegmentCoreServiceCollectionExtensions
             sp.GetRequiredKeyedService<IIndexManager<TContract>>(databaseKey));
         services.TryAddSingleton<IRepository<TContract>>(sp =>
             sp.GetRequiredKeyedService<IRepository<TContract>>(databaseKey));
+        services.TryAddSingleton<IEnvelopeMetadataRepository<TContract>>(sp =>
+            sp.GetRequiredKeyedService<IEnvelopeMetadataRepository<TContract>>(databaseKey));
         return services;
     }
 

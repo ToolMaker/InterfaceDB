@@ -120,14 +120,25 @@ internal sealed class SegmentCoreTransaction : ISegmentCoreTransaction
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         cancellationToken.ThrowIfCancellationRequested();
-        var copy = payload.ToArray();
+        return SaveOwnedAsync(key, payload.ToArray(), cancellationToken);
+    }
+
+    // Only serialization paths that relinquish ownership may use this. Public transactions copy.
+    internal ValueTask SaveOwnedAsync(
+        string key,
+        byte[] payload,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentNullException.ThrowIfNull(payload);
+        cancellationToken.ThrowIfCancellationRequested();
         lock (_sync)
         {
             RequireActive();
             _mutations[key] = new SegmentCorePendingMutation(
                 key,
                 ObjectLogRecordKind.Put,
-                copy);
+                payload);
         }
 
         return ValueTask.CompletedTask;

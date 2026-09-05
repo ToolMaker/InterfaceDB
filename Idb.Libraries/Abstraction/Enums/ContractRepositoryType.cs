@@ -20,5 +20,9 @@ public enum ContractRepositoryType
     /// </summary>
     SegmentCore,
 
-}
+    /// <summary>
+    /// Uses the adaptive, bounded AtlasCore storage provider.
+    /// </summary>
+    AtlasCore,
 
+}
