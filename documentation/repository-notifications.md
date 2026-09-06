@@ -2,7 +2,7 @@
 
 Local repository notifications are part of free, MIT-licensed InterfaceDB. They are opt-in,
 in-process observations of writes through one repository owner, not a durable event bus.
-This source feature has not yet been published in a NuGet release.
+This feature is included in preview.7 and later. Preview.8 expands its public package documentation.
 
 ## Enable and subscribe
 
@@ -67,7 +67,8 @@ Each recipient receives an independently materialized snapshot. Its values canno
 another caller edits a cached entity, nor can one subscriber corrupt another's payload. The
 event entity need not be reference-equal to the input or returned saved object. Editing it does
 not persist anything until an explicit save. Saving an old event snapshot follows normal store
-semantics; this feature does not introduce optimistic concurrency or prevent stale overwrites.
+semantics: preview.7 and later reject stale saves through revision-checked writes. Notifications do
+not grant an event snapshot permission to overwrite a newer committed revision.
 
 Created/Changed envelopes remain valid for explicit saves. Deleted detachment does not clear
 the original caller's envelope or remove internal deletion bookkeeping. Encryption uses the

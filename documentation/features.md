@@ -2,6 +2,8 @@
 
 This document lists the main InterfaceDB capabilities and how they fit together.
 
+The [public package overview](../Idb.Libraries/README.md) explains the latest additions with examples: default revision-checked writes, conditional metadata operations, opt-in repository notifications, retained editing and custom conflict strategies, maintenance policies and budgets, and automatic storage fast paths. Preview.8 documents the preview.7 implementation without changing runtime behavior or storage formats.
+
 ## Interface-First Persistence
 
 InterfaceDB stores objects through interfaces instead of requiring a base entity class. A contract interface is the storage boundary:

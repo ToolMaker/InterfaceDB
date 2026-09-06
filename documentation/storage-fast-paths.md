@@ -14,4 +14,6 @@ For an existing store without a usable checkpoint, recovery validates and repair
 
 ## Allocation reductions
 
+Complete-object scans reuse unchanged cache metadata and avoid repeated revision observation, immutable type inspection and serializer metadata allocation. Cache publication retains its concurrent update/delete guards. These paths still materialize complete objects and preserve required payload-ownership copies; results depend on the cache profile and workload and do not imply a universal SQLite advantage.
+
 Single-key revision admission selects the same lock as ordered multi-key admission without constructing a sorted/deduplicated identifier collection. Disposing a guard is idempotent. Bulk physical reads sort one locator array and process contiguous segment ranges instead of producing LINQ grouping and per-group copy arrays. Frame checksums, complete object materialization, missing-key behavior and provider-level requested ordering/duplicate handling are preserved.

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB</PackageId>
-    <Version>1.0.0-preview.7</Version>
+    <Version>1.0.0-preview.8</Version>
     <Authors>ToolMaker</Authors>
     <Description>Interface-first object repository and embedded object database for .NET 10.</Description>
     <PackageTags>interfacedb;repository;object-database;embedded-database;android;ios;maccatalyst</PackageTags>
@@ -13,7 +13,7 @@
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 7 adds revision-checked writes, optional repository notifications, retained editing and maintenance controls, with lower-allocation object scans. New writes use IDB6; readers accept IDB2-IDB6. Stop old writers, rebuild custom integrations and retain a complete pre-upgrade backup; preview 6 cannot read IDB6. See preview7-release-notes.md for compatibility, qualification and remaining limits.</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 8 updates the public NuGet README with the complete preview 7 feature overview, usage examples, defaults and upgrade requirements. Runtime implementation and storage formats are unchanged from preview 7. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/preview8-release-notes.md</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

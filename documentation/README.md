@@ -10,8 +10,9 @@ Start with these documents:
 
 Use the focused guides when needed:
 
+- [Public package overview](../Idb.Libraries/README.md): all preview.7 additions, examples, defaults and upgrade requirements.
+- [Preview.8 Release Notes](preview8-release-notes.md): expanded NuGet documentation; unchanged preview.7 runtime.
 - [Preview.7 Release Notes](preview7-release-notes.md): IDB6 compatibility, revisions, retained editing, maintenance and qualification.
-
 - [Retained editing](retained-editing.md): explicit editing scopes, history limits, compaction protection and free strategy extension points.
 - [Optional compaction maintenance controls](compaction-maintenance.md): scheduling policies, candidate selection, shared I/O admission and separate maintenance summaries; current integration limits are explicit.
 - [Envelope revisions](envelope-revisions.md): conditional writes, compatibility, metadata import, and storage ownership.

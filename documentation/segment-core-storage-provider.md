@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.7`. Read the [release notes](preview7-release-notes.md) before upgrading existing stores. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.8`. This [documentation-only release](preview8-release-notes.md) retains the preview.7 runtime implementation. Read the [upgrade notes](preview7-release-notes.md) before upgrading existing stores. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease

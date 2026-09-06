@@ -1,6 +1,6 @@
 # Envelope revisions and conditional writes
 
-This working-tree change introduces free, provider-neutral optimistic concurrency. It has not been packaged or assigned a new preview version.
+Free, provider-neutral optimistic concurrency is included in preview.7 and later. Preview.8 expands the package documentation without changing this implementation.
 
 ## Application contract
 
@@ -28,7 +28,7 @@ A new entity without an envelope inserts only when its physical identity is abse
 
 A successful save advances the timestamp and stores it atomically with that save's payload. The returned entity represents this operation's committed values. The input receives its accepted envelope after commit as well, but a strategy may have resolved different values, so prefer the return value. Rejected, failed, or pre-commit cancelled saves do not advance the caller's revision. A cancellation arriving after physical commit cannot undo the save.
 
-The implementation stages a separate envelope and a shallow CLR object shell. Committed revision metadata is independent of editable cached envelopes. This prevents an edit to a cached timestamp from changing the storage precondition. It does not make shared mutable entities or nested object graphs safe for concurrent application mutation. Separate editors should use separate object copies; editing-baseline capture and merge are not implemented.
+The implementation stages a separate envelope and a shallow CLR object shell. Committed revision metadata is independent of editable cached envelopes. This prevents an edit to a cached timestamp from changing the storage precondition. It does not make shared mutable entities or nested object graphs safe for concurrent application mutation. Separate editors should use separate object copies. Optional [retained editing](retained-editing.md) captures an original committed version through an explicit edit session; ordinary saves do not capture a baseline or automatically merge.
 
 `WriteConflictException<T>` exposes the key and expected/current revisions at rejection. `ReadCurrentAsync` materializes a fresh detached committed value, or null after deletion. Because it executes later, that value may be newer than the rejection revision. It is neither an editing baseline nor a historical snapshot.
 
@@ -53,7 +53,7 @@ For File partial failures, `StorageBulkOperationException` implements `IStorageB
 
 A strategy receives the staged candidate, expected/current revisions, insert status, and lazy isolated current-object retrieval. It returns rejection, acceptance of the candidate, or a resolved replacement envelope. Replacement candidates are restaged before timestamp assignment, must preserve physical key and location, and determine the committed and indexed values. The strategy executes under the entity writer guard: keep it bounded and do not recursively write the same entity.
 
-Infrastructure metadata operations deliberately use strict destination matching even when an application resolver is registered. No automatic merge, last-writer-wins resolver, editing snapshot, or conflict UI is supplied.
+Infrastructure metadata operations deliberately use strict destination matching even when an application resolver is registered. No automatic merge, last-writer-wins resolver or conflict UI is supplied. Retained editing provides explicit original-version capture for applications that enable it; custom strategy contracts can use that retained original.
 
 ## Serialization and legacy stores
 
