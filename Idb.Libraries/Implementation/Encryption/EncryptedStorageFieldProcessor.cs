@@ -38,6 +38,7 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
         ArgumentNullException.ThrowIfNull(entity);
         ArgumentNullException.ThrowIfNull(envelope);
 
+
         if (Definitions.Count == 0)
         {
             return UnwrapProxy(entity);
@@ -80,13 +81,18 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
 
         return Definitions.Count == 0
             ? entity
-            : EncryptedStorageDispatchProxy<TContract>.Create(entity, envelope, _encryptor, DefinitionsByName);
+            : EncryptedStorageDispatchProxy<TContract>.Create(UnwrapProxy(entity), envelope, _encryptor, DefinitionsByName);
     }
 
     private static TContract UnwrapProxy(TContract entity)
         => entity is EncryptedStorageDispatchProxy<TContract> proxy
             ? proxy.Inner
             : entity;
+
+    private static readonly Func<object, object> Clone = typeof(object)
+        .GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic)!.CreateDelegate<Func<object, object>>();
+
+    internal static TContract CloneForStorage(TContract entity) => (TContract)Clone(UnwrapProxy(entity));
 
     private static object? GetDefault(Type type)
         => type.IsValueType ? Activator.CreateInstance(type) : null;

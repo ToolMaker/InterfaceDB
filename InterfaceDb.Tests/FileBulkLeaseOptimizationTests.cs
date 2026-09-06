@@ -233,7 +233,7 @@ public sealed class FileBulkLeaseOptimizationTests
         }
     }
 
-    private sealed class Record : IStoredContract<Record>
+    public sealed class Record : IStoredContract<Record>
     {
         public required string Id { get; init; }
         public IObjectEnvelope<Record>? Envelope { get; set; }
@@ -262,10 +262,13 @@ public sealed class FileBulkLeaseOptimizationTests
         public void InitEnvelope(IObjectEnvelope<Record> envelope) { }
     }
 
-    private sealed class CallbackSerializer(Func<Record, CancellationToken, ValueTask> beforeWrite) : IObjectSerializer<Record>
+    private sealed class CallbackSerializer(Func<Record, CancellationToken, ValueTask> beforeWrite) : IRevisionObjectSerializer<Record>
     {
-        public byte[] Serialize(IObjectEnvelope<Record> envelope) => Encoding.UTF8.GetBytes(envelope.ObjectInstance!.Id);
-        public IObjectEnvelope<Record> Deserialize(byte[] data) => throw new NotSupportedException();
+        private readonly BinaryObjectSerializer<Record> _inner = new();
+        public long ReadRevision(ReadOnlyMemory<byte> payload) => _inner.ReadRevision(payload);
+        public ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default) => _inner.ReadRevisionAsync(source, cancellationToken);
+        public byte[] Serialize(IObjectEnvelope<Record> envelope) => _inner.Serialize(envelope);
+        public IObjectEnvelope<Record> Deserialize(byte[] data) => _inner.Deserialize(data);
         public async ValueTask SerializeAsync(IObjectEnvelope<Record> envelope, Stream destination, CancellationToken cancellationToken = default)
         {
             await beforeWrite(envelope.ObjectInstance!, cancellationToken);

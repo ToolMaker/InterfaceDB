@@ -71,7 +71,7 @@ public sealed class BinaryObjectSerializerExtensionMetadataTests
 
         var restored = serializer.Deserialize(payload);
 
-        Assert.IsTrue(payload.AsSpan(0, 4).SequenceEqual("IDB5"u8));
+        Assert.IsTrue(payload.AsSpan(0, 4).SequenceEqual("IDB6"u8));
         CollectionAssert.AreEqual(Metadata, restored.ExtensionMetadata);
         AssertRecord(restored);
     }
@@ -93,7 +93,7 @@ public sealed class BinaryObjectSerializerExtensionMetadataTests
         var serializer = new BinaryObjectSerializer<SerializerRecord>();
         await using var stream = new MemoryStream();
         await serializer.SerializeAsync(CreateEnvelope(Metadata), stream);
-        Assert.IsTrue(stream.GetBuffer().AsSpan(0, 4).SequenceEqual("IDB5"u8));
+        Assert.IsTrue(stream.GetBuffer().AsSpan(0, 4).SequenceEqual("IDB6"u8));
         stream.Position = 0;
 
         var restored = await serializer.DeserializeAsync(stream);

@@ -179,16 +179,16 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
             || payload[0] != (byte)'I'
             || payload[1] != (byte)'D'
             || payload[2] != (byte)'B'
-            || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5'))
+            || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6'))
         {
             return new SerializedEnvelope(string.Empty, payload, null);
         }
 
-        var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5';
-        var hasEncryptedFields = payload[3] is (byte)'4' or (byte)'5';
-        var hasExtensionMetadata = payload[3] == (byte)'5';
+        var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6';
+        var hasEncryptedFields = payload[3] is (byte)'4' or (byte)'5' or (byte)'6';
+        var hasExtensionMetadata = payload[3] is (byte)'5' or (byte)'6';
         using var stream = new MemoryStream(payload, writable: false);
-        stream.Position = 4;
+        stream.Position = payload[3] == (byte)'6' ? 12 : 4;
         _ = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
         var cacheKey = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
         _ = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);

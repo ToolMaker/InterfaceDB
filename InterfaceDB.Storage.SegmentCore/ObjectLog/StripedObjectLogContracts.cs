@@ -124,6 +124,9 @@ public sealed record StripedObjectLogRecoveryResult(
     long RepairedTailBytes,
     int IgnoredOrphanSegments)
 {
+    // Valid only during the owning store's uninterrupted exclusive recovery lease.
+    internal IReadOnlyList<ObjectLogRecoveryResult> StripeRecoveries { get; init; } = [];
+
     internal IReadOnlyList<StripedObjectLogReplayRecord> TransactionRecords { get; init; } = [];
 
     internal IReadOnlyList<StripedObjectLogReplayRecord> ReplayRecords { get; init; } = [];

@@ -71,10 +71,10 @@ public sealed class LockingIntegrationTests
         StringAssert.Contains(standardOutput, "PASS keyed DI isolates databases using the same contract");
         StringAssert.Contains(standardOutput, "PASS keyed DI duplicate registration is idempotent or rejected");
         StringAssert.Contains(standardOutput, "PASS two processes can write the same payload");
-        StringAssert.Contains(standardOutput, "PASS cross-process write and delete use last-operation-wins ordering");
+        StringAssert.Contains(standardOutput, "PASS cross-process write and delete reject stale revisions");
         StringAssert.Contains(standardOutput, "PASS delete lock timeout maps to storage concurrency exception");
         StringAssert.Contains(standardOutput, "PASS startup recovers migration proposal abandoned by a terminated process");
-        StringAssert.Contains(standardOutput, "PASS losing proposal returns and caches canonical winner");
+        StringAssert.Contains(standardOutput, "PASS stale writes reject a recovered legacy proposal");
         StringAssert.Contains(standardOutput, "PASS initialization commits newest abandoned proposal");
         StringAssert.Contains(standardOutput, "PASS eager migration drains proposals before migrating");
         StringAssert.Contains(standardOutput, "PASS multi-step migration reaches the active version");

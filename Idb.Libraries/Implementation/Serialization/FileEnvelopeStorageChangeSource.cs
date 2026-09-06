@@ -922,6 +922,7 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> :
 
     private bool IsPayloadPath(string path)
     {
+        if (RetainedHistoryNamespace.ContainsRelative(Path.GetRelativePath(_contractConfig.DataRoot!, path))) return false;
         var fileName = Path.GetFileName(path);
         if (string.IsNullOrWhiteSpace(fileName)
             || fileName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)

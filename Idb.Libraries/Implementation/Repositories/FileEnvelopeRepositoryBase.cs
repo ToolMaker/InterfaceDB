@@ -18,6 +18,8 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 public abstract class FileEnvelopeRepositoryBase<TContract> :
     IEnvelopeRepository<TContract>,
+    ICommittedEnvelopeSnapshotSource<TContract>,
+    IRetainedVersionStore<TContract>,
     IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
     IDisposable,
@@ -84,6 +86,22 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
+    public RetainedVersionCapability RetainedVersions => (ReaderAndWriter.Writer as IRetainedVersionStore<TContract>)?.RetainedVersions ?? new(false, "This writer does not support retained editing.");
+    public RetainedVersionStatistics RetentionStatistics => (ReaderAndWriter.Writer as IRetainedVersionStore<TContract>)?.RetentionStatistics ?? new(0, 0, 0, 0, 0, 0, 0);
+    public ValueTask<IRevisionEditSession<TContract>> BeginEditAsync(string physicalKey,
+        Func<TContract, CancellationToken, ValueTask<TContract>> saveAsync, CancellationToken cancellationToken = default)
+        => ReaderAndWriter.Writer is IRetainedVersionStore<TContract> retained
+            ? retained.BeginEditAsync(physicalKey, saveAsync, cancellationToken)
+            : throw new NotSupportedException(RetainedVersions.Limitation);
+
+    public ValueTask<ICommittedEnvelopeSnapshot<TContract>?> CaptureCommittedAsync(
+        IObjectEnvelope<TContract> identity, int maximumBytes, CancellationToken cancellationToken = default)
+    {
+        ValidateEnvelopeForDelete(identity); // Same root/locator validation; no mutation is performed.
+        if (ReaderAndWriter.Reader is not ICommittedEnvelopeSnapshotSource<TContract> reader)
+            throw new NotSupportedException("The configured reader cannot capture committed notification values.");
+        return reader.CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
+    }
 
     public bool Exists(string storageKey)
     {
@@ -118,13 +136,13 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         objectInstance = await ReaderAndWriter.Writer.WriteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         var envelope = objectInstance.Envelope ?? throw new InvalidOperationException("Object instance must have a valid envelope after writing.");
 
-        var notify = _storagePolicy.RaiseNotifications;
+        var notify = _storagePolicy.RaiseNotifications && !EnvelopeWriteOutcome.IsNoChange(envelope);
         if (notify)
         {
-            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            await ContractStored(envelope, CancellationToken.None).ConfigureAwait(false);
             if (isNewStorageObject)
             {
-                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+                await ContractAdded(envelope, CancellationToken.None).ConfigureAwait(false);
             }
         }
 
@@ -158,12 +176,12 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 .WriteManyAsync(materialized, cancellationToken)
                 .ConfigureAwait(false);
 
-            await PublishBatchNotificationsAsync(saved, isNew, cancellationToken).ConfigureAwait(false);
+            await PublishBatchNotificationsAsync(saved, isNew, CancellationToken.None).ConfigureAwait(false);
             return saved;
         }
-        catch (StorageBulkOperationException ex)
+        catch (Exception ex) when (ex is IStorageBulkOperationResult)
         {
-            await PublishBatchNotificationsForPartialSuccessAsync(materialized, isNew, ex, cancellationToken)
+            await PublishBatchNotificationsForPartialSuccessAsync(materialized, isNew, (IStorageBulkOperationResult)ex, CancellationToken.None)
                 .ConfigureAwait(false);
             throw;
         }
@@ -189,11 +207,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         bool removedActiveStorage;
         try
         {
-            removedActiveStorage = _storagePolicy.DurabilityMode == StorageDurabilityMode.Performance
-                ? DeletePerformance(providerLocator)
-                : await _fileWriteCoordinator
-                    .DeleteAndCommitAsync(providerLocator, cancellationToken)
-                    .ConfigureAwait(false);
+            var writer = ReaderAndWriter.Writer as IEnvelopeDeleteWriter<TContract>
+                ?? throw new NotSupportedException("File deletion requires a revision-aware envelope writer.");
+            removedActiveStorage = await writer.DeleteAsync(objectInstance, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -231,7 +247,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         var notify = _storagePolicy.RaiseNotifications;
         if (removedActiveStorage && notify)
         {
-            await ContractDeleted(envelope, cancellationToken).ConfigureAwait(false);
+            await ContractDeleted(envelope, CancellationToken.None).ConfigureAwait(false);
         }
 
         return removedActiveStorage;
@@ -251,15 +267,15 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var envelope = saved[index].Envelope;
-            if (envelope is null)
+            if (envelope is null || EnvelopeWriteOutcome.IsNoChange(envelope))
             {
                 continue;
             }
 
-            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            await ContractStored(envelope, CancellationToken.None).ConfigureAwait(false);
             if (isNew[index])
             {
-                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+                await ContractAdded(envelope, CancellationToken.None).ConfigureAwait(false);
             }
         }
     }
@@ -267,7 +283,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     private async ValueTask PublishBatchNotificationsForPartialSuccessAsync(
         IReadOnlyList<TContract> attempted,
         IReadOnlyList<bool> isNew,
-        StorageBulkOperationException exception,
+        IStorageBulkOperationResult exception,
         CancellationToken cancellationToken)
     {
         if (!_storagePolicy.RaiseNotifications || exception.SucceededIndexes.Count == 0)
@@ -283,16 +299,16 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 continue;
             }
 
-            var envelope = attempted[index].Envelope;
-            if (envelope is null)
+            var envelope = (exception.CommittedItems.TryGetValue(index, out var committed) ? (TContract)committed : attempted[index]).Envelope;
+            if (envelope is null || EnvelopeWriteOutcome.IsNoChange(envelope))
             {
                 continue;
             }
 
-            await ContractStored(envelope, cancellationToken).ConfigureAwait(false);
+            await ContractStored(envelope, CancellationToken.None).ConfigureAwait(false);
             if (isNew[index])
             {
-                await ContractAdded(envelope, cancellationToken).ConfigureAwait(false);
+                await ContractAdded(envelope, CancellationToken.None).ConfigureAwait(false);
             }
         }
     }
@@ -330,6 +346,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
         var relativePath = Path.GetRelativePath(_dataRoot, fullPath);
         if (Path.IsPathRooted(relativePath)
+            || RetainedHistoryNamespace.ContainsRelative(relativePath)
             || relativePath.Equals("..", StringComparison.Ordinal)
             || relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
             || relativePath.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
@@ -570,6 +587,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 currentEnvelope.ImplementationTypeName = hydratedEnvelope.ImplementationTypeName;
                 currentEnvelope.EncryptedFields = hydratedEnvelope.EncryptedFields;
                 currentEnvelope.ExtensionMetadata = hydratedEnvelope.ExtensionMetadata?.ToArray();
+                currentEnvelope.RevisionTimestampUtcMicroseconds = hydratedEnvelope.RevisionTimestampUtcMicroseconds;
                 currentEnvelope.CacheObjectInstance |= hydratedEnvelope.CacheObjectInstance;
                 if (!ReferenceEquals(hydratedEnvelope, currentEnvelope))
                 {
@@ -584,6 +602,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 envelope.EncryptedFields = hydrated.Envelope?.EncryptedFields
                     ?? envelope.EncryptedFields;
                 envelope.ExtensionMetadata = hydrated.Envelope?.ExtensionMetadata?.ToArray();
+                envelope.RevisionTimestampUtcMicroseconds = hydrated.Envelope?.RevisionTimestampUtcMicroseconds ?? 0;
                 envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
                 StorageObjectCachePolicy.StoreObjectReference(envelope, hydrated, _storagePolicy);
                 currentEnvelope = envelope;
@@ -620,6 +639,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         readEnvelope.CacheObjectInstance = envelope.CacheObjectInstance;
         readEnvelope.EncryptedFields = envelope.EncryptedFields;
         readEnvelope.ExtensionMetadata = envelope.ExtensionMetadata;
+        readEnvelope.RevisionTimestampUtcMicroseconds = envelope.RevisionTimestampUtcMicroseconds;
         readEnvelope.ObjectInstance = instance;
         return readEnvelope;
     }
@@ -869,6 +889,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
         foreach (var versionDir in root.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
         {
+            if (string.Equals(versionDir.Name, RetainedHistoryNamespace.DirectoryName, StringComparison.OrdinalIgnoreCase)) continue;
             var version = versionDir.Name;
             foreach (var file in versionDir.EnumerateFiles("*", SearchOption.AllDirectories))
             {
@@ -978,6 +999,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
     private async Task DisposeCoreAsync(Task? initialization, Task? hydration)
     {
+        if (ReaderAndWriter.Writer is FileObjectWriter<TContract> fileWriter) fileWriter.Dispose();
         await ObserveInitializationForDisposalAsync(initialization).ConfigureAwait(false);
         if (!ReferenceEquals(hydration, initialization))
         {

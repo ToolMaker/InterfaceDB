@@ -12,6 +12,7 @@ using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Indexes;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Repositories;
 
@@ -19,7 +20,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// Repository facade that delegates persistence operations to the injected <see cref="IIndexManager{TContract}"/>.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataRepository<TContract>
+public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataRepository<TContract>, IRepositoryNotifications<TContract>, IRevisionEditingRepository<TContract>, IDisposable
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
@@ -27,6 +28,10 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
     private readonly StoragePolicy _storagePolicy;
     private readonly IEnvelopeMetadataStager<TContract> _envelopeMetadataStager;
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
+    private readonly RepositoryNotificationHub<TContract>? _notifications;
+    private readonly Func<TContract, CancellationToken, ValueTask<TContract>>? _observedSave;
+    private readonly Func<IEnumerable<TContract>, CancellationToken, ValueTask<IReadOnlyList<TContract>>>? _observedBatch;
+    private readonly Func<TContract, CancellationToken, ValueTask<bool>>? _observedDelete;
 
     public InterfaceRepositoryDb(
         IIndexManager<TContract> indexManager,
@@ -51,6 +56,13 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             ?? throw new InvalidOperationException(
                 $"The configured envelope lifecycle for '{typeof(TContract).FullName}' does not support internal metadata staging.");
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
+        if (storagePolicy.RepositoryNotifications is { } notificationOptions)
+        {
+            _notifications = new(envelopeRepository, notificationOptions, _indexManager.InitializeAsync);
+            _observedSave = _indexManager.SaveAsync;
+            _observedBatch = _indexManager.SaveManyAsync;
+            _observedDelete = _indexManager.DeleteAsync;
+        }
         if (!Enum.IsDefined(commitDurability))
         {
             throw new ArgumentOutOfRangeException(nameof(commitDurability));
@@ -72,6 +84,18 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
 
     public ContractRepositoryType RepositoryType => _repositoryType;
 
+    public RetainedVersionCapability RetainedVersions => (_envelopeRepository as IRetainedVersionStore<TContract>)?.RetainedVersions
+        ?? new(false, "This provider does not support retained editing.");
+    public RetainedVersionStatistics RetentionStatistics => (_envelopeRepository as IRetainedVersionStore<TContract>)?.RetentionStatistics
+        ?? new(0, 0, 0, 0, 0, 0, 0);
+    public async ValueTask<IRevisionEditSession<TContract>> BeginEditAsync(string physicalKey, CancellationToken cancellationToken = default)
+    {
+        if (_envelopeRepository is not IRetainedVersionStore<TContract> editing || !editing.RetainedVersions.Supported)
+            throw new NotSupportedException(RetainedVersions.Limitation);
+        await _indexManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await editing.BeginEditAsync(physicalKey, SaveAsync, cancellationToken).ConfigureAwait(false);
+    }
+
     public StorageDurabilityMode CommitDurability { get; }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -81,74 +105,40 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
         TContract entityToSave,
         CancellationToken cancellationToken = default)
     {
-        return _indexManager.SaveAsync(entityToSave, cancellationToken);
+        return _notifications is null
+            ? _indexManager.SaveAsync(entityToSave, cancellationToken)
+            : _notifications.SaveAsync(entityToSave, _observedSave!, cancellationToken);
     }
 
-    public async ValueTask<TContract> SaveWithExtensionMetadataAsync(
+    public ValueTask<TContract> SaveWithExtensionMetadataAsync(
         TContract detachedEntity,
         string? existingEnvelopeCacheKey,
         byte[]? extensionMetadata,
         CancellationToken cancellationToken = default)
+        => existingEnvelopeCacheKey is not null
+            ? throw new NotSupportedException("Detached updates require an explicit expected revision. Use the EnvelopeWriteCondition overload.")
+            : SaveWithExtensionMetadataAsync(detachedEntity, null, extensionMetadata, new EnvelopeWriteCondition(0), cancellationToken);
+
+    public async ValueTask<TContract> SaveWithExtensionMetadataAsync(TContract detachedEntity, string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata, EnvelopeWriteCondition condition, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(condition);
         ArgumentNullException.ThrowIfNull(detachedEntity);
-        if (detachedEntity.Envelope is not null)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (detachedEntity.Envelope is not null) throw new InvalidOperationException("Metadata-aware saves require a detached entity.");
+        IObjectEnvelope<TContract>? existing = null;
+        if (existingEnvelopeCacheKey is not null && !condition.ExpectedMissing)
         {
-            throw new InvalidOperationException(
-                "Metadata-aware saves require a detached entity without an envelope.");
-        }
-
-        if (extensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
-        {
-            throw new ArgumentException(
-                $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.",
-                nameof(extensionMetadata));
-        }
-
-        if (existingEnvelopeCacheKey is not null)
-        {
-            if (string.IsNullOrWhiteSpace(existingEnvelopeCacheKey))
-            {
-                throw new ArgumentException(
-                    "An existing envelope cache key cannot be empty or whitespace.",
-                    nameof(existingEnvelopeCacheKey));
-            }
-
             await _envelopeRepository.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var existingEnvelope = await _envelopeRepository
-                .GetPhysicalAsync(existingEnvelopeCacheKey, cancellationToken)
-                .ConfigureAwait(false);
-            if (existingEnvelope is null
-                || existingEnvelope.State != StorageObjectState.Active
-                || !string.Equals(
-                    existingEnvelope.EnvelopeCacheKey,
-                    existingEnvelopeCacheKey,
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"No active storage object exists for envelope cache key '{existingEnvelopeCacheKey}'.");
-            }
+            if (_envelopeRepository.TryGet(existingEnvelopeCacheKey, out var group))
+                existing = group.FirstOrDefault(item => item.EnvelopeCacheKey == existingEnvelopeCacheKey);
+            existing ??= await _envelopeRepository.GetPhysicalAsync(existingEnvelopeCacheKey, cancellationToken).ConfigureAwait(false);
+            if (existing is null) throw new InvalidOperationException("No active object exists for the supplied physical key.");
         }
-
-        var stagedEnvelope = _envelopeMetadataStager.Stage(
-            detachedEntity,
-            existingEnvelopeCacheKey,
-            extensionMetadata);
-        try
-        {
-            return await _indexManager.SaveAsync(detachedEntity, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Wrapping detaches the candidate before persistence. Reattach the private staged
-            // identity on failure so an ambiguous insert/update outcome cannot be retried as a
-            // fresh object accidentally.
-            if (detachedEntity.Envelope is null)
-            {
-                StoredContractEnvelopeAccessor<TContract>.SetEnvelope(detachedEntity, stagedEnvelope);
-            }
-
-            throw;
-        }
+        var staged = _envelopeMetadataStager.Stage(detachedEntity, existingEnvelopeCacheKey, extensionMetadata);
+        if (existing is not null) staged.Location = existing.Location;
+        EnvelopeWriteCoordinator<TContract>.SetCondition(staged, condition);
+        return await SaveAsync(detachedEntity, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<TContract>> SaveManyAsync(
@@ -163,7 +153,9 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             return Array.Empty<TContract>();
         }
 
-        return await _indexManager.SaveManyAsync(materialized, cancellationToken).ConfigureAwait(false);
+        return _notifications is null
+            ? await _indexManager.SaveManyAsync(materialized, cancellationToken).ConfigureAwait(false)
+            : await _notifications.SaveManyAsync(materialized, _observedBatch!, cancellationToken).ConfigureAwait(false);
     }
 
     public ValueTask<bool> DeleteAsync(
@@ -171,7 +163,9 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(entityToDelete);
-        return _indexManager.DeleteAsync(entityToDelete, cancellationToken);
+        return _notifications is null
+            ? _indexManager.DeleteAsync(entityToDelete, cancellationToken)
+            : _notifications.DeleteAsync(entityToDelete, _observedDelete!, cancellationToken);
     }
 
     public async ValueTask<TContract> QueryAsync(
@@ -408,6 +402,36 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
 
         return _indexManager.ExistsAsync(entityToCheck, cancellationToken);
     }
+
+    public IRepositorySubscription SubscribeCreated(Func<TContract, ValueTask> handler,
+        Expression<Func<TContract, bool>>? filter = null, CancellationToken lifetime = default,
+        Func<ValueTask<bool>>? keepAlive = null, bool receiveOwnWrites = false)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RequiredNotifications.Subscribe(RepositoryEventKind.Created, (entity, _) => handler(entity), filter, lifetime, keepAlive, receiveOwnWrites);
+    }
+
+    public IRepositorySubscription SubscribeChanged(Func<RepositoryChange<TContract>, ValueTask> handler,
+        Expression<Func<TContract, bool>> filter, CancellationToken lifetime = default,
+        Func<ValueTask<bool>>? keepAlive = null, bool receiveOwnWrites = false)
+    {
+        ArgumentNullException.ThrowIfNull(handler); ArgumentNullException.ThrowIfNull(filter);
+        return RequiredNotifications.Subscribe(RepositoryEventKind.Changed,
+            (entity, names) => handler(new(entity, names)), filter, lifetime, keepAlive, receiveOwnWrites);
+    }
+
+    public IRepositorySubscription SubscribeDeleted(Func<TContract, ValueTask> handler,
+        Expression<Func<TContract, bool>>? filter = null, CancellationToken lifetime = default,
+        Func<ValueTask<bool>>? keepAlive = null, bool receiveOwnWrites = false)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RequiredNotifications.Subscribe(RepositoryEventKind.Deleted, (entity, _) => handler(entity), filter, lifetime, keepAlive, receiveOwnWrites);
+    }
+
+    private RepositoryNotificationHub<TContract> RequiredNotifications => _notifications
+        ?? throw new InvalidOperationException("Enable StoragePolicy.RepositoryNotifications before registering repository subscribers.");
+
+    public void Dispose() => _notifications?.Dispose();
 
     private static Exception CreateException(
         Func<Exception>? exceptionFactory,

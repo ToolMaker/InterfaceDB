@@ -24,15 +24,14 @@ public interface IRepository<TContract>
     ValueTask InitializeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Persists the supplied entity and returns the tracked instance (post-write mutations included).
-    /// The repository routes the save through the configured <see cref="IIndexManager{TContract}"/> so indexes
-    /// can update before the writer commits the envelope to disk.
+    /// Persists the supplied entity if its envelope revision exactly matches committed storage.
+    /// The repository updates indexes after the provider commits the staged envelope.
     /// </summary>
     /// <param name="entityToSave">Contract instance to store.</param>
     /// <param name="cancellationToken">Token that propagates cancellation.</param>
     /// <returns>
-    /// The canonical entity after persistence. Under coalescing last-write-wins storage, this may be a newer
-    /// competing value rather than <paramref name="entityToSave"/>.
+    /// The entity committed by this operation, including its new revision timestamp.
+    /// A stale caller receives a write conflict. Use the returned entity for further edits.
     /// </returns>
     ValueTask<TContract> SaveAsync(
         TContract entityToSave,

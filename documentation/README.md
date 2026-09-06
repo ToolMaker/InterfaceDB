@@ -10,8 +10,16 @@ Start with these documents:
 
 Use the focused guides when needed:
 
+- [Preview.7 Release Notes](preview7-release-notes.md): IDB6 compatibility, revisions, retained editing, maintenance and qualification.
+
+- [Retained editing](retained-editing.md): explicit editing scopes, history limits, compaction protection and free strategy extension points.
+- [Optional compaction maintenance controls](compaction-maintenance.md): scheduling policies, candidate selection, shared I/O admission and separate maintenance summaries; current integration limits are explicit.
+- [Envelope revisions](envelope-revisions.md): conditional writes, compatibility, metadata import, and storage ownership.
 - [Security And Encryption](security.md): threat boundaries, AES-GCM, encrypted fields, key storage, and rotation.
 - [Configuration](configuration.md): repository options, storage policies, coordination, and multiple registrations.
+- [Repository Notifications](repository-notifications.md): free Created/Changed/Deleted subscriptions, property changes, filters, loop prevention, lifetimes and limits.
+- [Repository Notification Costs](repository-notifications-performance-20260905.md): disabled and subscribed measurements for File and Segment Core.
+- [Notification Parallel-Write Follow-up](repository-notifications-parallel-performance-20260905.md): zero-subscriber fast path, background comparison and updated cost measurements.
 - [Contract Versioning And Migrations](migrations.md): baselines, migration code, runtime strategies, explicit SegmentCore migration, and deployment checks.
 - [Storage, Indexing, And Performance](storage-indexing-performance.md): file layout, caching, indexes, and tuning.
 - [Query Planning](query-planning.md): expression routing, cardinality estimates, intersections, unions, and residual predicates.

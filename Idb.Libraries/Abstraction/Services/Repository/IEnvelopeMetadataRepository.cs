@@ -1,5 +1,6 @@
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Abstractions.Services.Repository;
 
@@ -11,6 +12,11 @@ namespace Idb.Libraries.Abstractions.Services.Repository;
 public interface IEnvelopeMetadataRepository<TContract> : IRepository<TContract>
     where TContract : class, IStoredContract<TContract>
 {
+    /// <summary>Conditionally saves a detached payload. Infrastructure import and acknowledgement remain subject to destination matching.</summary>
+    ValueTask<TContract> SaveWithExtensionMetadataAsync(TContract detachedEntity, string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata, EnvelopeWriteCondition condition, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This provider does not support conditional envelope metadata writes.");
+
     /// <summary>
     /// Gets the durability guarantee in effect when a completed metadata-aware save returns.
     /// </summary>
@@ -21,7 +27,7 @@ public interface IEnvelopeMetadataRepository<TContract> : IRepository<TContract>
     /// </summary>
     /// <param name="detachedEntity">Contract instance to save. It must not already have an envelope.</param>
     /// <param name="existingEnvelopeCacheKey">
-    /// Existing provider cache key for an update, or <see langword="null"/> for an insert.
+    /// Must be <see langword="null"/> for an insert. Existing-key updates require the overload with an explicit condition.
     /// </param>
     /// <param name="extensionMetadata">
     /// Opaque bytes to persist without interpretation. The value cannot exceed

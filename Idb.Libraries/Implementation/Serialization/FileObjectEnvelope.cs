@@ -28,6 +28,8 @@ public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
 
     public required string VersionTag { get; set; }
 
+    public long RevisionTimestampUtcMicroseconds { get; set; }
+
     public TContract? ObjectInstance { get; set; }
 
     public WeakReference<TContract>? ObjectInstanceWeakReference { get; set; }

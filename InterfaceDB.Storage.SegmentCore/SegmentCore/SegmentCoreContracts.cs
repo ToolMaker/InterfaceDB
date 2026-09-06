@@ -17,6 +17,7 @@ public enum SegmentCorePrimaryIndexMode
 
 public sealed record SegmentCoreOptions
 {
+    public Idb.Libraries.Abstractions.Options.RetainedVersionOptions? RetainedVersions { get; init; }
     public StripedObjectLogProbeOptions LogOptions { get; init; } = new()
     {
         StripeCount = 8,
@@ -211,10 +212,27 @@ public readonly record struct SegmentCoreCompactionResult(
     public TimeSpan LongestCheckpointCapturePause { get; init; }
 
     public TimeSpan FinalizationPause { get; init; }
+    public long BytesCopied { get; init; }
+    public int FilesSelected { get; init; }
+    public int FilesReclaimed { get; init; }
+    public int DeletionFailures { get; init; }
+    public long RetiredFileBytes { get; init; }
+    public long RetainedBytesCopied { get; init; }
+    public bool IsPartial { get; init; }
 }
+
+public enum SegmentCoreCompactionMode { SlicedAppend, IndependentOutput }
 
 public sealed record SegmentCoreCompactionOptions
 {
+    /// <summary>IndependentOutput opts into a backward-incompatible storage capability marker;
+    /// it copies sealed files without holding the foreground mutation gate during I/O.</summary>
+    public SegmentCoreCompactionMode Mode { get; init; }
+    public Idb.Libraries.Abstractions.Options.CompactionSelectionOptions Selection { get; init; } = new();
+    public Idb.Libraries.Abstractions.Services.Maintenance.IMaintenanceBudget? MaintenanceBudget { get; init; }
+    public int MaximumCopyConcurrency { get; init; } = 1;
+    public int CopyBufferBytes { get; init; } = 64 * 1024;
+    public int MaximumMetadataEntries { get; init; } = 1_000_000;
     public int MaximumRecordsPerSlice { get; init; } = 64;
 
     public int MaximumStripesPerPreparationSlice { get; init; } = 1;
@@ -227,6 +245,15 @@ public sealed record SegmentCoreCompactionOptions
 
     internal void Validate()
     {
+        if (!Enum.IsDefined(Mode)) throw new ArgumentOutOfRangeException(nameof(Mode));
+        ArgumentNullException.ThrowIfNull(Selection); Selection.Validate();
+        if (MaximumCopyConcurrency is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(MaximumCopyConcurrency));
+        if (CopyBufferBytes is < 128 or > 4 * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(CopyBufferBytes));
+        if (MaximumMetadataEntries is < 1 or > 100_000_000) throw new ArgumentOutOfRangeException(nameof(MaximumMetadataEntries));
+        if (MaintenanceBudget is { MaximumWorkUnitBytes: < 128 })
+            throw new ArgumentException("Segment Core copy admission requires a work unit of at least 128 bytes.", nameof(MaintenanceBudget));
+        if (Mode == SegmentCoreCompactionMode.SlicedAppend && MaintenanceBudget is not null)
+            throw new ArgumentException("A maintenance I/O budget requires IndependentOutput; the legacy path copies under mutation exclusion.", nameof(MaintenanceBudget));
         if (MaximumRecordsPerSlice is < 1 or > 65_536)
         {
             throw new ArgumentOutOfRangeException(

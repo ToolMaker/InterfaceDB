@@ -159,3 +159,7 @@ var secure = provider.GetInterfaceDbRepository<IPerson>("SecurePeople");
 ```
 
 Use the same key when registering keyed encryption. The first registration also receives unkeyed compatibility aliases; applications with multiple stores should resolve explicitly by key.
+
+## Conditional envelope writes
+
+File writes now require `UseSidecarWriteLocks = true`, including Performance mode. Custom serializers require `IRevisionObjectSerializer<T>` and custom file coordinators require `IConditionalFileWriteCoordinator`. Register an optional keyed `IWriteConflictStrategy<T>` before resolving the repository; absent configuration selects strict timestamp equality. See [Envelope revisions](envelope-revisions.md) for contracts and upgrade requirements.

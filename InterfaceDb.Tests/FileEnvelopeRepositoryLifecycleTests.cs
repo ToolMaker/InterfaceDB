@@ -150,13 +150,13 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         saved,
                         persistedKey,
-                        new byte[] { 9 }).AsTask());
+                        new byte[] { 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
                 var invalidKeyCandidate = new IndexedTestRecord { Id = "invalid-key" };
                 await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         invalidKeyCandidate,
                         "   ",
-                        new byte[] { 9 }).AsTask());
+                        new byte[] { 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
                 Assert.IsNull(invalidKeyCandidate.Envelope);
 
                 var traversalCandidate = new IndexedTestRecord { Id = "traversal-key" };
@@ -164,7 +164,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         traversalCandidate,
                         $"..{Path.DirectorySeparatorChar}..{Path.DirectorySeparatorChar}outside",
-                        new byte[] { 9 }).AsTask());
+                        new byte[] { 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
                 Assert.IsNull(traversalCandidate.Envelope);
 
                 var unknownKeyCandidate = new IndexedTestRecord { Id = "unknown-key" };
@@ -172,7 +172,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         unknownKeyCandidate,
                         "not-an-existing-physical-key",
-                        new byte[] { 9 }).AsTask());
+                        new byte[] { 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
                 Assert.IsNull(unknownKeyCandidate.Envelope);
 
                 var oversizedMetadataCandidate = new IndexedTestRecord { Id = "oversized-metadata" };
@@ -191,7 +191,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         failedCandidate,
                         persistedKey,
-                        new byte[] { 9, 9, 9 }).AsTask());
+                        new byte[] { 9, 9, 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
                 Assert.IsTrue(
                     failingEncryptor.FailedEncryptionObserved,
                     "The failure must occur while the staged candidate is being serialized for storage.");
@@ -202,7 +202,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         failedCandidate,
                         persistedKey,
-                        new byte[] { 9, 9, 9 }).AsTask());
+                        new byte[] { 9, 9, 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds)).AsTask());
 
                 CollectionAssert.AreEqual(
                     new byte[] { 1, 2, 3, 4 },
@@ -220,7 +220,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
                 var updated = await metadataRepository.SaveWithExtensionMetadataAsync(
                     updateCandidate,
                     persistedKey,
-                    new byte[] { 5, 6, 7 });
+                    new byte[] { 5, 6, 7 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds));
                 Assert.AreEqual(persistedKey, updated.Envelope?.EnvelopeCacheKey);
                 Assert.AreEqual(persistedLocation, updated.Envelope?.Location);
                 Assert.AreEqual(1, addedNotifications);
@@ -1169,7 +1169,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
         HydrateOnInitialize = hydrateOnInitialize,
         ObjectCacheMode = StorageObjectCacheMode.MetadataOnly,
         WatchStorageChanges = false,
-        UseSidecarWriteLocks = false
+        UseSidecarWriteLocks = true
     };
 
     private static string CreateTemporaryDirectory()

@@ -12,6 +12,8 @@ namespace Idb.Libraries.Implementation.Repositories;
 internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     IEnvelopeRepository<TContract>,
     IBatchedEnvelopeRepository<TContract>,
+    ICommittedEnvelopeSnapshotSource<TContract>,
+    IRetainedVersionStore<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>
     where TContract : class, IStoredContract<TContract>
 {
@@ -26,6 +28,15 @@ internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _repository.ReaderAndWriter;
+    public RetainedVersionCapability RetainedVersions => ((IRetainedVersionStore<TContract>)_repository).RetainedVersions;
+    public RetainedVersionStatistics RetentionStatistics => ((IRetainedVersionStore<TContract>)_repository).RetentionStatistics;
+    public ValueTask<IRevisionEditSession<TContract>> BeginEditAsync(string physicalKey,
+        Func<TContract, CancellationToken, ValueTask<TContract>> saveAsync, CancellationToken cancellationToken = default)
+        => ((IRetainedVersionStore<TContract>)_repository).BeginEditAsync(physicalKey, saveAsync, cancellationToken);
+
+    public ValueTask<ICommittedEnvelopeSnapshot<TContract>?> CaptureCommittedAsync(
+        IObjectEnvelope<TContract> identity, int maximumBytes, CancellationToken cancellationToken = default) =>
+        ((ICommittedEnvelopeSnapshotSource<TContract>)_repository).CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
 
     public bool Exists(string storageKey) => _repository.Exists(storageKey);
 

@@ -8,7 +8,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
-    public class FileObjectReader<TContract> : IObjectReader<TContract>
+    public class FileObjectReader<TContract> : IObjectReader<TContract>, ICommittedEnvelopeSnapshotSource<TContract>
         where TContract : class, IStoredContract<TContract>
     {
         private IObjectSerializer<TContract> _serializer;
@@ -78,6 +78,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     cached.CacheObjectInstance = deserialized.CacheObjectInstance;
                     cached.EncryptedFields = deserialized.EncryptedFields;
                     cached.ExtensionMetadata = deserialized.ExtensionMetadata?.ToArray();
+                    cached.RevisionTimestampUtcMicroseconds = deserialized.RevisionTimestampUtcMicroseconds;
                     StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
                     return unwrapped;
                 }
@@ -94,6 +95,23 @@ namespace Idb.Libraries.Implementation.Serialization
             return _envelopeLifecycle.Unwrap(envelope);
         }
 
+        public async ValueTask<ICommittedEnvelopeSnapshot<TContract>?> CaptureCommittedAsync(
+            IObjectEnvelope<TContract> identity, int maximumBytes, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await using var stream = new FileStream(identity.Location!, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (stream.Length > maximumBytes)
+                    throw new InvalidDataException("Notification snapshot exceeds the configured byte limit.");
+                var payload = new byte[checked((int)stream.Length)];
+                await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
+                return new CommittedEnvelopeSnapshot<TContract>(payload, _serializer, _envelopeLifecycle, identity.EnvelopeCacheKey, identity.Location);
+            }
+            catch (FileNotFoundException) { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+        }
+
         private async ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsync(
             FileInfo file,
             CancellationToken cancellationToken)
@@ -102,7 +120,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 && _serializer is not IRotationAwareObjectSerializer<TContract>)
             {
                 await using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
-                    FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 var length = checked((int)stream.Length);
                 var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, length));
                 try
@@ -116,7 +134,13 @@ namespace Idb.Libraries.Implementation.Serialization
                 }
             }
 
-            var payload = await File.ReadAllBytesAsync(file.FullName, cancellationToken).ConfigureAwait(false);
+            byte[] payload;
+            await using (var source = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                payload = new byte[checked((int)source.Length)];
+                await source.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
             if (_serializer is not IRotationAwareObjectSerializer<TContract> rotationAwareSerializer)
             {
                 return _serializer.Deserialize(payload);

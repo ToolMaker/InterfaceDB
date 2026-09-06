@@ -337,7 +337,8 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetRequiredKeyedService<
                         IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key),
                     sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
-                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
+                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key),
+                    sp.GetKeyedService<IWriteConflictStrategy<TContract>>(key) ?? sp.GetService<IWriteConflictStrategy<TContract>>()));
             services.TryAddKeyedTransient<IReaderAndWriter<TContract>>(databaseKey, (sp, key) =>
                 new ObjectReaderAndWriter<TContract>(
                     sp.GetRequiredKeyedService<IObjectReader<TContract>>(key),
@@ -412,6 +413,8 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetRequiredKeyedService<StoragePolicy>(key).DurabilityMode));
             services.TryAddKeyedSingleton<IEnvelopeMetadataRepository<TContract>>(databaseKey, (sp, key) =>
                 (IEnvelopeMetadataRepository<TContract>)sp.GetRequiredKeyedService<IRepository<TContract>>(key));
+            services.TryAddKeyedSingleton<IRepositoryNotifications<TContract>>(databaseKey, (sp, key) =>
+                (IRepositoryNotifications<TContract>)sp.GetRequiredKeyedService<IRepository<TContract>>(key));
 
             AddUnkeyedCompatibilityAliases<TContract>(
                 services,
@@ -479,6 +482,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 sp.GetRequiredKeyedService<IIndexManager<TContract>>(databaseKey));
             services.TryAddSingleton<IRepository<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IRepository<TContract>>(databaseKey));
+            services.TryAddSingleton<IRepositoryNotifications<TContract>>(sp =>
+                (IRepositoryNotifications<TContract>)sp.GetRequiredService<IRepository<TContract>>());
             services.TryAddSingleton<IEnvelopeMetadataRepository<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IEnvelopeMetadataRepository<TContract>>(databaseKey));
         }

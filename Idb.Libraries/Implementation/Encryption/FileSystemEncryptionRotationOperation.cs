@@ -56,7 +56,7 @@ public sealed class FileSystemEncryptionRotationOperation<TContract> :
 
         var files = Directory
             .EnumerateFiles(storageRoot, "*", SearchOption.AllDirectories)
-            .Where(path => string.Equals(
+            .Where(path => !Idb.Libraries.Implementation.Serialization.RetainedHistoryNamespace.ContainsRelative(Path.GetRelativePath(storageRoot, path)) && string.Equals(
                 Path.GetExtension(path),
                 extension,
                 StringComparison.OrdinalIgnoreCase))

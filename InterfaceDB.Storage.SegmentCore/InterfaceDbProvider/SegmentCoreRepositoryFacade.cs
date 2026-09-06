@@ -3,6 +3,7 @@ using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Indexes;
 using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using Idb.Libraries.Abstractions.Services.Maintenance;
 
 namespace Idb.Storage.SegmentCore;
 
@@ -13,9 +14,12 @@ namespace Idb.Storage.SegmentCore;
 internal sealed class SegmentCoreRepositoryFacade<TContract> :
     IEnvelopeRepository<TContract>,
     IBatchedEnvelopeRepository<TContract>,
+    ICommittedEnvelopeSnapshotSource<TContract>,
+    IRetainedVersionStore<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
     IPersistentSearchIndexCatalogRepository,
-    ISegmentCoreRepositoryMaintenance<TContract>
+    ISegmentCoreRepositoryMaintenance<TContract>,
+    ICompactionMaintenance<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IEnvelopeRepository<TContract> _repository;
@@ -38,6 +42,15 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _repository.ReaderAndWriter;
+    public RetainedVersionCapability RetainedVersions => ((IRetainedVersionStore<TContract>)_repository).RetainedVersions;
+    public RetainedVersionStatistics RetentionStatistics => ((IRetainedVersionStore<TContract>)_repository).RetentionStatistics;
+    public ValueTask<IRevisionEditSession<TContract>> BeginEditAsync(string physicalKey,
+        Func<TContract, CancellationToken, ValueTask<TContract>> saveAsync, CancellationToken cancellationToken = default)
+        => ((IRetainedVersionStore<TContract>)_repository).BeginEditAsync(physicalKey, saveAsync, cancellationToken);
+
+    public ValueTask<ICommittedEnvelopeSnapshot<TContract>?> CaptureCommittedAsync(
+        IObjectEnvelope<TContract> identity, int maximumBytes, CancellationToken cancellationToken = default) =>
+        ((ICommittedEnvelopeSnapshotSource<TContract>)_repository).CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
 
     public string SearchIndexCatalogDirectory => _persistentCatalog.SearchIndexCatalogDirectory;
 
@@ -46,6 +59,16 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
     public SegmentCoreRepositoryOptions Options => _maintenance.Options;
 
     public SegmentCoreProviderStatus Status => _maintenance.Status;
+
+    public IMaintenanceSubscription SubscribeMaintenance(
+        Func<MaintenanceNotification, CancellationToken, ValueTask> handler, CancellationToken lifetime = default) =>
+        ((ICompactionMaintenance<TContract>)_repository).SubscribeMaintenance(handler, lifetime);
+
+    public ValueTask<CompactionEstimate> EstimateCompactionAsync(CancellationToken cancellationToken = default) =>
+        ((ICompactionMaintenance<TContract>)_repository).EstimateCompactionAsync(cancellationToken);
+
+    public ValueTask<CompactionRunResult> RunCompactionAsync(bool manual = false, CancellationToken cancellationToken = default) =>
+        ((ICompactionMaintenance<TContract>)_repository).RunCompactionAsync(manual, cancellationToken);
 
     public bool Exists(string storageKey) => _repository.Exists(storageKey);
 

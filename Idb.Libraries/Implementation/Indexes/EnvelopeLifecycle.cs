@@ -6,6 +6,7 @@ using Idb.Libraries.Implementation.Encryption;
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Indexes;
 
@@ -85,7 +86,8 @@ public class EnvelopeLifecycle<TContract> :
         }
         else
         {
-            wrappedEnvelope = entity.Envelope;
+            wrappedEnvelope = EnvelopeWriteCoordinator<TContract>.CopyEnvelope(entity.Envelope);
+            EnvelopeWriteCoordinator<TContract>.CopyCondition(entity.Envelope, wrappedEnvelope);
         }
 
         if (wrappedEnvelope.ExtensionMetadata?.Length > EnvelopeExtensionMetadataLimits.MaximumByteLength)
@@ -94,8 +96,8 @@ public class EnvelopeLifecycle<TContract> :
                 $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.");
         }
 
-        var storageEntity = _encryptedFieldProcessor.PrepareForStorage(entity, wrappedEnvelope);
-        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(storageEntity, envelope: null);
+        var storageEntity = _encryptedFieldProcessor.PrepareForStorage(
+            EncryptedStorageFieldProcessor<TContract>.CloneForStorage(entity), wrappedEnvelope);
         wrappedEnvelope.ObjectInstance = storageEntity;
         _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
 
@@ -194,6 +196,6 @@ internal static class StoredContractEnvelopeAccessor<TContract>
 
         return Expression
             .Lambda<Action<object, IObjectEnvelope<TContract>?>>(call, instanceParameter, valueParameter)
-            .Compile();
+            .Compile(preferInterpretation: !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported);
     }
 }

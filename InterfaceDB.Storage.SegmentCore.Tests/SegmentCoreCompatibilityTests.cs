@@ -38,13 +38,13 @@ public sealed class SegmentCoreCompatibilityTests
     public void StableFormatAndPublicMaintenanceContract_AreExplicitlyVersioned()
     {
         Assert.AreEqual(1, SegmentCoreStorageFormat.PublicApiMajor);
-        Assert.AreEqual(0, SegmentCoreStorageFormat.PublicApiMinor);
+        Assert.AreEqual(1, SegmentCoreStorageFormat.PublicApiMinor);
         Assert.AreEqual(1, SegmentCoreStorageFormat.EngineMajor);
-        Assert.AreEqual(0, SegmentCoreStorageFormat.EngineMinor);
+        Assert.AreEqual(1, SegmentCoreStorageFormat.EngineMinor);
         Assert.AreEqual(1, SegmentCoreStorageFormat.ObjectLogVersion);
         Assert.AreEqual(2, SegmentCoreStorageFormat.PrimaryCheckpointVersion);
         Assert.AreEqual("fnv1a-utf16le-hash-stripes-v1", SegmentCoreStorageFormat.RouterId);
-        Assert.AreEqual("InterfaceDB.BinaryEnvelope.IDB5", SegmentCoreStorageFormat.EnvelopeSerializationId);
+        Assert.AreEqual("InterfaceDB.BinaryEnvelope.IDB6", SegmentCoreStorageFormat.EnvelopeSerializationId);
         var serializerMagic = typeof(BinaryObjectSerializer<>).GetField(
             "CurrentMagic",
             BindingFlags.NonPublic | BindingFlags.Static)?.GetRawConstantValue();
@@ -170,8 +170,13 @@ public sealed class SegmentCoreCompatibilityTests
         var text = string.Join('\n', lines);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
+        // Maintenance API 1.1 review: additive mode/options, results, estimate and optional provider
+        // capability. Existing methods/interfaces retain their signatures. Engine minor 1 is an
+        // explicit IndependentOutput capability upgrade; default stores remain engine 1.0.
+        // Binary comparison against the preceding retention baseline found only the two deliberate
+        // PublicApiMinor/EngineMinor constant replacements, with no removed public signatures.
         Assert.AreEqual(
-            "F66B59D3D4BB002CE053F5699FDD2CE3E7CF788451C310446ABD0A534F0B94DC",
+            "B349F87857D2A5A54F329F5470FFE813F0A8479C258210BF5622CBC2B8F31154",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

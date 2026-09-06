@@ -22,9 +22,9 @@ public sealed record SegmentCoreStorageFormatInfo(
 public static class SegmentCoreStorageFormat
 {
     public const int PublicApiMajor = 1;
-    public const int PublicApiMinor = 0;
+    public const int PublicApiMinor = 1;
     public const int EngineMajor = 1;
-    public const int EngineMinor = 0;
+    public const int EngineMinor = 1;
     public const int ObjectLogVersion = 1;
     public const int PrimaryCheckpointVersion = 2;
     public const int PrimaryDeltaVersion = 1;
@@ -32,7 +32,7 @@ public static class SegmentCoreStorageFormat
     public const int MutationWalVersion = 1;
     public const int CommitJournalVersion = 1;
     public const string RouterId = "fnv1a-utf16le-hash-stripes-v1";
-    public const string EnvelopeSerializationId = "InterfaceDB.BinaryEnvelope.IDB5";
+    public const string EnvelopeSerializationId = "InterfaceDB.BinaryEnvelope.IDB6";
 
     public static SegmentCoreStorageFormatInfo Current { get; } = new(
         EngineMajor,
@@ -50,6 +50,8 @@ public static class SegmentCoreStorageFormat
         ArgumentNullException.ThrowIfNull(options);
         return Current with
         {
+            // New stores retain the original format until independent output is explicitly requested.
+            EngineMinor = 0,
             RouterId = SegmentCoreHashRouter.GetRouterId(options.HashAlgorithm, options.HashSeed)
         };
     }
@@ -70,6 +72,23 @@ internal static class SegmentCoreStorageFormatManifest
     private const int MaximumRouterBytes = 48;
     private const string FileName = "storage-format.manifest";
     private static ReadOnlySpan<byte> Magic => "IDBSFM01"u8;
+
+    internal static void EnableIndependentOutput(string root, SegmentCoreStorageFormatInfo expected,
+        IDurableFileSystem fileSystem)
+    {
+        var existing = ReadOrCreate(root, expected, fileSystem);
+        if (existing.EngineMinor >= 1) return;
+        var path = Path.Combine(root, FileName);
+        var temporary = path + ".upgrading-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var handle = File.OpenHandle(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                FileOptions.WriteThrough))
+            { RandomAccess.Write(handle, Create(existing with { EngineMinor = 1 }), 0); fileSystem.FlushFile(handle); }
+            fileSystem.ReplaceFile(temporary, path);
+        }
+        finally { TryDelete(temporary); }
+    }
 
     public static SegmentCoreStorageFormatInfo ReadOrCreate(
         string rootDirectory,

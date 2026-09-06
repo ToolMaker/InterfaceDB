@@ -3,11 +3,43 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Serialization;
+using System.Runtime.CompilerServices;
 
 namespace Idb.Libraries.Implementation.Serialization;
 
 public static class StorageObjectCachePolicy
 {
+    // Attributes are fixed for a runtime Type. Weak keys avoid retaining collectible types;
+    // only this type-level decision is cached, never an entity or its mutable envelope override.
+    private static readonly ConditionalWeakTable<Type, CacheAttributeState> CacheAttributes = new();
+    private sealed record CacheAttributeState(bool IsCached);
+
+    // Only reuse complete, object-free metadata. Nonempty encrypted fields deliberately take
+    // the copying path: their values are mutable reference objects, not immutable metadata.
+    internal static bool CanReuseMetadata<TContract>(
+        IObjectEnvelope<TContract> cached,
+        IObjectEnvelope<TContract> hydrated,
+        TContract instance,
+        StoragePolicy storagePolicy)
+        where TContract : class, IStoredContract<TContract>
+        => storagePolicy.ObjectCacheMode == StorageObjectCacheMode.MetadataOnly
+            && cached.ObjectInstance is null
+            && cached.ObjectInstanceWeakReference is null
+            && cached.ImplementationTypeName is not null
+            && !cached.CacheObjectInstance
+            && !hydrated.CacheObjectInstance
+            && cached.EncryptedFields.Count == 0
+            && hydrated.EncryptedFields.Count == 0
+            && cached.EnvelopeCacheKey == hydrated.EnvelopeCacheKey
+            && cached.VersionTag == hydrated.VersionTag
+            && cached.Location == hydrated.Location
+            && cached.ImplementationTypeName == hydrated.ImplementationTypeName
+            && cached.State == hydrated.State
+            && cached.RevisionTimestampUtcMicroseconds == hydrated.RevisionTimestampUtcMicroseconds
+            && (cached.ExtensionMetadata is null) == (hydrated.ExtensionMetadata is null)
+            && cached.ExtensionMetadata.AsSpan().SequenceEqual(hydrated.ExtensionMetadata)
+            && ResolveObjectCacheMode(instance, storagePolicy) == StorageObjectCacheMode.MetadataOnly;
+
     public static bool ShouldRetainObjectInstance<TContract>(
         IObjectEnvelope<TContract> envelope,
         StoragePolicy storagePolicy)
@@ -113,5 +145,6 @@ public static class StorageObjectCachePolicy
 
     private static bool IsStorageCached<TContract>(TContract? instance)
         where TContract : class, IStoredContract<TContract>
-        => instance?.GetType().IsDefined(typeof(StorageCachedAttribute), inherit: true) == true;
+        => instance is not null && CacheAttributes.GetValue(instance.GetType(), static type =>
+            new CacheAttributeState(type.IsDefined(typeof(StorageCachedAttribute), inherit: true))).IsCached;
 }

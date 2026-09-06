@@ -17,6 +17,7 @@ public static class StripedObjectLogRecovery
         var ignoredOrphans = 0;
         var transactionRecords = new List<StripedObjectLogReplayRecord>();
         var replayRecords = new List<StripedObjectLogReplayRecord>();
+        var stripeRecoveries = new ObjectLogRecoveryResult[stripeCount];
 
         for (var stripe = 0; stripe < stripeCount; stripe++)
         {
@@ -26,6 +27,7 @@ public static class StripedObjectLogRecovery
                 repairActiveTails,
                 durableFileSystem,
                 committedTransactionIds);
+            stripeRecoveries[stripe] = recovered;
             repairedTailBytes += recovered.RepairedTailBytes;
             scannedFrames += recovered.LastLsn;
             ignoredOrphans += recovered.IgnoredOrphanSegments;
@@ -55,6 +57,7 @@ public static class StripedObjectLogRecovery
             repairedTailBytes,
             ignoredOrphans)
         {
+            StripeRecoveries = stripeRecoveries,
             TransactionRecords = transactionRecords,
             ReplayRecords = replayRecords
         };

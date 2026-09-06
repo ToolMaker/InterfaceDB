@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.6`. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.7`. Read the [release notes](preview7-release-notes.md) before upgrading existing stores. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
@@ -663,16 +663,18 @@ others:
    changing its signature or behavior contract, or narrowing accepted input requires a package
    major version. Additive APIs require a minor version; compatible fixes use a patch. Preview
    packages may still change before the first stable release. The test suite hashes the complete
-   exported API surface for the reviewed `1.0` baseline, so every addition or break requires an
+   exported API surface for the reviewed `1.1` baseline, so every addition or break requires an
    explicit compatibility review and baseline update.
 2. **Storage engine format.** Every store contains a checksummed `storage-format.manifest` with
-   engine `1.0`, component versions, and its configured hash-routing identity. The original/default
+   engine `1.0` by default, component versions, and its configured hash-routing identity. Explicit
+   independent-output compaction upgrades the required engine minor to `1.1`; see the
+   [maintenance and recovery guide](compaction-maintenance.md). The original/default
    identity is `fnv1a-utf16le-hash-stripes-v1`. A runtime accepts the same engine major and no newer engine or
    component minor than it understands. Unsupported future formats, changed routers, and corrupt
    manifests fail before mutation with `SegmentCoreCompatibilityException`. Router identity and
    transaction protocol are immutable for an existing store.
 3. **Serialized contract envelopes.** New writes use
-   `InterfaceDB.BinaryEnvelope.IDB5`; readers retain `IDB2`, `IDB3`, and `IDB4` compatibility. Application
+   `InterfaceDB.BinaryEnvelope.IDB6`; readers retain `IDB2` through `IDB5` compatibility. Application
    contract changes use versioned contracts and registered adjacent `IMigration` steps. Old readers
    are not promised forward compatibility with a newer envelope. Do not remove a legacy reader or
    migration step while any live store or supported backup may still contain that version.

@@ -1,6 +1,6 @@
 param(
     [string] $PackageDirectory = 'artifacts/packages',
-    [string] $Version = '1.0.0-preview.6'
+    [string] $Version = '1.0.0-preview.7'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +34,13 @@ foreach ($package in $packages) {
         }
         foreach ($dependency in $metadata.dependencies.group.dependency) {
             if ([string] $dependency.id -notin $allowedDependencies) { throw "Unexpected dependency in ${id}: $($dependency.id)" }
+        }
+        $readme = @($archive.Entries | Where-Object FullName -eq 'README.md')
+        if ($readme.Count -ne 1) { throw "Expected one public README in $id." }
+        $reader = [IO.StreamReader]::new($readme[0].Open())
+        try { $readmeText = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        if ($readmeText -match '(?i)Atlas|InterfaceDB\.Commercial|ResilientRepository|ThreeWayMerge') {
+            throw "Private-product content found in the public README for $id."
         }
         Write-Host "Verified public package: $id $Version (MIT; one allowed assembly)."
     } finally { $archive.Dispose() }

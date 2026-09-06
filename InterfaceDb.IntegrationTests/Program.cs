@@ -25,7 +25,7 @@ using System.Text;
 if (args is ["--child", var dataRoot, var gatePath, var readyPath, var writerName])
 {
     await RunChildWriterAsync(dataRoot, gatePath, readyPath, writerName).ConfigureAwait(false);
-    return 0;
+    return Environment.ExitCode;
 }
 
 if (args is ["--child-operation", var operationRoot, var operationGate, var operationReady, var operation])
@@ -35,7 +35,7 @@ if (args is ["--child-operation", var operationRoot, var operationGate, var oper
         operationGate,
         operationReady,
         operation).ConfigureAwait(false);
-    return 0;
+    return Environment.ExitCode;
 }
 
 if (args is ["--child-abandon-migration", var migrationRoot, var migrationReady])
@@ -75,10 +75,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("keyed DI isolates databases using the same contract", KeyedDependencyInjectionIsolatesDatabasesAsync),
     ("keyed DI duplicate registration is idempotent or rejected", KeyedDependencyInjectionHandlesDuplicatesAsync),
     ("two processes can write the same payload", TwoProcessesWriteSamePayloadAsync),
-    ("cross-process write and delete use last-operation-wins ordering", CrossProcessWriteDeleteUsesLastOperationWinsAsync),
+    ("cross-process write and delete reject stale revisions", CrossProcessWriteDeleteRejectsStaleRevisionsAsync),
     ("delete lock timeout maps to storage concurrency exception", DeleteLockTimeoutMapsToStorageConcurrencyExceptionAsync),
     ("startup recovers migration proposal abandoned by a terminated process", StartupRecoversTerminatedMigrationProposalAsync),
-    ("losing proposal returns and caches canonical winner", LosingProposalReturnsAndCachesCanonicalWinnerAsync),
+    ("stale writes reject a recovered legacy proposal", LosingProposalReturnsAndCachesCanonicalWinnerAsync),
     ("initialization commits newest abandoned proposal", InitializationCommitsNewestAbandonedProposalAsync),
     ("eager migration drains proposals before migrating", EagerMigrationDrainsProposalsBeforeMigratingAsync),
     ("multi-step migration reaches the active version", MultiStepMigrationReachesActiveVersionAsync),
@@ -916,7 +916,7 @@ static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
                 new LockTestRecord { Id = "envelope-cache", Value = "stored" }).ConfigureAwait(false);
             storageKey = AssertNotNull(saved.Envelope?.EnvelopeCacheKey, "Saved record should have a storage key.");
             saved.Envelope!.CacheObjectInstance = true;
-            await repository.SaveAsync(saved).ConfigureAwait(false);
+            saved = await repository.SaveAsync(saved).ConfigureAwait(false);
 
             var envelopes = writerProvider.GetRequiredKeyedService<
                 IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
@@ -1380,10 +1380,8 @@ static async Task<bool> TrySaveAsync(
         await repository.SaveAsync(record).ConfigureAwait(false);
         return true;
     }
-    catch (StorageObjectAlreadyExistsException)
-    {
-        return false;
-    }
+    catch (StorageObjectAlreadyExistsException) { return false; }
+    catch (WriteConflictException<ILockTestRecord>) { return false; }
 }
 
 static async Task TwoProcessesWriteSamePayloadAsync()
@@ -1426,8 +1424,8 @@ static async Task TwoProcessesWriteSamePayloadAsync()
         await childA.WaitForExitAsync().ConfigureAwait(false);
         await childB.WaitForExitAsync().ConfigureAwait(false);
 
-        Assert(childA.ExitCode == 0, $"writer-a failed with exit code {childA.ExitCode}.{Environment.NewLine}{outputA}{Environment.NewLine}{errorA}");
-        Assert(childB.ExitCode == 0, $"writer-b failed with exit code {childB.ExitCode}.{Environment.NewLine}{outputB}{Environment.NewLine}{errorB}");
+        Assert(new[] { childA.ExitCode, childB.ExitCode }.Order().SequenceEqual(new[] { 0, 3 }),
+            $"Exactly one same-revision writer must commit. Exit codes {childA.ExitCode}/{childB.ExitCode}. {errorA} {errorB}");
         AssertNoSidecarArtifacts(testRoot);
 
         await using var verifyProvider = BuildProvider(testRoot);
@@ -1450,7 +1448,7 @@ static async Task TwoProcessesWriteSamePayloadAsync()
     }
 }
 
-static async Task CrossProcessWriteDeleteUsesLastOperationWinsAsync()
+static async Task CrossProcessWriteDeleteRejectsStaleRevisionsAsync()
 {
     var testRoot = CreateTestRoot();
     try
@@ -1472,10 +1470,9 @@ static async Task CrossProcessWriteDeleteUsesLastOperationWinsAsync()
         await File.WriteAllTextAsync(writeGate, "go").ConfigureAwait(false);
         await WaitForSuccessfulExitAsync(writer, "write-first").ConfigureAwait(false);
         await File.WriteAllTextAsync(deleteGate, "go").ConfigureAwait(false);
-        await WaitForSuccessfulExitAsync(deleter, "delete-second").ConfigureAwait(false);
-        await AssertSharedRecordValueAsync(testRoot, expectedValue: null).ConfigureAwait(false);
-
-        await SeedSharedRecordAsync(testRoot, "seed-two").ConfigureAwait(false);
+        await deleter.WaitForExitAsync().ConfigureAwait(false);
+        Assert(deleter.ExitCode == 3, "A delete loaded before the committed update must conflict.");
+        await AssertSharedRecordValueAsync(testRoot, "child-write").ConfigureAwait(false);
         var deleteFirstGate = Path.Combine(testRoot, "delete-first.gate");
         var writeSecondGate = Path.Combine(testRoot, "write-second.gate");
         var deleteFirstReady = Path.Combine(testRoot, "delete-first.ready");
@@ -1491,8 +1488,9 @@ static async Task CrossProcessWriteDeleteUsesLastOperationWinsAsync()
         await File.WriteAllTextAsync(deleteFirstGate, "go").ConfigureAwait(false);
         await WaitForSuccessfulExitAsync(deleteFirst, "delete-first").ConfigureAwait(false);
         await File.WriteAllTextAsync(writeSecondGate, "go").ConfigureAwait(false);
-        await WaitForSuccessfulExitAsync(writeSecond, "write-second").ConfigureAwait(false);
-        await AssertSharedRecordValueAsync(testRoot, "child-write").ConfigureAwait(false);
+        await writeSecond.WaitForExitAsync().ConfigureAwait(false);
+        Assert(writeSecond.ExitCode == 3, "An update loaded before deletion must conflict.");
+        await AssertSharedRecordValueAsync(testRoot, expectedValue: null).ConfigureAwait(false);
         AssertNoSidecarArtifacts(testRoot);
     }
     finally
@@ -1597,14 +1595,13 @@ static async Task LosingProposalReturnsAndCachesCanonicalWinnerAsync()
             record.Envelope.EnvelopeCacheKey).ConfigureAwait(false);
 
         record.Value = "losing-write";
-        var saved = await repository.SaveAsync(record).ConfigureAwait(false);
-
-        Assert(saved.Value == "canonical-winner", "Save should return the proposal that became canonical.");
-        Assert(record.Envelope is not null, "The losing input object should retain its storage envelope.");
-
-        var cached = await repository.QueryAsync(x => x.Id == "shared").ConfigureAwait(false);
-        cached = AssertNotNull(cached, "Canonical winner should remain queryable.");
-        Assert(cached.Value == "canonical-winner", "Cache should contain the canonical winner, not the losing write.");
+        WriteConflictException<ILockTestRecord>? conflict = null;
+        try { await repository.SaveAsync(record).ConfigureAwait(false); }
+        catch (WriteConflictException<ILockTestRecord> error) { conflict = error; }
+        Assert(conflict is not null, "The stale save must reject the recovered committed revision.");
+        var current = await conflict!.ReadCurrentAsync().ConfigureAwait(false);
+        Assert(current!.Value == "canonical-winner", "Conflict retrieval must read the committed payload.");
+        Assert(record.Envelope is not null, "Rejection must retain the loaded token.");
         AssertNoSidecarArtifacts(testRoot);
     }
     finally
@@ -2113,7 +2110,7 @@ static async Task EncryptedStorageFieldsDecryptThroughProxyAsync()
             };
             await repository.SaveAsync(concrete).ConfigureAwait(false);
 
-            Assert(string.IsNullOrEmpty(concrete.Secret), "Encrypted backing property should be cleared after save.");
+            Assert(concrete.Secret == "sensitive-value", "Staging must preserve the caller object; only the stored payload clears encrypted backing fields.");
             Assert(concrete.Envelope?.EncryptedFields.ContainsKey(nameof(IEncryptedFieldTestRecord.Secret)) == true,
                 "Envelope should contain encrypted field ciphertext.");
         }
@@ -2344,8 +2341,12 @@ static async Task RunChildWriterAsync(
         $"{writerName} timed out waiting for the start gate.").ConfigureAwait(false);
 
     record.Value = writerName + ":" + new string(writerName[^1], 4 * 1024 * 1024);
-    await repository.SaveAsync(record).ConfigureAwait(false);
-    Console.WriteLine($"{writerName} saved {record.Value.Length} bytes to {record.Envelope?.Location}");
+    try
+    {
+        await repository.SaveAsync(record).ConfigureAwait(false);
+        Console.WriteLine($"{writerName} saved {record.Value.Length} bytes to {record.Envelope?.Location}");
+    }
+    catch (WriteConflictException<ILockTestRecord>) { Environment.ExitCode = 3; }
 }
 
 static async Task RunChildOperationAsync(
@@ -2365,14 +2366,17 @@ static async Task RunChildOperationAsync(
         TimeSpan.FromSeconds(20),
         $"Child operation '{operation}' timed out waiting for its gate.").ConfigureAwait(false);
 
-    if (string.Equals(operation, "delete", StringComparison.Ordinal))
+    try
     {
-        await repository.DeleteAsync(record).ConfigureAwait(false);
-        return;
+        if (string.Equals(operation, "delete", StringComparison.Ordinal))
+            await repository.DeleteAsync(record).ConfigureAwait(false);
+        else
+        {
+            record.Value = "child-write";
+            await repository.SaveAsync(record).ConfigureAwait(false);
+        }
     }
-
-    record.Value = "child-write";
-    await repository.SaveAsync(record).ConfigureAwait(false);
+    catch (WriteConflictException<ILockTestRecord>) { Environment.ExitCode = 3; }
 }
 
 static async Task RunChildAbandonedMigrationProposalAsync(
@@ -2680,7 +2684,7 @@ static bool HasPlaintextEnvelopeHeader(byte[] bytes)
         && bytes[0] == (byte)'I'
         && bytes[1] == (byte)'D'
         && bytes[2] == (byte)'B'
-        && bytes[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5';
+        && bytes[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6';
 }
 
 static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)

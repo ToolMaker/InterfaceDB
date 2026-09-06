@@ -23,6 +23,9 @@ public interface IObjectEnvelope<TContract>
     /// </summary>
     string VersionTag { get; set; }
 
+    /// <summary>Store-managed UTC microsecond revision, used as the expected token on update/delete. Zero denotes a legacy or unsaved envelope.</summary>
+    long RevisionTimestampUtcMicroseconds { get; set; }
+
     /// <summary>
     /// Contract instance associated with this envelope.
     /// </summary>

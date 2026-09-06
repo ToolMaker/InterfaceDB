@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The `1.0.0-preview.5` public-preview decision is complete. Virtualized Linux correctness remains
+The next public preview is `1.0.0-preview.7`; its [release notes](preview7-release-notes.md) record qualification and compatibility. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:

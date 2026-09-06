@@ -674,7 +674,7 @@ internal static class PrimaryIndexCheckpoint
                     reader.ReadInt64());
                 if (stripe < 0
                     || stripe >= stripeCount
-                    || address.SegmentId <= 0
+                    || address.SegmentId is 0 or long.MinValue
                     || address.Offset < ObjectLogFormat.SegmentHeaderSize
                     || address.FrameLength < ObjectLogFormat.FrameHeaderSize + ObjectLogFormat.FrameFooterSize
                     || address.FrameLength > ObjectLogFormat.MaximumFrameBytes

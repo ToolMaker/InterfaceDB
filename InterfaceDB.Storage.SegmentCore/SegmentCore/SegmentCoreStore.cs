@@ -10,7 +10,7 @@ using Idb.Storage.SegmentCore.ObjectLog;
 
 namespace Idb.Storage.SegmentCore;
 
-public sealed class SegmentCoreStore : IAsyncDisposable
+public sealed partial class SegmentCoreStore : IAsyncDisposable
 {
     private readonly string _rootDirectory;
     private readonly SegmentCoreOptions _options;
@@ -79,6 +79,10 @@ public sealed class SegmentCoreStore : IAsyncDisposable
         _fullRecoveryFramesScanned = fullRecoveryFramesScanned;
         _repairedTailBytes = repairedTailBytes;
         _dirtyStripeMask = unchecked((long)dirtyStripeMask);
+        if (options.RetainedVersions is { } retention)
+            _retention = new(rootDirectory, retention, EnterHistoryReadAsync,
+                (key, address, token) => _reader.ReadPayloadAsync(key, address, token),
+                (key, address, budget, token) => _reader.ReadPayloadBudgetedAsync(key, address, budget, token));
     }
 
     public event EventHandler<SegmentCoreTransactionStateChangedEventArgs>? TransactionStateChanged;
@@ -310,6 +314,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 options.LogOptions.StripeCount,
                 options.PrimaryIndexOptions);
             primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
+            SegmentCoreIndependentFiles.VerifyRecovery(fullRoot, checkpoint);
             SegmentCoreDiagnostics.RecordOpenStage(
                 "primary_checkpoint",
                 stageStarted,
@@ -361,6 +366,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             else
             {
                 var manifestPath = Path.Combine(fullRoot, "striped-log.manifest");
+                IReadOnlyList<ObjectLogRecoveryResult>? stripeRecoveries = null;
                 if (File.Exists(manifestPath))
                 {
                     var recovery = StripedObjectLogRecovery.Recover(
@@ -368,6 +374,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                         repairActiveTails: true,
                         options.DurableFileSystem,
                         commitSnapshot.CommittedTransactionIds);
+                    stripeRecoveries = recovery.StripeRecoveries;
                     repairedTailBytes = recovery.RepairedTailBytes;
                     fullRecoveryFramesScanned = recovery.ScannedFrames;
                     commitSnapshot.ValidateRecoveryRecords(
@@ -394,7 +401,10 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                         requireEveryCommitAfterWatermark: true);
                 }
 
-                writer = await StripedObjectLogProbeWriter.OpenAsync(
+                writer = stripeRecoveries is not null
+                    ? await StripedObjectLogProbeWriter.OpenRecoveredOwnedAsync(fullRoot, options.LogOptions,
+                        stripeRecoveries, options.DurableFileSystem, cancellationToken).ConfigureAwait(false)
+                    : await StripedObjectLogProbeWriter.OpenAsync(
                     fullRoot,
                     options.LogOptions,
                     options.DurableFileSystem,
@@ -453,6 +463,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 options.LogOptions.StripeCount,
                 options.PrimaryIndexOptions);
             primaryIndex = new PrimaryIndexMap(checkpoint?.Entries);
+            SegmentCoreIndependentFiles.VerifyRecovery(fullRoot, checkpoint);
             SegmentCoreDiagnostics.RecordOpenStage(
                 "primary_checkpoint",
                 stageStarted,
@@ -549,6 +560,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             {
                 stageStarted = SegmentCoreDiagnostics.StartTimestamp();
                 var manifestPath = Path.Combine(fullRoot, "striped-log.manifest");
+                IReadOnlyList<ObjectLogRecoveryResult>? stripeRecoveries = null;
                 if (File.Exists(manifestPath))
                 {
                     var recovery = StripedObjectLogRecovery.Recover(
@@ -556,6 +568,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                         repairActiveTails: true,
                         options.DurableFileSystem,
                         walSnapshot.CommittedTransactionIds);
+                    stripeRecoveries = recovery.StripeRecoveries;
                     replayRecords = recovery.ReplayRecords;
                     repairedTailBytes = recovery.RepairedTailBytes;
                     fullRecoveryFramesScanned = recovery.ScannedFrames;
@@ -565,7 +578,10 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     replayRecords = [];
                 }
 
-                writer = await StripedObjectLogProbeWriter.OpenAsync(
+                writer = stripeRecoveries is not null
+                    ? await StripedObjectLogProbeWriter.OpenRecoveredOwnedAsync(fullRoot, options.LogOptions,
+                        stripeRecoveries, options.DurableFileSystem, cancellationToken).ConfigureAwait(false)
+                    : await StripedObjectLogProbeWriter.OpenAsync(
                     fullRoot,
                     options.LogOptions,
                     options.DurableFileSystem,
@@ -1118,6 +1134,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 if (removed)
                 {
                     _checkpointChanges[key] = new PrimaryIndexChange(true, default);
+                    _retention?.Deleted(key);
                 }
 
                 return removed;
@@ -1394,6 +1411,9 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 "Online segment compaction requires at least two retained checkpoint generations.");
         }
 
+        if (options.Mode == SegmentCoreCompactionMode.IndependentOutput)
+            return await CompactIndependentAsync(options, cancellationToken).ConfigureAwait(false);
+
         await EnterShutdownSafeGateAsync(_compactionGate, cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1451,7 +1471,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 keys = _primaryIndex.Keys.ToArray();
                 estimatedLiveFrameBytes = _primaryIndex.Values.Sum(
                     static locator => (long)locator.Address.FrameLength);
-                EnsureCompactionCapacity(options, estimatedLiveFrameBytes);
+                EnsureCompactionCapacity(options, checked(estimatedLiveFrameBytes + (_retention?.Statistics.RetainedBytes ?? 0)));
                 compactedSegmentFloor = _writer.GetWritePositions()
                     .Select(static position => position.SegmentId)
                     .ToArray();
@@ -1469,6 +1489,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             }
 
             long copied = 0;
+            long copiedFrameBytes = 0;
             var slices = preparationSlices;
             var longestSlice = longestPreparationPause;
             var longestCopySlice = TimeSpan.Zero;
@@ -1527,6 +1548,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     }
 
                     copied += records.Count;
+                    copiedFrameBytes += addresses.Sum(static address => (long)address.Address.FrameLength);
                 }
                 finally
                 {
@@ -1576,6 +1598,11 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     await Task.Delay(1, cancellationToken).ConfigureAwait(false);
                 }
 
+                if (_retention is not null)
+                {
+                    EnsureCompactionCapacity(options, _retention.Statistics.RetainedBytes);
+                    await _retention.RelocateAsync(address => address.Address.SegmentId < compactedSegmentFloor[address.Stripe], cancellationToken).ConfigureAwait(false);
+                }
                 _reader.Dispose();
                 try
                 {
@@ -1616,6 +1643,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 Math.Max(0, bytesBefore - bytesAfter),
                 stopwatch.Elapsed)
             {
+                BytesCopied = copiedFrameBytes,
                 Slices = slices,
                 LongestExclusiveSlice = longestSlice,
                 PreparationPause = longestPreparationPause,
@@ -1765,6 +1793,11 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             }
 
             var files = new List<SegmentCoreBackupFile>();
+            var revisionClock = Path.Combine(_rootDirectory, ".idb-revision-clock");
+            if (File.Exists(revisionClock))
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(revisionClock, staging,
+                    ".idb-revision-clock", new FileInfo(revisionClock).Length,
+                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
             foreach (var relativePath in new[]
                      {
                          "storage-format.manifest",
@@ -1836,6 +1869,20 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                 }
             }
 
+            foreach (var file in state.Entries.Values.Where(a => a.Address.SegmentId < 0)
+                         .Select(a => (a.Stripe, a.Address.SegmentId)).Distinct())
+            {
+                var source = SegmentCoreIndependentFiles.Resolve(_rootDirectory, file.Stripe, file.SegmentId);
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(source, staging,
+                    Path.GetRelativePath(_rootDirectory, source), new FileInfo(source).Length,
+                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
+            }
+            var floorPath = Path.Combine(_rootDirectory, SegmentCoreIndependentFiles.FloorFileName);
+            if (File.Exists(floorPath))
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(floorPath, staging,
+                    SegmentCoreIndependentFiles.FloorFileName, new FileInfo(floorPath).Length,
+                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
+
             var transactionRelative = Path.Combine(
                 "transactions",
                 _transactionWal is not null ? "mutation-wal.idbwal" : "commit-journal.idbtxn");
@@ -1859,7 +1906,8 @@ public sealed class SegmentCoreStore : IAsyncDisposable
             files.Add(SegmentCoreBackupFiles.DescribeFile(staging, transactionRelative));
             var manifest = new SegmentCoreBackupManifest
             {
-                StorageFormat = SegmentCoreStorageFormat.For(_options.LogOptions),
+                StorageFormat = SegmentCoreStorageFormatManifest.ReadOrCreate(_rootDirectory,
+                    SegmentCoreStorageFormat.For(_options.LogOptions), _options.DurableFileSystem),
                 CheckpointGeneration = state.Generation,
                 TransactionWatermark = state.TransactionWatermark,
                 Entries = state.Entries.Count,
@@ -2312,6 +2360,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
 
     private async ValueTask DisposeCoreAsync()
     {
+        _retention?.Dispose();
 
         while (Volatile.Read(ref _gateAdmissions) != 0
                || Volatile.Read(ref _activeMutations) != 0
@@ -2509,6 +2558,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                         if (RemoveIfNotNewer(_primaryIndex, mutation.Key, addresses[index]))
                         {
                             _checkpointChanges[mutation.Key] = new PrimaryIndexChange(true, default);
+                        _retention?.Deleted(mutation.Key);
                         }
                     }
                 }
@@ -2582,6 +2632,7 @@ public sealed class SegmentCoreStore : IAsyncDisposable
                     else if (RemoveIfNotNewer(_primaryIndex, mutation.Key, addresses[index]))
                     {
                         _checkpointChanges[mutation.Key] = new PrimaryIndexChange(true, default);
+                        _retention?.Deleted(mutation.Key);
                     }
                 }
             }

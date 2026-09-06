@@ -103,13 +103,22 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
             replayRecord,
             cancellationToken).ConfigureAwait(false);
 
+    // Not a public shortcut: the owning SegmentCoreStore has scanned and repaired this
+    // stripe while continuously holding its exclusive store lease.
+    internal static ValueTask<ObjectLogProbeWriter> OpenRecoveredOwnedAsync(
+        string rootDirectory, ObjectLogRecoveryResult recovery, ObjectLogProbeOptions options,
+        IDurableFileSystem durableFileSystem, CancellationToken cancellationToken)
+        => OpenCoreAsync(rootDirectory, options, durableFileSystem, null, null, cancellationToken,
+            recovery with { RepairedTailBytes = 0 }); // Caller already accounts for the repaired tail.
+
     private static async ValueTask<ObjectLogProbeWriter> OpenCoreAsync(
         string rootDirectory,
         ObjectLogProbeOptions? options,
         IDurableFileSystem? durableFileSystem,
         ObjectLogWritePosition? recoveryPosition,
         Action<ObjectLogReplayRecord>? replayRecord,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ObjectLogRecoveryResult? recovered = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         cancellationToken.ThrowIfCancellationRequested();
@@ -164,14 +173,14 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
 
         try
         {
-            var recovery = recoveryPosition is null
+            var recovery = recovered ?? (recoveryPosition is null
                 ? ObjectLogRecovery.Recover(fullRoot, repairActiveTail: true, durableFileSystem)
                 : ObjectLogTailRecovery.Recover(
                     fullRoot,
                     recoveryPosition.Value,
                     replayRecord ?? throw new ArgumentNullException(nameof(replayRecord)),
                     repairActiveTail: true,
-                    durableFileSystem);
+                    durableFileSystem));
             string activePath;
             long activeSegmentId;
             uint activeHeaderChecksum;
@@ -196,6 +205,8 @@ public sealed class ObjectLogProbeWriter : IAsyncDisposable, IDisposable
             else
             {
                 activePath = recovery.ActiveSegmentPath;
+                if (recovered is not null && new FileInfo(activePath).Length != recovery.ActiveLength)
+                    throw new ObjectLogCorruptionException("The recovered stripe changed before writer activation.");
                 activeSegmentId = recovery.ActiveSegmentId;
                 activeHeaderChecksum = recovery.ActiveSegmentHeaderChecksum;
                 activeOffset = recovery.ActiveLength;

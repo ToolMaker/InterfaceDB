@@ -32,9 +32,10 @@ dotnet add package InterfaceDB --prerelease
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
 ```
 
-> Preview.6 writes `IDB5` envelopes and reads `IDB2` through `IDB5`. Preview.5 cannot read new
-> `IDB5` writes. Keep a pre-upgrade backup if rollback is required. APIs and formats can still
-> change before stable `1.0.0`; see the [preview.6 release notes](documentation/preview6-release-notes.md).
+> Preview compatibility: APIs and storage formats may still change before stable `1.0.0`.
+> Preview.7 adds [envelope revisions](documentation/envelope-revisions.md) and writes `IDB6`.
+> It reads `IDB2`–`IDB6`; old readers cannot read new payloads. Stop old writers and retain a full
+> pre-upgrade backup and rebuild custom integrations. See the [preview.7 release notes](documentation/preview7-release-notes.md).
 
 Define a versioned interface in the application contract layer:
 
@@ -150,10 +151,10 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Exact, range, ordinal prefix, ordinal suffix, and literal ordinal contains indexes.
 - Cost-aware `AND` intersections, safe `OR` unions, bounded ranges, residual predicates, and query-plan diagnostics.
 - File change watching and in-process added/stored/removed/deleted notifications.
-- Cross-process last-operation-wins coordination and abandoned-proposal recovery.
+- Revision-checked writes and stale-write rejection, with legacy abandoned-proposal recovery.
 - Performance and Durable file-write modes.
 - Eager strict, eager tolerant, and lazy runtime migrations.
-- MessagePack `IDB5` envelopes with bounded optional extension metadata and backward reads for `IDB2`, `IDB3`, and `IDB4`.
+- MessagePack `IDB6` envelopes with exact-match revision writes and backward reads for `IDB2`–`IDB5`.
 - Whole-envelope and selected-field AES-GCM encryption.
 - Active and historical key handling, lazy rotation, and full-store rotation.
 - Windows Credential Manager key storage.
@@ -171,10 +172,6 @@ final iPhone and Mac runtime durability qualification still requires a Mac with 
 before selecting a mobile data root or application-lifecycle policy.
 
 ## Current Performance Snapshot
-
-The [5 September preview.6 measurements](documentation/performance-preview6-20260905.md) record the
-latest File/SegmentCore results, complete-object SQLite comparisons and observed regressions.
-The older measurements below remain historical snapshots, not measurements of every preview.6 path.
 
 On the repository's Windows/NVMe development machine, the current 1,000-object quick gate measured one independent Durable write per object at a 5.574 ms median. The equivalent SQLite FULL autocommit measurements were 1.927 ms through `Microsoft.Data.Sqlite` and 1.936 ms through Dapper. The optimized file protocol is 2.74 times faster than InterfaceDB's earlier 15.299 ms Durable baseline while preserving all forced-process recovery and cross-process tests.
 
@@ -252,4 +249,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-The file provider is functional and extensively tested. InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.6`. SegmentCore passes clean-package and local `preview.2`-baseline upgrade validation, persists its secondary-index catalogs, and is integrated behind the repository/index boundary. Migration, online backup/restore, format/API compatibility enforcement, configurable versioned hash routing, reusable repository lifecycles, paged locators, larger-than-managed-memory execution, observability, production-pilot, automated mixed/disk-failure gates, and prior Android emulator qualification are complete. Keep the release in preview until an actual acknowledged-write physical power-cut test passes; that evidence is the final durability gate for stable `1.0.0`. Apple runtime qualification and bare-metal hardware characterization remain external evidence rather than claims of this preview. The preview.6 verification and compatibility boundary are recorded in the release notes.
+InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.7`. Revision-checked writes, optional local notifications, retained editing, maintenance controls and scan improvements are included. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence and Apple-device runtime qualification remain outstanding. See the [preview.7 release notes](documentation/preview7-release-notes.md) for upgrade requirements, verification and supported limits.

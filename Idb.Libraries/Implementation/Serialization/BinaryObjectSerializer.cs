@@ -13,16 +13,21 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Binary serializer (MessagePack-backed) that produces compact payloads compatible across contract versions.
 /// </summary>
-public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContract>
+public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerializer<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private const string DefaultExtension = ".mpk";
-    private const string CurrentMagic = "IDB5";
+    private const string CurrentMagic = "IDB6";
     private static readonly ConcurrentDictionary<Type, TypeSerializationInfo> TypeSerializationCache = new();
     private static readonly ConcurrentDictionary<string, Type?> TypeResolutionCache = new(StringComparer.Ordinal);
     private readonly MessagePackSerializerOptions _options;
     private readonly MessagePackSerializerOptions _fastOptions;
     private readonly MessagePackSerializerOptions _extensionMetadataOptions;
+    private CachedTypeName? _cachedReadTypeName;
+
+    // One bounded, owned UTF-8 header per serializer. Never retain a slice of an entity payload.
+    private sealed record CachedTypeName(byte[] Utf8, string Value);
+    private const int MaximumCachedTypeNameBytes = 1024;
 
     private delegate void SerializeTypedDelegate(
         Stream destination,
@@ -85,8 +90,11 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         // Write magic + simple header (version, cacheKey, typeName, cache flag, encrypted fields,
         // extension metadata) + typed object payload.
         using var buffer = new PooledByteBufferWriter();
-        "IDB5"u8.CopyTo(buffer.GetSpan(4));
+        "IDB6"u8.CopyTo(buffer.GetSpan(4));
         buffer.Advance(4);
+        ArgumentOutOfRangeException.ThrowIfNegative(obj.RevisionTimestampUtcMicroseconds);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(buffer.GetSpan(8), obj.RevisionTimestampUtcMicroseconds);
+        buffer.Advance(8);
         var writer = new MessagePackWriter(buffer);
         var version = obj.VersionTag ?? string.Empty;
         var cacheKey = obj.EnvelopeCacheKey ?? string.Empty;
@@ -128,17 +136,18 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         // Detect new format by magic prefix; otherwise fall back for backward compatibility
         if (HasMagic(data.Span))
         {
-            var magic = Encoding.ASCII.GetString(data.Span[..4]);
-            var reader = new MessagePackReader(data[4..]);
+            var format = data.Span[3]; // HasMagic validated the supported IDB2-IDB6 range.
+            var revision = format == (byte)'6' ? ReadRevision(data) : 0;
+            var reader = new MessagePackReader(data[(format == (byte)'6' ? 12 : 4)..]);
             var version = reader.ReadString();
             var cacheKey = reader.ReadString();
-            var typeName = reader.ReadString();
-            var cacheObjectInstance = HasCacheFlag(magic)
+            var typeName = ReadTypeName(ref reader);
+            var cacheObjectInstance = format >= (byte)'3'
                 && reader.ReadBoolean();
-            var encryptedFields = HasEncryptedFields(magic)
+            var encryptedFields = format >= (byte)'4'
                 ? MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(ref reader, _fastOptions)
                 : new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
-            var extensionMetadata = HasExtensionMetadata(magic)
+            var extensionMetadata = format >= (byte)'5'
                 ? MessagePackSerializer.Deserialize<byte[]?>(ref reader, _extensionMetadataOptions)
                 : null;
             var type = ResolveType(typeName)
@@ -152,6 +161,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             var envelope = new PlainEnvelope
             {
                 VersionTag = version ?? string.Empty,
+                RevisionTimestampUtcMicroseconds = revision,
                 EnvelopeCacheKey = cacheKey ?? string.Empty,
                 ImplementationTypeName = typeName,
                 CacheObjectInstance = cacheObjectInstance,
@@ -167,6 +177,33 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
         var legacyEnvelope = MessagePackSerializer.Deserialize<IObjectEnvelope<TContract>>(data.ToArray(), _options);
         ValidateExtensionMetadataFromStorage(legacyEnvelope.ExtensionMetadata);
         return legacyEnvelope;
+    }
+
+    private string? ReadTypeName(ref MessagePackReader reader)
+    {
+        var probe = reader;
+        if (!probe.TryReadStringSpan(out var utf8))
+        {
+            return reader.ReadString();
+        }
+
+        var cached = Volatile.Read(ref _cachedReadTypeName);
+        if (cached is not null && utf8.SequenceEqual(cached.Utf8))
+        {
+            reader = probe;
+            return cached.Value;
+        }
+
+        // Preserve MessagePack's normal decoding and validation on misses. Publish only owned
+        // immutable data. Keep the first hint rather than allocating replacements when a
+        // polymorphic stream alternates types; other names follow the normal decoding path.
+        var value = reader.ReadString();
+        if (cached is null && value is not null && utf8.Length <= MaximumCachedTypeNameBytes)
+        {
+            Interlocked.CompareExchange(ref _cachedReadTypeName,
+                new CachedTypeName(utf8.ToArray(), value), null);
+        }
+        return value;
     }
 
     public ValueTask SerializeAsync(
@@ -211,7 +248,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             && data[0] == (byte)'I'
             && data[1] == (byte)'D'
             && data[2] == (byte)'B'
-            && data[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5';
+            && data[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6';
     }
 
     private sealed class EnvelopeNullResolver : IFormatterResolver
@@ -323,14 +360,16 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     private static bool HasCacheFlag(string magic)
         => string.Equals(magic, "IDB3", StringComparison.Ordinal)
             || string.Equals(magic, "IDB4", StringComparison.Ordinal)
+            || string.Equals(magic, "IDB5", StringComparison.Ordinal)
             || string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
 
     private static bool HasEncryptedFields(string magic)
         => string.Equals(magic, "IDB4", StringComparison.Ordinal)
+            || string.Equals(magic, "IDB5", StringComparison.Ordinal)
             || string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
 
     private static bool HasExtensionMetadata(string magic)
-        => string.Equals(magic, CurrentMagic, StringComparison.Ordinal);
+        => magic is "IDB5" or CurrentMagic;
 
     private static Type? ResolveType(string? typeName)
     {
@@ -387,6 +426,10 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     {
         ValidateExtensionMetadataForWrite(envelope.ExtensionMetadata);
         WriteMagic(destination);
+        ArgumentOutOfRangeException.ThrowIfNegative(envelope.RevisionTimestampUtcMicroseconds);
+        var revisionBytes = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(revisionBytes, envelope.RevisionTimestampUtcMicroseconds);
+        await destination.WriteAsync(revisionBytes, cancellationToken).ConfigureAwait(false);
         var version = envelope.VersionTag ?? string.Empty;
         var cacheKey = envelope.EnvelopeCacheKey ?? string.Empty;
         var instance = envelope.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
@@ -408,19 +451,23 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
     {
         // Peek first 4 bytes
         var prefix = new byte[4];
-        var read = await source.ReadAsync(prefix.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
-        if (read != 4)
-        {
-            throw new InvalidOperationException("Unexpected end of stream.");
-        }
+        await source.ReadExactlyAsync(prefix, cancellationToken).ConfigureAwait(false);
 
         if (prefix[0] == (byte)'I'
             && prefix[1] == (byte)'D'
             && prefix[2] == (byte)'B'
-            && prefix[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5')
+            && prefix[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6')
         {
             // New format
             var magic = Encoding.ASCII.GetString(prefix);
+            long revision = 0;
+            if (magic == CurrentMagic)
+            {
+                var header = new byte[12];
+                prefix.CopyTo(header, 0);
+                await source.ReadExactlyAsync(header.AsMemory(4), cancellationToken).ConfigureAwait(false);
+                revision = ReadRevision(header);
+            }
             var version = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var cacheKey = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
             var typeName = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
@@ -443,6 +490,7 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
             var env = new PlainEnvelope
             {
                 VersionTag = version,
+                RevisionTimestampUtcMicroseconds = revision,
                 EnvelopeCacheKey = cacheKey,
                 ImplementationTypeName = typeName,
                 CacheObjectInstance = cacheObjectInstance,
@@ -502,16 +550,40 @@ public sealed class BinaryObjectSerializer<TContract> : IObjectSerializer<TContr
 
     private sealed class PlainEnvelope : IObjectEnvelope<TContract>
     {
+        public long RevisionTimestampUtcMicroseconds { get; set; }
         public string EnvelopeCacheKey { get; set; } = string.Empty;
         public string VersionTag { get; set; } = string.Empty;
         public TContract? ObjectInstance { get; set; }
         public WeakReference<TContract>? ObjectInstanceWeakReference { get; set; }
         public string? ImplementationTypeName { get; set; }
         public bool CacheObjectInstance { get; set; }
-        public IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
-            = new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
+        public required IDictionary<string, EncryptedFieldValue> EncryptedFields { get; set; }
         public byte[]? ExtensionMetadata { get; set; }
         public string? Location { get; set; }
         public Idb.Libraries.Abstractions.Enums.StorageObjectState State { get; set; }
+    }
+
+    public long ReadRevision(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.Length < 4) throw new InvalidDataException("Truncated envelope header.");
+        if (!payload.Span[..4].SequenceEqual("IDB6"u8))
+        {
+            if (payload.Span[..3].SequenceEqual("IDB"u8) && !HasMagic(payload.Span))
+                throw new InvalidDataException("Unsupported envelope format.");
+            return 0;
+        }
+        if (payload.Length < 12) throw new InvalidDataException("Truncated revision header.");
+        var revision = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload.Span[4..]);
+        if (revision < 0) throw new InvalidDataException("Invalid negative revision.");
+        return revision;
+    }
+
+    public async ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default)
+    {
+        var header = new byte[12];
+        await source.ReadExactlyAsync(header.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
+        if (header.AsSpan(0, 4).SequenceEqual("IDB6"u8))
+            await source.ReadExactlyAsync(header.AsMemory(4), cancellationToken).ConfigureAwait(false);
+        return ReadRevision(header);
     }
 }

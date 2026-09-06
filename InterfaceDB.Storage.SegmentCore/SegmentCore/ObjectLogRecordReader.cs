@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using Idb.Libraries.Abstractions.Services.Maintenance;
 using Idb.Storage.SegmentCore.ObjectLog;
 using Microsoft.Win32.SafeHandles;
 
@@ -29,7 +30,7 @@ internal sealed class ObjectLogRecordReader : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedKey);
         var address = locator.Address;
         if (locator.Stripe < 0
-            || address.SegmentId <= 0
+            || address.SegmentId is 0 or long.MinValue
             || address.Offset < ObjectLogFormat.SegmentHeaderSize
             || address.FrameLength < ObjectLogFormat.FrameHeaderSize + ObjectLogFormat.FrameFooterSize
             || address.FrameLength > ObjectLogFormat.MaximumFrameBytes)
@@ -64,6 +65,27 @@ internal sealed class ObjectLogRecordReader : IDisposable
             cancellationToken);
     }
 
+    internal async ValueTask<byte[]> ReadPayloadBudgetedAsync(string key, StripedObjectLogRecordAddress locator,
+        IMaintenanceBudget budget, CancellationToken token)
+    {
+        ValidateLocator(key, locator);
+        var segment = GetAsynchronousHandle(locator.Stripe, locator.Address.SegmentId);
+        var rented = ArrayPool<byte>.Shared.Rent(locator.Address.FrameLength);
+        try
+        {
+            var chunkSize = (int)Math.Min(64 * 1024, budget.MaximumWorkUnitBytes);
+            for (var offset = 0; offset < locator.Address.FrameLength; offset += chunkSize)
+            {
+                var count = Math.Min(chunkSize, locator.Address.FrameLength - offset);
+                using var admission = await budget.AcquireAsync(count, token).ConfigureAwait(false);
+                await ReadExactlyAsync(segment.Handle, rented.AsMemory(offset, count), locator.Address.Offset + offset,
+                    segment.Path, token).ConfigureAwait(false);
+            }
+            return ReadValidatedPayload(key, locator.Address, rented.AsSpan(0, locator.Address.FrameLength), segment.Path);
+        }
+        finally { ArrayPool<byte>.Shared.Return(rented); }
+    }
+
     private static async ValueTask<byte[]> ReadPayloadAsynchronouslyAsync(
         string expectedKey,
         ObjectLogRecordAddress address,
@@ -95,19 +117,25 @@ internal sealed class ObjectLogRecordReader : IDisposable
             return [];
         }
 
-        var ordered = locators
-            .Select(static pair => new PhysicalRead(pair.Key, pair.Value))
-            .OrderBy(static item => item.Locator.Stripe)
-            .ThenBy(static item => item.Locator.Address.SegmentId)
-            .ThenBy(static item => item.Locator.Address.Offset)
-            .ToArray();
+        var ordered = new PhysicalRead[locators.Count];
+        for (var i = 0; i < ordered.Length; i++) ordered[i] = new(locators[i].Key, locators[i].Value);
+        Array.Sort(ordered, static (left, right) =>
+        {
+            var stripe = left.Locator.Stripe.CompareTo(right.Locator.Stripe);
+            if (stripe != 0) return stripe;
+            var segment = left.Locator.Address.SegmentId.CompareTo(right.Locator.Address.SegmentId);
+            return segment != 0 ? segment : left.Locator.Address.Offset.CompareTo(right.Locator.Address.Offset);
+        });
         var results = new SegmentCoreRecord[ordered.Length];
-        var groups = ordered
-            .Select((item, index) => new IndexedPhysicalRead(index, item))
-            .GroupBy(static item => new SegmentKey(
-                item.Read.Locator.Stripe,
-                item.Read.Locator.Address.SegmentId))
-            .ToArray();
+        var groups = new List<(int Start, int End)>();
+        for (var start = 0; start < ordered.Length;)
+        {
+            var end = start + 1;
+            while (end < ordered.Length && ordered[end].Locator.Stripe == ordered[start].Locator.Stripe
+                && ordered[end].Locator.Address.SegmentId == ordered[start].Locator.Address.SegmentId) end++;
+            groups.Add((start, end));
+            start = end;
+        }
         await Parallel.ForEachAsync(
             groups,
             new ParallelOptions
@@ -119,25 +147,25 @@ internal sealed class ObjectLogRecordReader : IDisposable
             },
             async (group, token) =>
             {
-                var items = group.ToArray();
-                var segment = GetAsynchronousHandle(group.Key.Stripe, group.Key.SegmentId);
+                var locator = ordered[group.Start].Locator;
+                var segment = GetAsynchronousHandle(locator.Stripe, locator.Address.SegmentId);
                 var path = segment.Path;
                 var handle = segment.Handle;
-                var cursor = 0;
-                while (cursor < items.Length)
+                var cursor = group.Start;
+                while (cursor < group.End)
                 {
                     token.ThrowIfCancellationRequested();
-                    var first = items[cursor];
-                    ValidateLocator(first.Read.Key, first.Read.Locator);
-                    var windowStart = first.Read.Locator.Address.Offset;
-                    var windowEnd = checked(windowStart + first.Read.Locator.Address.FrameLength);
+                    var first = ordered[cursor];
+                    ValidateLocator(first.Key, first.Locator);
+                    var windowStart = first.Locator.Address.Offset;
+                    var windowEnd = checked(windowStart + first.Locator.Address.FrameLength);
                     var end = cursor + 1;
-                    while (end < items.Length)
+                    while (end < group.End)
                     {
-                        var candidate = items[end];
-                        ValidateLocator(candidate.Read.Key, candidate.Read.Locator);
-                        var candidateStart = candidate.Read.Locator.Address.Offset;
-                        var candidateEnd = checked(candidateStart + candidate.Read.Locator.Address.FrameLength);
+                        var candidate = ordered[end];
+                        ValidateLocator(candidate.Key, candidate.Locator);
+                        var candidateStart = candidate.Locator.Address.Offset;
+                        var candidateEnd = checked(candidateStart + candidate.Locator.Address.FrameLength);
                         if (candidateStart - windowEnd > _options.MaximumReadGapBytes
                             || candidateEnd - windowStart > _options.MaximumReadWindowBytes)
                         {
@@ -156,13 +184,13 @@ internal sealed class ObjectLogRecordReader : IDisposable
                         await ReadExactlyAsync(handle, window, windowStart, path, token).ConfigureAwait(false);
                         for (var index = cursor; index < end; index++)
                         {
-                            var item = items[index];
-                            var address = item.Read.Locator.Address;
+                            var item = ordered[index];
+                            var address = item.Locator.Address;
                             var relativeOffset = checked((int)(address.Offset - windowStart));
                             var frame = window.Span.Slice(relativeOffset, address.FrameLength);
-                            results[item.OutputIndex] = new SegmentCoreRecord(
-                                item.Read.Key,
-                                ReadValidatedPayload(item.Read.Key, address, frame, path));
+                            results[index] = new SegmentCoreRecord(
+                                item.Key,
+                                ReadValidatedPayload(item.Key, address, frame, path));
                         }
                     }
                     finally
@@ -225,10 +253,7 @@ internal sealed class ObjectLogRecordReader : IDisposable
 
     private static SegmentReadHandle OpenSegment(string rootDirectory, SegmentKey key, FileOptions options)
     {
-        var path = Path.Combine(
-        StripedObjectLogRecovery.StripeRoot(rootDirectory, key.Stripe),
-        "segments",
-        ObjectLogFormat.SegmentFileName(key.SegmentId));
+        var path = SegmentCoreIndependentFiles.Resolve(rootDirectory, key.Stripe, key.SegmentId);
         return new SegmentReadHandle(
             path,
             File.OpenHandle(
@@ -243,7 +268,7 @@ internal sealed class ObjectLogRecordReader : IDisposable
     {
         var address = locator.Address;
         if (locator.Stripe < 0
-            || address.SegmentId <= 0
+            || address.SegmentId is 0 or long.MinValue
             || address.Offset < ObjectLogFormat.SegmentHeaderSize
             || address.FrameLength < ObjectLogFormat.FrameHeaderSize + ObjectLogFormat.FrameFooterSize
             || address.FrameLength > ObjectLogFormat.MaximumFrameBytes)
@@ -328,5 +353,4 @@ internal sealed class ObjectLogRecordReader : IDisposable
 
     private readonly record struct PhysicalRead(string Key, StripedObjectLogRecordAddress Locator);
 
-    private readonly record struct IndexedPhysicalRead(int OutputIndex, PhysicalRead Read);
 }

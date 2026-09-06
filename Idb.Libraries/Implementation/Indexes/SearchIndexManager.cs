@@ -27,6 +27,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     private readonly ConcurrentDictionary<string, Type> _runtimeTypesByPhysicalKey = new(StringComparer.Ordinal);
     private readonly object _initializationGate = new();
     private readonly object _indexMutationGate = new();
+    private readonly Dictionary<string, long> _lastMutationOrder = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingIndexMutation> _pendingIndexMutations = new(StringComparer.Ordinal);
     private IPersistentSearchIndexCatalogRepository? _persistentCatalogRepository;
     private string? _persistentCatalogPath;
@@ -146,7 +147,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         var deleted = await _envelopeRepository.DeleteAsync(entity, cancellationToken).ConfigureAwait(false);
         if (deleted && !string.IsNullOrWhiteSpace(physicalKey))
         {
-            QueueOrApplyDelete(physicalKey);
+            QueueOrApplyDelete(physicalKey, EnvelopeCommitOrder.Get(entity.Envelope));
         }
 
         return deleted;
@@ -374,12 +375,43 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         IEnumerable<TContract> entities,
         CancellationToken cancellationToken)
     {
-        var saved = await _envelopeRepository.WriteManyAsync(entities, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<TContract> saved;
+        var materialized = entities as IReadOnlyList<TContract> ?? entities.ToArray();
+        try { saved = await _envelopeRepository.WriteManyAsync(materialized, cancellationToken).ConfigureAwait(false); }
+        catch (Exception exception) when (exception is Idb.Libraries.Abstractions.Exceptions.IStorageBulkOperationResult)
+        {
+            var partial = (Idb.Libraries.Abstractions.Exceptions.IStorageBulkOperationResult)exception;
+            if (!_writesPublishStoredNotifications)
+            {
+                try
+                {
+                    foreach (var index in partial.SucceededIndexes)
+                    {
+                        if (partial.CommittedItems.TryGetValue(index, out var committed))
+                        {
+                            UpdateIndex((TContract)committed);
+                            continue;
+                        }
+                        var entity = materialized[index];
+                        if (entity.Envelope is { } envelope
+                            && _envelopeRepository is ICommittedEnvelopeSnapshotSource<TContract> snapshots)
+                        {
+                            var snapshot = await snapshots.CaptureCommittedAsync(envelope, int.MaxValue, CancellationToken.None).ConfigureAwait(false)
+                                ?? throw new InvalidDataException("A successful batch write could not be read for index refresh.");
+                            UpdateIndex(snapshot.Materialize());
+                        }
+                        else UpdateIndex(entity);
+                    }
+                }
+                catch (Exception refreshFailure)
+                { exception.Data["InterfaceDB.IndexRefreshFailure"] = refreshFailure; }
+            }
+            throw;
+        }
         if (!_writesPublishStoredNotifications)
         {
             foreach (var entity in saved)
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 UpdateIndex(entity);
             }
         }
@@ -449,7 +481,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         });
         _deletedSubscription = _envelopeRepository.SubscribeToDeleted(envelope =>
         {
-            QueueOrApplyDelete(envelope.EnvelopeCacheKey);
+            QueueOrApplyDelete(envelope.EnvelopeCacheKey, EnvelopeCommitOrder.Get(envelope));
             return ValueTask.CompletedTask;
         });
     }
@@ -457,6 +489,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     private void UpdateIndex(TContract entity)
     {
         var envelope = entity.Envelope;
+        if (EnvelopeWriteOutcome.IsNoChange(envelope)) return;
         if (envelope is not null)
         {
             QueueOrApplyUpsert(envelope.EnvelopeCacheKey, entity);
@@ -467,6 +500,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     {
         lock (_indexMutationGate)
         {
+            var order = EnvelopeCommitOrder.Get(entity.Envelope);
+            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior > order) return;
+            if (order > 0) _lastMutationOrder[physicalKey] = order;
             if (Volatile.Read(ref _disposed) != 0)
             {
                 return;
@@ -482,10 +518,12 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         }
     }
 
-    private void QueueOrApplyDelete(string physicalKey)
+    private void QueueOrApplyDelete(string physicalKey, long order = 0)
     {
         lock (_indexMutationGate)
         {
+            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior > order) return;
+            if (order > 0) _lastMutationOrder[physicalKey] = order;
             if (Volatile.Read(ref _disposed) != 0)
             {
                 return;

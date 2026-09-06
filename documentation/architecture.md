@@ -137,13 +137,14 @@ The active version comes from contract config, usually `IDbContractConfigDto<TCo
 
 ## Serialization
 
-`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB5` payload format. Legacy `IDB2`, `IDB3`, and `IDB4` payloads remain readable for backward compatibility.
+`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB6` payload format. Legacy `IDB2`, `IDB3`, `IDB4`, and `IDB5` payloads remain readable for backward compatibility.
 
 Serialization is already behind `IObjectSerializer<TContract>`. The default registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so future serializer implementations can be registered below the repository without changing `IRepository<TContract>` or the file reader/writer contracts.
 
 The current format stores:
 
-- magic prefix: `IDB5`
+- magic prefix: `IDB6`
+- fixed-width little-endian revision timestamp in UTC microseconds
 - version tag
 - envelope cache key
 - concrete runtime type name
@@ -167,15 +168,9 @@ lifecycle to skip exact-key validation. Validation failures before staging leave
 detached. After staging starts, the candidate is consumed even if the provider write fails; create a
 new detached candidate for a retry.
 
-Exact-key validation is a precondition check, not a compare-and-swap operation. Its correctness
-depends on one logical writer for the object and on callers not bypassing the facade to mutate the
-same object through `IEnvelopeRepository<TContract>` between validation and commit. SegmentCore
-additionally retains its documented one-writer-process-per-live-root boundary.
+Existing-key metadata writes now require an explicit `EnvelopeWriteCondition`. The provider validates the exact committed revision under the same write guard as the payload commit. The overload without a condition is insert-only. See [Envelope revisions](envelope-revisions.md) for infrastructure import and acknowledgement semantics.
 
-Compatibility is one-way during this preview transition: preview.6 readers accept `IDB2` through
-`IDB5`, but an `IDB5` payload written by preview.6 is not readable by the preview.5 reader. Do not
-roll a store back to preview.5 after preview.6 has written it unless a verified pre-upgrade backup is
-restored.
+The preview.7 IDB6 writer is a one-way format transition: revised readers accept IDB2–IDB6; old readers cannot read IDB6. Stop old writers before upgrade and retain a full pre-upgrade backup. See preview7-release-notes.md for the release qualification.
 
 Current limitation: payloads still depend on concrete .NET type names. Stable type aliases are a future hardening item.
 
@@ -184,11 +179,11 @@ Current limitation: payloads still depend on concrete .NET type names. Stable ty
 Encryption is applied after the complete envelope has been serialized and before its bytes are written:
 
 ```text
-object -> IDB5 serialization -> IEncryptor.Encrypt -> file
-file -> IEncryptor.Decrypt -> IDB5 deserialization -> object
+object -> IDB6 serialization -> IEncryptor.Encrypt -> file
+file -> IEncryptor.Decrypt -> IDB6 deserialization -> object
 ```
 
-`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB5` file format. Existing `IDB2`, `IDB3`, and `IDB4` files remain readable.
+`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB6` file format. Existing `IDB2`, `IDB3`, and `IDB4` files remain readable.
 
 `AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
 
@@ -467,19 +462,7 @@ loading objects. See [Query Planning](query-planning.md).
 
 `FileObjectWriter<TContract>` performs the physical file write.
 
-Performance mode writes the canonical payload directly. Durable mode uses this flow:
-
-1. Wrap object into envelope.
-2. Resolve target payload path.
-3. Ensure target directory exists.
-4. Register an active writer lease for migration coordination.
-5. Write serialized bytes to a unique `.writing` proposal.
-6. Write the proposal through intermediate caches and atomically rename it to `.ready`.
-7. Acquire the payload sidecar lock.
-8. Select the newest ready proposal and atomically move it over the canonical payload.
-9. Remove superseded proposals and repeat until no ready proposal remains.
-10. Update envelope cache according to policy.
-11. Unwrap object and return it.
+Both modes now use revision-checked atomic replacement. The writer stages a separate envelope, acquires the migration writer lease and per-payload sidecar lock, reads the committed revision, validates the expected timestamp, serializes to a private `.writing` file, and atomically replaces the live payload. It then publishes the accepted envelope and cache state before releasing coordination. Performance mode retains its weaker flush policy. Disabling sidecar locks is unsupported for logical envelope writes.
 
 ## Sidecar Write Locks
 
@@ -510,43 +493,15 @@ Lock policy lives in `StoragePolicy`:
 
 This lock is primarily for out-of-process synchronization. It serializes writes to the same payload file while allowing writes to different files to proceed independently.
 
-## Coalescing Last-Write-Wins Commit
+## Revision-Checked Commit
 
-Concurrent writers do not wait before serializing their replacement payload. Each writer first creates:
+Ordinary saves use exact timestamp equality. Two copies with the same loaded revision cannot both commit. The successful write advances its timestamp with its payload; the rejected caller keeps its old revision and receives a `WriteConflictException<T>`. Readers can read the previous committed payload while a replacement is staged.
 
-```text
-<key>.mpk.pending.<guid>.writing
-```
-
-After the write-through payload is complete and its handle is closed, the proposal is published atomically as:
-
-```text
-<key>.mpk.pending.<published-ticks>.<guid>.ready
-```
-
-Only `.ready` files are eligible for commit. The payload lock owner orders ready proposals by their publication identifier, atomically moves the newest over `<key>.mpk`, and deletes older proposals. If proposals arrive while it is working, it repeats the scan.
-
-Every publisher attempts to acquire the payload lock after publishing. Therefore, if the previous lock owner exits just before seeing a new proposal, the publishing process becomes the next owner and finishes the commit.
-
-Repository initialization also drains abandoned `.ready` proposals. Stale incomplete `.writing` files are deleted after the configured stale-lock timeout.
-
-The semantic is whole-object last-write-wins. Superseded intermediate object replacements are intentionally not applied.
-
-`SaveAsync` returns the value that is canonical when its coalescing operation completes. If the caller's proposal loses to a newer ready proposal, the writer reloads that winner, stores the winning envelope in cache, and returns the winning object. The losing input object still has its original storage envelope restored.
-
-Writes and deletes share the same cross-process last-operation-wins model. A timed-out delete removes its own uncommitted delete proposal, preventing a failed call from deleting storage later during recovery.
+Legacy `.ready` proposal recovery remains for stores created by older builds. Revised writes never leave a new unvalidated ready proposal for a later process to commit. Stop old writers before using IDB6. Raw coordinator APIs are an administrative compatibility boundary, not an alternative logical write policy.
 
 ## Delete Path
 
-`DeleteAsync` requires the exact persisted object and its envelope. Detached objects without an envelope throw `StorageObjectNotPersistedException`.
-
-The file provider publishes deletion into the same ordered stream as writes:
-
-```text
-<key>.mpk.pending.<published-ticks>.<guid>.delete.ready
-```
-
-The payload lock owner selects the newest completed write or delete proposal. A winning delete proposal removes the canonical payload and older proposals. Repository initialization also commits abandoned delete proposals, so a process failure does not leave an older pending write able to recreate deleted storage.
+`DeleteAsync` requires the exact persisted object and its expected revision. Detached objects without an envelope throw `StorageObjectNotPersistedException`. Deletion checks the current revision under the same per-payload guard as save, then removes the file. A stale delete cannot remove a newer update, and a stale save cannot recreate a deleted record.
 
 After deletion, the envelope state becomes `Deleted`, the cache entry is removed, and the deleted notification is published. Repeating delete returns `false`. Saving that same storage-aware object throws `StorageObjectDeletedException`; explicit recreation requires a new envelope-less object.
 
@@ -872,7 +827,7 @@ Current practical verification:
 `InterfaceDb.Tests` and `Idb.Analyzers.Tests` are VS-discoverable MSTest projects. `InterfaceDb.IntegrationTests` is an executable end-to-end harness. Together they verify:
 
 - a single save creates a readable payload and leaves no lock or pending-write artifacts;
-- two child processes can publish writes to the same payload and leave one readable last-write-wins result;
+- two child processes with the same loaded revision produce one accepted write and one conflict;
 - initialization commits the newest abandoned ready proposal and removes superseded proposals;
 - eager migration drains old-version proposals, migrates the newest value, preserves the key, and writes to the active version directory.
 - watcher create/update/delete/rename and rescan behavior;

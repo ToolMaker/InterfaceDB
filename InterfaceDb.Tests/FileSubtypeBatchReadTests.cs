@@ -188,7 +188,7 @@ public sealed class FileSubtypeBatchReadTests
         HydrateOnInitialize = false,
         WatchStorageChanges = false,
         MaxReadConcurrency = Fixture.ReadConcurrency,
-        UseSidecarWriteLocks = false
+        UseSidecarWriteLocks = true
     };
 
     [StorageScope(VersionTag = "1.0.0")]

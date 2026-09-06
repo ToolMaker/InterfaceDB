@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
+    <ProjectReference Include="..\InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj" />
     <ProjectReference Include="..\InterfaceDb.IntegrationTests\InterfaceDb.IntegrationTests.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 

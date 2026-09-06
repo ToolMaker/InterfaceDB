@@ -19,7 +19,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Idb.Storage.SegmentCore.Tests;
 
 [TestClass]
-public sealed class SegmentCoreProviderTests
+public sealed partial class SegmentCoreProviderTests
 {
     [TestMethod]
     public async Task MetadataRepository_FirstInsertAndLocatedUpdatePersistMetadataAcrossReopen()
@@ -59,7 +59,7 @@ public sealed class SegmentCoreProviderTests
                     metadataRepository.SaveWithExtensionMetadataAsync(
                         failedCandidate,
                         persistedKey,
-                        new byte[] { 9, 9, 9 },
+                        new byte[] { 9, 9, 9 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds),
                         canceled.Token).AsTask());
             }
 
@@ -72,7 +72,7 @@ public sealed class SegmentCoreProviderTests
             var updated = await metadataRepository.SaveWithExtensionMetadataAsync(
                 new ProviderRecord { Id = "metadata", Name = "Updated", Score = 1 },
                 persistedKey,
-                new byte[] { 5, 6, 7 });
+                new byte[] { 5, 6, 7 }, new EnvelopeWriteCondition(saved.Envelope!.RevisionTimestampUtcMicroseconds));
             Assert.AreEqual(persistedKey, updated.Envelope?.EnvelopeCacheKey);
             var integrity = await provider
                 .GetRequiredService<ISegmentCoreRepositoryMaintenance<IProviderRecord>>()
@@ -1314,9 +1314,17 @@ public sealed class SegmentCoreProviderTests
         }
     }
 
-    private sealed class CountingObjectSerializer : IObjectSerializer<IProviderRecord>
+    private sealed class CountingObjectSerializer : IRevisionObjectSerializer<IProviderRecord>
     {
         private readonly BinaryObjectSerializer<IProviderRecord> _inner = new();
+        private int _readRevisionCount;
+        public int ReadRevisionCount => Volatile.Read(ref _readRevisionCount);
+        public long ReadRevision(ReadOnlyMemory<byte> payload)
+        {
+            Interlocked.Increment(ref _readRevisionCount);
+            return _inner.ReadRevision(payload);
+        }
+        public ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default) => _inner.ReadRevisionAsync(source, cancellationToken);
         private int _deserializeCount;
 
         public int DeserializeCount => Volatile.Read(ref _deserializeCount);
@@ -1346,9 +1354,11 @@ public sealed class SegmentCoreProviderTests
         public void Reset() => Interlocked.Exchange(ref _deserializeCount, 0);
     }
 
-    private sealed class BlockingObjectSerializer : IObjectSerializer<IProviderRecord>, IDisposable
+    private sealed class BlockingObjectSerializer : IRevisionObjectSerializer<IProviderRecord>, IDisposable
     {
         private readonly BinaryObjectSerializer<IProviderRecord> _inner = new();
+        public long ReadRevision(ReadOnlyMemory<byte> payload) => _inner.ReadRevision(payload);
+        public ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default) => _inner.ReadRevisionAsync(source, cancellationToken);
         private readonly ManualResetEventSlim _deserializeRelease = new(initialState: false);
         private readonly TaskCompletionSource _deserializeBlocked = new(
             TaskCreationOptions.RunContinuationsAsynchronously);

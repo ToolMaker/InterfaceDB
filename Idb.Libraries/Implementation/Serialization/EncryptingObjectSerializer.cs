@@ -9,13 +9,24 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// Applies encryption after envelope serialization and decryption before deserialization.
 /// </summary>
 public sealed class EncryptingObjectSerializer<TContract> :
-    IObjectSerializer<TContract>,
+    IRevisionObjectSerializer<TContract>,
     IRotationAwareObjectSerializer<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly BinaryObjectSerializer<TContract> _serializer;
     private readonly IEncryptor _encryptor;
     private readonly bool _encryptionDisabled;
+
+    public long ReadRevision(ReadOnlyMemory<byte> payload) => _serializer.ReadRevision(
+        _encryptionDisabled ? payload : _encryptor.Decrypt(payload.ToArray()));
+
+    public async ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default)
+    {
+        if (_encryptionDisabled) return await _serializer.ReadRevisionAsync(source, cancellationToken).ConfigureAwait(false);
+        using var memory = new MemoryStream();
+        await source.CopyToAsync(memory, cancellationToken).ConfigureAwait(false);
+        return ReadRevision(memory.ToArray());
+    }
 
     public EncryptingObjectSerializer(
         BinaryObjectSerializer<TContract> serializer,

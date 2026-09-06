@@ -38,6 +38,11 @@ public sealed record SegmentCoreRepositoryOptions
 
     public SegmentCoreCompactionOptions CompactionOptions { get; init; } = new();
 
+    /// <summary>Opt-in policy replaces the legacy compaction interval/mutation admission. Polling
+    /// uses CheckpointInterval; checkpoint safety remains independent. Null keeps legacy scheduling.
+    /// Merely subscribing to maintenance summaries does not opt into this scheduling policy.</summary>
+    public CompactionScheduleOptions? CompactionSchedule { get; init; }
+
     public bool EnableBackgroundMaintenance { get; init; } = true;
 
     public bool CheckpointOnDispose { get; init; } = true;
@@ -170,6 +175,7 @@ public sealed record SegmentCoreRepositoryOptions
         ArgumentNullException.ThrowIfNull(CompactionOptions);
         StoreOptions.Validate();
         CompactionOptions.Validate();
+        CompactionSchedule?.Validate();
         if (CheckpointInterval < TimeSpan.FromSeconds(1))
         {
             throw new ArgumentOutOfRangeException(nameof(CheckpointInterval));
@@ -234,6 +240,7 @@ public readonly record struct SegmentCoreProviderStatus(
     SegmentCoreStatistics? StoreStatistics)
 {
     public StorageHardwareProfile HardwareProfile { get; init; }
+    public long CompactionObservationFailures { get; init; }
 }
 
 public sealed record SegmentCoreMigrationOptions

@@ -158,7 +158,7 @@ BenchmarkDotNet writes the complete local report under
 
 Compiled predicates use a bounded reusable-shape cache where supported; their bound constants and captured objects remain query-specific. The planner separately weak-caches syntax for the same expression instance: flattened AND/OR terms, possible bounded-range pairs and member paths. Expressions and closures can still be collected.
 
-This does not cache answers or final cost-based plans. Captured bounds, string-comparison modes, index counts and access-path selection remain live on every execution. Reusing an expression can avoid parsing work; constructing a fresh expression each time does not reuse this syntax cache. See the [preview.6 measurements](performance-preview6-20260905.md) for scope and correctness evidence. The historical benchmark table above does not measure these changes.
+This does not cache answers or final cost-based plans. Captured bounds, string-comparison modes, index counts and access-path selection remain live on every execution. Reusing an expression can avoid parsing work; constructing a fresh expression each time does not reuse this syntax cache. See the [query/checkpoint follow-up](performance-final-followup-20260905.md) for scope and correctness evidence. The historical benchmark table above does not measure these changes.
 
 ## Next Improvements
 

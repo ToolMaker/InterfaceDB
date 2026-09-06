@@ -10,7 +10,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Coordinates last-write-wins file replacement across processes.
 /// </summary>
-public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordinator
+public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFileWriteCoordinator
     where TContract : class, IStoredContract<TContract>
 {
     private const string PendingMarker = ".pending.";
@@ -22,6 +22,97 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
     private readonly string _storageRoot;
     private readonly StringComparer _pathComparer;
     private int _localMigrationScopeActive;
+
+    private void RejectRawMutationInRevisionStore()
+    {
+        if (File.Exists(Path.Combine(_storageRoot, ".idb-revision-clock")))
+            throw new NotSupportedException("Raw proposal writes/deletes cannot mutate a revision-managed store. Use the conditional envelope write path. Raw encoding replacement is trusted maintenance only.");
+    }
+
+    public async ValueTask<bool> CommitEnvelopeAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken = default, Action? afterCommit = null)
+    {
+        await using var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
+            ? NoopLease.Instance : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+        return await CommitEnvelopeCoreAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit).ConfigureAwait(false);
+    }
+
+    public ValueTask<bool> CommitEnvelopeAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken, Action? afterCommit, Func<bool>? shouldCommit)
+        => shouldCommit is null ? CommitEnvelopeAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit)
+            : CommitEnvelopeWithOutcomeAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit, shouldCommit);
+
+    private async ValueTask<bool> CommitEnvelopeWithOutcomeAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken, Action? afterCommit, Func<bool> shouldCommit)
+    {
+        await using var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
+            ? NoopLease.Instance : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+        return await CommitEnvelopeCoreAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit, shouldCommit).ConfigureAwait(false);
+    }
+
+    private ValueTask<bool> CommitEnvelopeCoreAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken, Action? afterCommit, Func<bool>? shouldCommit)
+        => shouldCommit is null ? CommitEnvelopeCoreAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit)
+            : CommitEnvelopeCoreWithOutcomeAsync(payloadPath, delete, prepareAsync, cancellationToken, afterCommit, shouldCommit);
+
+    // Keep the original strict async state machine free of opt-in callback fields.
+    private async ValueTask<bool> CommitEnvelopeCoreAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken, Action? afterCommit)
+    {
+        if (!_storagePolicy.UseSidecarWriteLocks)
+            throw new NotSupportedException("Revision enforcement requires File sidecar write locks in every durability mode.");
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        await using var guard = await _storageWriteLock.AcquireAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        CommitReadyFilesUnderLock(payloadPath);
+        var exists = File.Exists(payloadPath);
+        var staging = payloadPath + PendingMarker + Guid.NewGuid().ToString("N") + WritingSuffix;
+        try
+        {
+            await prepareAsync(exists ? payloadPath : null, staging, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (delete && exists) FileRetentionIncarnation.Invalidate(payloadPath);
+            if (delete) File.Delete(payloadPath);
+            else File.Move(staging, payloadPath, overwrite: true);
+            afterCommit?.Invoke();
+            return exists;
+        }
+        finally { TryDelete(staging); }
+    }
+
+    private async ValueTask<bool> CommitEnvelopeCoreWithOutcomeAsync(string payloadPath, bool delete,
+        Func<string?, string, CancellationToken, ValueTask> prepareAsync, CancellationToken cancellationToken, Action? afterCommit, Func<bool> shouldCommit)
+    {
+        if (!_storagePolicy.UseSidecarWriteLocks)
+            throw new NotSupportedException("Revision enforcement requires File sidecar write locks in every durability mode.");
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        await using var guard = await _storageWriteLock.AcquireAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        CommitReadyFilesUnderLock(payloadPath);
+        var exists = File.Exists(payloadPath);
+        var staging = payloadPath + PendingMarker + Guid.NewGuid().ToString("N") + WritingSuffix;
+        try
+        {
+            await prepareAsync(exists ? payloadPath : null, staging, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (shouldCommit?.Invoke() == false) return exists;
+            if (delete && exists) FileRetentionIncarnation.Invalidate(payloadPath);
+            if (delete) File.Delete(payloadPath);
+            else File.Move(staging, payloadPath, overwrite: true);
+            afterCommit?.Invoke();
+            return exists;
+        }
+        finally { TryDelete(staging); }
+    }
+
+    public async ValueTask InspectCommittedAsync(string payloadPath, Func<string?, CancellationToken, ValueTask> inspect,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_storagePolicy.UseSidecarWriteLocks) throw new NotSupportedException("Retained File editing requires sidecar locks.");
+        await using var writer = await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        await using var guard = await _storageWriteLock.AcquireAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        CommitReadyFilesUnderLock(payloadPath);
+        await inspect(File.Exists(payloadPath) ? payloadPath : null, cancellationToken).ConfigureAwait(false);
+    }
 
     public CoalescingFileWriteCoordinator(
         IStorageWriteLock storageWriteLock,
@@ -72,6 +163,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         Func<string, CancellationToken, ValueTask> writeProposalAsync,
         CancellationToken cancellationToken = default)
     {
+        RejectRawMutationInRevisionStore();
         if (string.IsNullOrWhiteSpace(payloadPath))
         {
             throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
@@ -137,6 +229,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         string payloadPath,
         CancellationToken cancellationToken = default)
     {
+        RejectRawMutationInRevisionStore();
         if (string.IsNullOrWhiteSpace(payloadPath))
         {
             throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
@@ -294,6 +387,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
             static (ref FileSystemEntry entry) => entry.ToFullPath(),
             new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 })
         {
+            ShouldRecursePredicate = (ref FileSystemEntry entry) => !entry.FileName.Equals(RetainedHistoryNamespace.DirectoryName, StringComparison.OrdinalIgnoreCase),
             ShouldIncludePredicate = (ref FileSystemEntry entry) => !entry.IsDirectory
                 && (entry.FileName.EndsWith(ReadySuffix, comparison) || entry.FileName.EndsWith(WritingSuffix, comparison))
         };
@@ -608,6 +702,13 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IFileWriteCoordi
         IAsyncDisposable writerLease) : IAsyncDisposable
     {
         private int _disposed;
+
+        internal ValueTask<bool> CommitEnvelopeAsync(string path, bool delete,
+            Func<string?, string, CancellationToken, ValueTask> prepare, CancellationToken token, Action? afterCommit, Func<bool>? shouldCommit = null)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            return owner.CommitEnvelopeCoreAsync(path, delete, prepare, token, afterCommit, shouldCommit);
+        }
 
         internal ValueTask<bool> PublishAndCommitAsync(
             string payloadPath,

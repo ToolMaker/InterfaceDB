@@ -8,6 +8,8 @@ namespace Idb.Libraries.Abstractions.Options;
 /// </summary>
 public sealed record StoragePolicy
 {
+    /// <summary>Null disables historical editing. Finite leases do not survive process/store restart.</summary>
+    public RetainedVersionOptions? RetainedVersions { get; init; }
     /// <summary>
     /// Singleton instance representing the default bounded-concurrency, metadata-cache, Performance-mode policy.
     /// </summary>
@@ -85,6 +87,10 @@ public sealed record StoragePolicy
     /// When false, change notifications such as <c>ContractAdded</c> are skipped during writes.
     /// </summary>
     public bool RaiseNotifications { get; init; } = true;
+
+    /// <summary>Null preserves the notification-disabled repository fast path. Opting in does not
+    /// change envelope notifications, disk format, durability or external-writer coverage.</summary>
+    public RepositoryNotificationOptions? RepositoryNotifications { get; init; }
 
     /// <summary>
     /// Controls the default object-instance retention behavior for cached envelopes.

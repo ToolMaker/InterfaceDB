@@ -91,17 +91,26 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             replayRecord,
             cancellationToken).ConfigureAwait(false);
 
+    internal static ValueTask<StripedObjectLogProbeWriter> OpenRecoveredOwnedAsync(
+        string rootDirectory, StripedObjectLogProbeOptions options,
+        IReadOnlyList<ObjectLogRecoveryResult> recoveries, IDurableFileSystem durableFileSystem,
+        CancellationToken cancellationToken)
+        => OpenCoreAsync(rootDirectory, options, durableFileSystem, null, null, cancellationToken, recoveries);
+
     private static async ValueTask<StripedObjectLogProbeWriter> OpenCoreAsync(
         string rootDirectory,
         StripedObjectLogProbeOptions? options,
         IDurableFileSystem? durableFileSystem,
         IReadOnlyList<ObjectLogWritePosition>? recoveryPositions,
         Action<int, ObjectLogReplayRecord>? replayRecord,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<ObjectLogRecoveryResult>? recoveries = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         options ??= new StripedObjectLogProbeOptions();
         options.Validate();
+        if (recoveries is not null && recoveries.Count != options.StripeCount)
+            throw new ArgumentException("Recovery stripe count must match the configured writer.", nameof(recoveries));
         if (recoveryPositions is not null && recoveryPositions.Count != options.StripeCount)
         {
             throw new ArgumentException(
@@ -137,7 +146,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                     durableFileSystem,
                     recoveryPositions is null ? null : recoveryPositions[stripe],
                     synchronizedReplay,
-                    cancellationToken).AsTask();
+                    cancellationToken, recoveries?[stripe]).AsTask();
                 launchedTasks++;
             }
 
@@ -543,7 +552,8 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             IDurableFileSystem durableFileSystem,
             ObjectLogWritePosition? recoveryPosition,
             Action<int, ObjectLogReplayRecord>? replayRecord,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            ObjectLogRecoveryResult? recovered = null)
         {
             var writerOptions = new ObjectLogProbeOptions
             {
@@ -555,7 +565,10 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 MaxSegmentBytes = options.MaxSegmentBytes,
                 MaximumCombinedWriteBytes = options.MaximumCombinedWriteBytes
             };
-            var writer = recoveryPosition is null
+            var writer = recovered is not null
+                ? await ObjectLogProbeWriter.OpenRecoveredOwnedAsync(rootDirectory, recovered,
+                    writerOptions, durableFileSystem, cancellationToken).ConfigureAwait(false)
+                : recoveryPosition is null
                 ? await ObjectLogProbeWriter.OpenAsync(
                     rootDirectory,
                     writerOptions,
