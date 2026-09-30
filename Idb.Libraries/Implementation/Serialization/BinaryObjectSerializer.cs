@@ -4,7 +4,6 @@ using MessagePack;
 using MessagePack.Resolvers;
 using MessagePack.Formatters;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 
@@ -18,16 +17,20 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
 {
     private const string DefaultExtension = ".mpk";
     private const string CurrentMagic = "IDB6";
-    private static readonly ConcurrentDictionary<Type, TypeSerializationInfo> TypeSerializationCache = new();
-    private static readonly ConcurrentDictionary<string, Type?> TypeResolutionCache = new(StringComparer.Ordinal);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, TypeSerializationInfo> TypeSerializationCache = new();
     private readonly MessagePackSerializerOptions _options;
     private readonly MessagePackSerializerOptions _fastOptions;
     private readonly MessagePackSerializerOptions _extensionMetadataOptions;
+    private readonly int _maximumPayloadBytes;
+    private readonly bool _allowLegacyTypelessPayloads;
+    private readonly StoredRuntimeTypeAllowlist<TContract> _runtimeTypeAllowlist;
     private CachedTypeName? _cachedReadTypeName;
 
     // One bounded, owned UTF-8 header per serializer. Never retain a slice of an entity payload.
     private sealed record CachedTypeName(byte[] Utf8, string Value);
     private const int MaximumCachedTypeNameBytes = 1024;
+
+    internal int MaximumPayloadBytes => _maximumPayloadBytes;
 
     private delegate void SerializeTypedDelegate(
         Stream destination,
@@ -50,14 +53,28 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
     private delegate void SerializeTypedBufferDelegate(
         ref MessagePackWriter writer, object instance, MessagePackSerializerOptions options);
 
-    public BinaryObjectSerializer(MessagePackSerializerOptions? options = null)
+    public BinaryObjectSerializer(
+        MessagePackSerializerOptions? options = null,
+        int maximumPayloadBytes = 256 * 1024 * 1024,
+        bool allowLegacyTypelessPayloads = false,
+        StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
     {
-        _options = options ?? MessagePackSerializerOptions.Standard;
+        if (maximumPayloadBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumPayloadBytes));
+        }
+
+        _maximumPayloadBytes = maximumPayloadBytes;
+        _allowLegacyTypelessPayloads = allowLegacyTypelessPayloads;
+        _runtimeTypeAllowlist = runtimeTypeAllowlist ?? StoredRuntimeTypeAllowlist<TContract>.Default;
+        _options = (options ?? MessagePackSerializerOptions.Standard)
+            .WithSecurity(MessagePackSecurity.UntrustedData);
         // Use a faster resolver for typed serialization of the object instance
         // Composite resolver: treat any IObjectEnvelope<,> property as nil (ignored),
         // and serialize the rest with the fast contractless resolver.
         _fastOptions = MessagePackSerializerOptions.Standard.WithResolver(
-            CompositeResolver.Create(EnvelopeNullResolver.Instance, ContractlessStandardResolver.Instance));
+                CompositeResolver.Create(EnvelopeNullResolver.Instance, ContractlessStandardResolver.Instance))
+            .WithSecurity(MessagePackSecurity.UntrustedData);
         _extensionMetadataOptions = _fastOptions.WithResolver(
             CompositeResolver.Create(EnvelopeExtensionMetadataResolver.Instance, _fastOptions.Resolver));
     }
@@ -99,7 +116,9 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         var version = obj.VersionTag ?? string.Empty;
         var cacheKey = obj.EnvelopeCacheKey ?? string.Empty;
         var instance = obj.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
-        var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
+        var runtimeType = instance.GetType();
+        ValidateRuntimeTypeForWrite(runtimeType);
+        var typeInfo = TypeSerializationCache.GetOrAdd(runtimeType, CreateTypeSerializationInfo);
         obj.ImplementationTypeName = typeInfo.TypeName;
 
         writer.Write(version);
@@ -132,6 +151,11 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         {
             throw new ArgumentException("Serialized payload cannot be empty.", nameof(data));
         }
+        if (data.Length > _maximumPayloadBytes)
+        {
+            throw new InvalidDataException(
+                $"Stored envelope exceeds the configured {_maximumPayloadBytes}-byte limit.");
+        }
 
         // Detect new format by magic prefix; otherwise fall back for backward compatibility
         if (HasMagic(data.Span))
@@ -150,8 +174,7 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
             var extensionMetadata = format >= (byte)'5'
                 ? MessagePackSerializer.Deserialize<byte[]?>(ref reader, _extensionMetadataOptions)
                 : null;
-            var type = ResolveType(typeName)
-                ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
+            var type = ResolveAllowedRuntimeType(typeName);
             var instance = MessagePackSerializer.Deserialize(type, ref reader, _fastOptions);
             if (instance is not TContract contractInstance)
             {
@@ -171,6 +194,12 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
                 Location = default!
             };
             return envelope;
+        }
+
+        if (!_allowLegacyTypelessPayloads)
+        {
+            throw new InvalidDataException(
+                "Legacy typeless envelope payloads are disabled. Convert the payload with the trusted migration tooling before opening it.");
         }
 
         // Custom legacy formatters may retain memory; isolate the borrowed input in that path.
@@ -371,10 +400,16 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
     private static bool HasExtensionMetadata(string magic)
         => magic is "IDB5" or CurrentMagic;
 
-    private static Type? ResolveType(string? typeName)
+    private Type ResolveAllowedRuntimeType(string? typeName)
     {
-        if (string.IsNullOrWhiteSpace(typeName)) return null;
-        return TypeResolutionCache.GetOrAdd(typeName, static key => Type.GetType(key, throwOnError: false));
+        if (string.IsNullOrWhiteSpace(typeName)
+            || !_runtimeTypeAllowlist.TryResolve(typeName, out var runtimeType))
+        {
+            throw new InvalidDataException(
+                $"Serialized payload type '{typeName}' is not enrolled for contract '{typeof(TContract).FullName}'.");
+        }
+
+        return runtimeType;
     }
 
     private static TypeSerializationInfo CreateTypeSerializationInfo(Type runtimeType)
@@ -425,6 +460,11 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         CancellationToken cancellationToken)
     {
         ValidateExtensionMetadataForWrite(envelope.ExtensionMetadata);
+        var instance = envelope.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
+        var runtimeType = instance.GetType();
+        ValidateRuntimeTypeForWrite(runtimeType);
+        var typeInfo = TypeSerializationCache.GetOrAdd(runtimeType, CreateTypeSerializationInfo);
+
         WriteMagic(destination);
         ArgumentOutOfRangeException.ThrowIfNegative(envelope.RevisionTimestampUtcMicroseconds);
         var revisionBytes = new byte[8];
@@ -432,8 +472,6 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         await destination.WriteAsync(revisionBytes, cancellationToken).ConfigureAwait(false);
         var version = envelope.VersionTag ?? string.Empty;
         var cacheKey = envelope.EnvelopeCacheKey ?? string.Empty;
-        var instance = envelope.ObjectInstance ?? throw new InvalidOperationException("Envelope does not contain an object instance.");
-        var typeInfo = TypeSerializationCache.GetOrAdd(instance.GetType(), CreateTypeSerializationInfo);
         envelope.ImplementationTypeName = typeInfo.TypeName;
 
         await MessagePackSerializer.SerializeAsync(destination, version, _fastOptions, cancellationToken).ConfigureAwait(false);
@@ -449,85 +487,13 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         Stream source,
         CancellationToken cancellationToken)
     {
-        // Peek first 4 bytes
-        var prefix = new byte[4];
-        await source.ReadExactlyAsync(prefix, cancellationToken).ConfigureAwait(false);
-
-        if (prefix[0] == (byte)'I'
-            && prefix[1] == (byte)'D'
-            && prefix[2] == (byte)'B'
-            && prefix[3] is (byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6')
-        {
-            // New format
-            var magic = Encoding.ASCII.GetString(prefix);
-            long revision = 0;
-            if (magic == CurrentMagic)
-            {
-                var header = new byte[12];
-                prefix.CopyTo(header, 0);
-                await source.ReadExactlyAsync(header.AsMemory(4), cancellationToken).ConfigureAwait(false);
-                revision = ReadRevision(header);
-            }
-            var version = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            var cacheKey = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            var typeName = await MessagePackSerializer.DeserializeAsync<string>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            var cacheObjectInstance = HasCacheFlag(magic)
-                && await MessagePackSerializer.DeserializeAsync<bool>(source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            var encryptedFields = HasEncryptedFields(magic)
-                ? await MessagePackSerializer.DeserializeAsync<Dictionary<string, EncryptedFieldValue>>(source, _fastOptions, cancellationToken).ConfigureAwait(false)
-                : new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
-            var extensionMetadata = HasExtensionMetadata(magic)
-                ? await MessagePackSerializer.DeserializeAsync<byte[]?>(source, _extensionMetadataOptions, cancellationToken).ConfigureAwait(false)
-                : null;
-            var type = ResolveType(typeName)
-                ?? throw new InvalidOperationException($"Unable to resolve serialized contract type '{typeName}'.");
-            var instanceObj = await MessagePackSerializer.DeserializeAsync(type, source, _fastOptions, cancellationToken).ConfigureAwait(false);
-            if (instanceObj is not TContract contractInstance)
-            {
-                throw new InvalidOperationException($"Serialized payload type '{type.FullName}' is not assignable to '{typeof(TContract).FullName}'.");
-            }
-
-            var env = new PlainEnvelope
-            {
-                VersionTag = version,
-                RevisionTimestampUtcMicroseconds = revision,
-                EnvelopeCacheKey = cacheKey,
-                ImplementationTypeName = typeName,
-                CacheObjectInstance = cacheObjectInstance,
-                EncryptedFields = encryptedFields,
-                ExtensionMetadata = extensionMetadata,
-                ObjectInstance = contractInstance,
-                Location = default!
-            };
-            return env;
-        }
-        else
-        {
-            // Old format: rewind and use legacy typeless
-            if (source.CanSeek)
-            {
-                source.Seek(-4, SeekOrigin.Current);
-            }
-            else
-            {
-                // Reconstruct prefixed stream
-                var ms = new MemoryStream();
-                await ms.WriteAsync(prefix, cancellationToken).ConfigureAwait(false);
-                await source.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
-                ms.Position = 0;
-                var bufferedLegacyEnvelope = await MessagePackSerializer
-                    .DeserializeAsync<IObjectEnvelope<TContract>>(ms, _options, cancellationToken)
-                    .ConfigureAwait(false);
-                ValidateExtensionMetadataFromStorage(bufferedLegacyEnvelope.ExtensionMetadata);
-                return bufferedLegacyEnvelope;
-            }
-
-            var legacyEnvelope = await MessagePackSerializer
-                .DeserializeAsync<IObjectEnvelope<TContract>>(source, _options, cancellationToken)
-                .ConfigureAwait(false);
-            ValidateExtensionMetadataFromStorage(legacyEnvelope.ExtensionMetadata);
-            return legacyEnvelope;
-        }
+        // Admit the complete stored payload before parsing. This gives seekable and non-seekable
+        // streams the same bounded allocation and detects a source that grows after reporting its
+        // length before MessagePack can materialize any values.
+        var payload = await BoundedStoredPayload
+            .ReadStreamAsync(source, _maximumPayloadBytes, cancellationToken)
+            .ConfigureAwait(false);
+        return DeserializeCore(payload);
     }
 
     private static void ValidateExtensionMetadataForWrite(byte[]? extensionMetadata)
@@ -536,6 +502,15 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         {
             throw new InvalidOperationException(
                 $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.");
+        }
+    }
+
+    private void ValidateRuntimeTypeForWrite(Type type)
+    {
+        if (!_runtimeTypeAllowlist.Contains(type))
+        {
+            throw new InvalidOperationException(
+                $"Runtime type '{type.FullName}' is not enrolled for stored contract '{typeof(TContract).FullName}'.");
         }
     }
 

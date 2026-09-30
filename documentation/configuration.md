@@ -20,6 +20,36 @@ Every repository receives an `IDbContractConfigDto<TContract>`:
 
 Search indexes are declared with `[SearchIndex]` on contract types or members. There is no separate configured-index array.
 
+## Stored Runtime Types
+
+Every repository uses a frozen `StoredRuntimeTypeAllowlist<TContract>` before constructing a
+persisted concrete type. The compatibility default enrolls closed concrete implementations already
+declared in the contract assembly. It does not expand when an unrelated assembly is loaded later.
+
+Pass an explicit allowlist when implementations live in another assembly or when production should
+admit a narrower set:
+
+```csharp
+using Idb.Libraries.Abstractions.Services.Serialization;
+
+var personTypes = new StoredRuntimeTypeAllowlist<IPerson>(
+    typeof(Student),
+    typeof(Employee));
+
+services.AddRepository(
+    personOptions,
+    runtimeTypeAllowlist: personTypes);
+
+// SegmentCore accepts the same named argument:
+services.AddSegmentCoreRepository(
+    segmentCorePersonOptions,
+    runtimeTypeAllowlist: personTypes);
+```
+
+Include every concrete type already present in a live store before upgrading. Reads reject an
+unenrolled persisted identifier before object construction, and writes reject an unenrolled runtime
+type. The default does not enable legacy non-`IDB` typeless payloads.
+
 ## Storage Policy
 
 Create policies from the immutable default record:
@@ -104,6 +134,7 @@ under the maintained scale and transaction gates.
 | `HydrateOnInitialize` | `true` | Disable for faster write-heavy startup or metadata-only stores. |
 | `RaiseNotifications` | `true` | Disable only if in-process lifecycle subscribers are not needed. |
 | `WatchStorageChanges` | `true` | Disable when no external process edits the data root. |
+| `MaximumStoredObjectBytes` | 256 MiB | File-backed readers reject larger envelopes before allocating the complete payload; use a lower positive limit when legitimate objects are smaller. |
 
 ### Coordination Settings
 
@@ -143,10 +174,12 @@ queue, segment, transaction, checkpoint, read, and compaction settings live in
 migration. The hardware profile connects the layers without making the core InterfaceDB package
 depend on a particular storage engine.
 
-Search-index persistence is automatic for SegmentCore repositories. The derived catalog has no
-separate durability setting: it is accepted only when its checksum, contract schema, runtime-type
-schemas, entry count, and primary-locator fingerprint all match. Otherwise InterfaceDB rebuilds it
-from authoritative envelopes and republishes it.
+Search-index persistence is automatic only for plaintext SegmentCore repositories. The derived
+catalog has no separate durability setting: it is accepted only when its checksum, contract schema,
+runtime-type schemas, entry count, and primary-locator fingerprint all match. Otherwise InterfaceDB
+rebuilds it from authoritative envelopes and republishes it. When repository encryption is active,
+catalog persistence is disabled, stale catalog files are purged at startup, and indexes are rebuilt
+in memory from authoritative decrypted records.
 
 ## Multiple Databases For One Contract
 
@@ -158,7 +191,7 @@ var local = provider.GetInterfaceDbRepository<IPerson>("LocalPeople");
 var secure = provider.GetInterfaceDbRepository<IPerson>("SecurePeople");
 ```
 
-Use the same key when registering keyed encryption. The first registration also receives unkeyed compatibility aliases; applications with multiple stores should resolve explicitly by key.
+Use the same key when registering keyed encryption. An explicit named encryption registration replaces the repository's same-key fallback whether it is added before or after repository registration. The first repository registration also receives unkeyed compatibility aliases; applications with multiple stores should resolve explicitly by key.
 
 ## Conditional envelope writes
 

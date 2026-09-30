@@ -214,7 +214,12 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             {
                 return await _reader.ReadAsync(legacyFile, cancellationToken).ConfigureAwait(false);
             }
-            var raw = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
+            var raw = await BoundedStoredPayload
+                .ReadFileAsync(
+                    legacyFile.FullName,
+                    _storagePolicy.NormalizedMaximumStoredObjectBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
             var inst = MessagePackSerializer.Deserialize<TContract>(raw, SerializerOptions);
             if (_writer is null)
             {
@@ -228,8 +233,19 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             return savedCurrent;
         }
 
-        var storedPayload = await File.ReadAllBytesAsync(legacyFile.FullName, cancellationToken).ConfigureAwait(false);
-        storedPayload = _encryptor.Decrypt(storedPayload);
+        var storedPayload = await BoundedStoredPayload
+            .ReadFileAsync(
+                legacyFile.FullName,
+                _storagePolicy.NormalizedMaximumStoredObjectBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var physicalKey = Path.GetFileNameWithoutExtension(legacyFile.Name);
+        storedPayload = _encryptor is IContextualEncryptor contextual
+            ? contextual.Decrypt(
+                storedPayload,
+                StorageEncryptionContext.Create(_contractConfig, "file", physicalKey))
+            : _encryptor.Decrypt(storedPayload);
+        ValidatePayloadLength(storedPayload.LongLength);
         var serializedEnvelope = ReadSerializedEnvelope(legacyFile, storedPayload);
         var currentPayload = serializedEnvelope.ObjectPayload;
         var currentVersion = sourceVersion;
@@ -276,6 +292,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             }
 
             currentPayload = SerializeMigration(migrationInstance);
+            ValidatePayloadLength(currentPayload.LongLength);
             currentVersion = descriptor.TargetVersion;
             latestMigration = migrationInstance;
         }
@@ -398,6 +415,11 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
     private byte[] SerializeMigration(IMigration migrationInstance)
         => MessagePackSerializer.Serialize(migrationInstance.GetType(), migrationInstance, ContractSerializerOptions);
+
+    private void ValidatePayloadLength(long length)
+        => _ = BoundedStoredPayload.ValidateLength(
+            length,
+            _storagePolicy.NormalizedMaximumStoredObjectBytes);
 
     private SerializedEnvelope ReadSerializedEnvelope(FileInfo file, byte[] payload)
     {

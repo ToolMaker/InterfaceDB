@@ -118,6 +118,12 @@ public sealed record StoragePolicy
     public int BulkWriteBatchSize { get; init; } = 4096;
 
     /// <summary>
+    /// Maximum serialized size of one stored envelope. The limit is enforced before file-backed
+    /// readers allocate payload buffers.
+    /// </summary>
+    public int MaximumStoredObjectBytes { get; init; } = 256 * 1024 * 1024;
+
+    /// <summary>
     /// When true, file writes acquire a sidecar lock file before committing payload bytes.
     /// This protects the same payload from concurrent writers across repository instances and processes.
     /// </summary>
@@ -207,6 +213,9 @@ public sealed record StoragePolicy
             return candidate < 1 ? 4096 : candidate;
         }
     }
+
+    internal int NormalizedMaximumStoredObjectBytes
+        => MaximumStoredObjectBytes <= 0 ? 256 * 1024 * 1024 : MaximumStoredObjectBytes;
 
     internal TimeSpan NormalizedWriteLockTimeout => WriteLockTimeout <= TimeSpan.Zero
         ? TimeSpan.FromSeconds(30)

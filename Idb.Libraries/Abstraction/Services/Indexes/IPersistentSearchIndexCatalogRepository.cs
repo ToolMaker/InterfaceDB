@@ -7,6 +7,12 @@ namespace Idb.Libraries.Abstractions.Services.Indexes;
 public interface IPersistentSearchIndexCatalogRepository
 {
     /// <summary>
+    /// False when derived index values must remain memory-only, for example when primary payloads
+    /// are encrypted but the derived catalog has no equivalent protection.
+    /// </summary>
+    bool PersistentSearchIndexCatalogEnabled => true;
+
+    /// <summary>
     /// Directory reserved for rebuildable search-index catalog files.
     /// </summary>
     string SearchIndexCatalogDirectory { get; }

@@ -170,6 +170,77 @@ public sealed record SegmentCoreBackupOptions
     public bool VerifyAfterWrite { get; init; } = true;
 }
 
+/// <summary>
+/// Admission limits applied before a SegmentCore backup is hashed or restored.
+/// </summary>
+public sealed record SegmentCoreRestoreOptions
+{
+    /// <summary>Maximum serialized backup-manifest size.</summary>
+    public long MaximumManifestBytes { get; init; } = 16L * 1024 * 1024;
+
+    /// <summary>Maximum number of manifest-listed store files.</summary>
+    public int MaximumFiles { get; init; } = 100_000;
+
+    /// <summary>Maximum aggregate size of all manifest-listed store files.</summary>
+    public long MaximumTotalBytes { get; init; } = 1024L * 1024 * 1024 * 1024;
+
+    /// <summary>Maximum size of any one manifest-listed store file.</summary>
+    public long MaximumFileBytes { get; init; } = 256L * 1024 * 1024 * 1024;
+
+    /// <summary>Maximum wall-clock duration for manifest validation, copying, and verification.</summary>
+    public TimeSpan MaximumDuration { get; init; } = TimeSpan.FromHours(24);
+
+    /// <summary>Whether restore must reserve destination capacity before staging begins.</summary>
+    public bool RequireFreeSpaceAdmission { get; init; } = true;
+
+    /// <summary>Free space that must remain after all manifest-listed bytes are staged.</summary>
+    public long MinimumFreeSpaceReserveBytes { get; init; } = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// Maximum relative path depth accepted from the manifest. The current SegmentCore backup
+    /// layout uses at most four components.
+    /// </summary>
+    public int MaximumPathDepth { get; init; } = 4;
+
+    internal void Validate()
+    {
+        if (MaximumManifestBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumManifestBytes));
+        }
+
+        if (MaximumFiles <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumFiles));
+        }
+
+        if (MaximumTotalBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumTotalBytes));
+        }
+
+        if (MaximumFileBytes <= 0 || MaximumFileBytes > MaximumTotalBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumFileBytes));
+        }
+
+        if (MaximumDuration <= TimeSpan.Zero || MaximumDuration > TimeSpan.FromDays(7))
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumDuration));
+        }
+
+        if (MinimumFreeSpaceReserveBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MinimumFreeSpaceReserveBytes));
+        }
+
+        if (MaximumPathDepth is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumPathDepth));
+        }
+    }
+}
+
 public readonly record struct SegmentCoreBackupResult(
     string BackupDirectory,
     long CheckpointGeneration,

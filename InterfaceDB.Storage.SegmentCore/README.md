@@ -2,16 +2,24 @@
 
 The optional **MIT-licensed append-only storage provider for InterfaceDB on .NET 10**. Use the same `IRepository<T>` contracts, object serialization, indexes and encryption as the file provider, with store-local atomic batches, a mutation WAL, checkpoints, integrity checking, backup/restore and compaction.
 
-**Preview.8 is a documentation-only release of the preview.7 implementation.** It updates the public NuGet pages; it introduces no additional runtime or storage-format change.
+**Preview.9 hardens encrypted storage and backup/restore.** Plaintext envelopes remain `IDB6`; AES-GCM repositories write context-bound `IDBE` version 3, and restore has explicit resource-admission controls.
 
 ## Install and register
 
 ```powershell
-dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.8
+dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.9
 dotnet add package Microsoft.Extensions.DependencyInjection
 ```
 
-The package depends on InterfaceDB preview.8. Configure your contract, data root and storage policy, then register with `AddSegmentCoreRepository<TContract>`. Follow the [complete registration example](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/segment-core-storage-provider.md#install-and-register) and [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/getting-started.md).
+The package depends on InterfaceDB preview.9. Configure your contract, data root and storage policy, then register with `AddSegmentCoreRepository<TContract>`. Follow the [complete registration example](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/segment-core-storage-provider.md#install-and-register) and [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/getting-started.md).
+
+## Security hardening in preview.9
+
+- Encrypted writes bind `IDBE` v3 ciphertext to the SegmentCore provider, repository registration, contract and physical key. Contextless v1/v2 reads require a temporary `AllowContextlessPayloadMigration` setting and must be rewritten before it is disabled.
+- Encrypted fields cannot be persisted into search indexes. Encrypted repositories keep search indexes in memory and delete stale plaintext catalog artifacts at startup.
+- Named encryption registration works before or after repository registration, stored-object reads have a 256 MiB default payload limit, and persisted runtime types must be enrolled in a frozen `StoredRuntimeTypeAllowlist<TContract>`.
+- Backup and restore reject observed symbolic links, junctions and reparse points. Restore accepts only known canonical manifest paths.
+- `SegmentCoreRestoreOptions` adds manifest, file-count, aggregate-byte, per-file, path-depth, elapsed-time and free-space admission.
 
 ## New capabilities introduced in preview.7
 
@@ -27,7 +35,7 @@ The package depends on InterfaceDB preview.8. Configure your contract, data root
 | Shared I/O budgets and summaries | Limit supported copy work across stores; inspect estimates, deferral, reclaimed space and partial failures separately from entity events |
 | Write, recovery and read optimizations | Single-record atomic appends, reuse of validated recovery scans, lower-allocation bulk reads and faster complete-object scan metadata handling |
 
-The [InterfaceDB package overview](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.8) explains these shared features with save/conflict, notification and editing examples.
+The [InterfaceDB package overview](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.9) explains these shared features with save/conflict, notification and editing examples.
 
 ## Choosing maintenance behavior
 
@@ -59,29 +67,53 @@ Both compaction modes require the mutation-WAL protocol, selected by the reposit
 
 `ICompactionMaintenance<T>` exposes advisory estimates and manual execution. Policies can use explicit activity/window hints; budgets can be shared between stores on the same volume. Manual work still obeys retention, reader and free-space safety. Checkpoint/publication/retirement pauses remain, and some metadata I/O is outside the copy-byte budget.
 
-Maintenance summaries report physical work rather than logical entity changes. Moving a record does not advance its revision or emit Created/Changed/Deleted. Reclaimed bytes mean observed net reduction, not simply all deleted-file bytes; concurrent growth and retained history affect the result. Failed retirement is observable and may leave a partial cleanup. [Full maintenance configuration and recovery rules](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/compaction-maintenance.md).
+Maintenance summaries report physical work rather than logical entity changes. Moving a record does not advance its revision or emit Created/Changed/Deleted. Reclaimed bytes mean observed net reduction, not simply all deleted-file bytes; concurrent growth and retained history affect the result. Failed retirement is observable and may leave a partial cleanup. [Full maintenance configuration and recovery rules](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/compaction-maintenance.md).
 
 ## Durability, performance and ownership
 
 Ordinary single saves/deletes use the owning stripe's atomic append and still wait for the configured durability policy. `SaveManyAsync` and explicit transactions retain coordinated atomic commit, including batches containing one item. Single-write transaction counters therefore differ from explicit-transaction counters.
 
-Recovery reuses validated stripe results while keeping exclusive ownership. Bulk reads and scans reduce allocations and repeated metadata work while preserving checksums, complete-object materialization and guarded cache publication. These are workload-dependent improvements, not a universal SQLite ranking or a guarantee of zero GC/maintenance latency. [Fast-path details](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/storage-fast-paths.md).
+Recovery reuses validated stripe results while keeping exclusive ownership. Bulk reads and scans reduce allocations and repeated metadata work while preserving checksums, complete-object materialization and guarded cache publication. These are workload-dependent improvements, not a universal SQLite ranking or a guarantee of zero GC/maintenance latency. [Fast-path details](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/storage-fast-paths.md).
 
 One owning process is allowed per live store root. Transactions cover one contract store, not multiple stores or machines. Notifications are local observations through one repository owner, not a durable feed. Retained edit handles expire and do not survive close/restart; backups cover current/recovery state, not resumable editing sessions.
 
+## Restore admission
+
+The existing `RestoreBackupAsync(backup, destination, storeOptions, cancellationToken)` overload uses the new defaults. Use the overload with `SegmentCoreRestoreOptions` to set deployment-specific limits:
+
+```csharp
+var restored = await SegmentCoreStore.RestoreBackupAsync(
+    backupDirectory,
+    destinationDirectory,
+    storeOptions,
+    new SegmentCoreRestoreOptions
+    {
+        MaximumFiles = 25_000,
+        MaximumTotalBytes = 128L * 1024 * 1024 * 1024,
+        MaximumDuration = TimeSpan.FromHours(2),
+        MinimumFreeSpaceReserveBytes = 512L * 1024 * 1024
+    },
+    cancellationToken);
+```
+
+Defaults are a 16 MiB manifest, 100,000 files, 1 TiB total, 256 GiB per file, four path components, 24 hours, required free-space admission, and a 64 MiB reserve. Validation and SHA-256 checks complete before the new destination is published. Protect or sign the manifest separately when backup authenticity is required.
+
 ## Upgrade from older previews
 
-Preview.7/preview.8 write **IDB6 envelopes**, with backward reads for IDB2–IDB5. Preview.6 and earlier cannot read IDB6. Stop old writers, retain a verified full pre-upgrade backup, and rebuild custom providers/envelopes/serializers/coordinators. Restore that backup for rollback to an older reader and discard outstanding application objects/edit handles.
+Preview.9 still writes plaintext **IDB6** envelopes, but encrypted repositories now write context-bound **IDBE v3**. Preview.8 and earlier cannot read v3 ciphertext.
 
-The IDB6 envelope change and the optional engine-format 1.1 cleanup change are separate. Default stores stay engine format 1.0, but their new envelope writes are still IDB6. Moving from preview.7 to preview.8 adds neither transition.
+Stop old writers and retain a verified full pre-upgrade backup, the older runtime, and all required keys. SegmentCore does not register `IEncryptionRotationOperation<TContract>`. For an encrypted store, temporarily enable `AllowContextlessPayloadMigration`, enumerate and materialize every record so the bounded compare-before-replace read path rewrites each contextless frame, checkpoint, and run `ISegmentCoreRepositoryMaintenance<TContract>.VerifyIntegrityAsync`. Reopen with the option disabled and enumerate every record again before considering the migration complete. Restore the complete pre-upgrade backup for rollback; do not transplant v3 files into an older store.
+
+Legacy non-`IDB` typeless payloads are disabled by default and need an explicit trusted offline conversion. The default runtime-type allowlist contains concrete implementations declared in the contract assembly; pass an explicit `StoredRuntimeTypeAllowlist<TContract>` to `AddSegmentCoreRepository` for implementation types elsewhere. The plaintext IDB6 transition and optional SegmentCore engine-format 1.1 cleanup transition remain separate; switching back to `SlicedAppend` does not downgrade engine format 1.1.
 
 ## Qualification and documentation
 
-Preview.7 passed Windows/Linux CI, clean-package consumption and upgrade/backup/restore validation. Its local public qualification included 481 tests with four platform-specific skips, 50 integration scenarios and 56 smoke cases against published packages. Preview.8 changes documentation/package metadata only and uses the same release gates. Physical power-cut evidence and Apple-device runtime qualification remain outstanding before corresponding stable durability/platform claims.
+Preview.7 historically passed Windows/Linux CI, clean-package consumption and upgrade/backup/restore validation. Preview.9 adds targeted tests for context binding, encrypted-catalog isolation, registration order, oversized payloads, restore quotas, unknown manifest paths, and Windows link/reparse rejection. Final package publication still requires the release workflow and clean-package gates. Platform-specific handle-pinned namespace-swap hardening, Windows/Linux adversarial-filesystem qualification, physical power-cut evidence and Apple-device runtime qualification remain outstanding before corresponding stable claims.
 
-- [Complete provider guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/segment-core-storage-provider.md)
-- [Revision and metadata operations](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/envelope-revisions.md)
-- [Retained editing and strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/retained-editing.md)
-- [Notification semantics and limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/repository-notifications.md)
-- [Preview.8 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/preview8-release-notes.md)
+- [Complete provider guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/segment-core-storage-provider.md)
+- [Revision and metadata operations](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/envelope-revisions.md)
+- [Retained editing and strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/retained-editing.md)
+- [Notification semantics and limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/repository-notifications.md)
+- [Preview.9 security and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview9-release-notes.md)
+- [Preview.8 documentation notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview8-release-notes.md)
 - [Report an issue](https://github.com/ToolMaker/InterfaceDB/issues)

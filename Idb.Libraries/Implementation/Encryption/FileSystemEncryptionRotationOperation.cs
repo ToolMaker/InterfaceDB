@@ -1,7 +1,9 @@
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Implementation.Extensions;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Encryption;
 
@@ -15,15 +17,18 @@ public sealed class FileSystemEncryptionRotationOperation<TContract> :
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly IEncryptor _encryptor;
     private readonly IFileWriteCoordinator _fileWriteCoordinator;
+    private readonly StoragePolicy _storagePolicy;
 
     public FileSystemEncryptionRotationOperation(
         IDbContractConfigDto<TContract> contractConfig,
         IEncryptor encryptor,
-        IFileWriteCoordinator fileWriteCoordinator)
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy? storagePolicy = null)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
         _fileWriteCoordinator = fileWriteCoordinator ?? throw new ArgumentNullException(nameof(fileWriteCoordinator));
+        _storagePolicy = storagePolicy ?? contractConfig.StoragePolicy ?? StoragePolicy.Default;
     }
 
     public async ValueTask<EncryptionRotationResult> RotateAllAsync(
@@ -67,15 +72,32 @@ public sealed class FileSystemEncryptionRotationOperation<TContract> :
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var original = await File.ReadAllBytesAsync(file, cancellationToken).ConfigureAwait(false);
-            var decrypted = rotatingEncryptor.DecryptWithMetadata(original);
+            var original = await BoundedStoredPayload
+                .ReadFileAsync(file, _storagePolicy.NormalizedMaximumStoredObjectBytes, cancellationToken)
+                .ConfigureAwait(false);
+            var physicalKey = Path.GetFileNameWithoutExtension(file);
+            var contextualEncryptor = _encryptor as IContextualEncryptor;
+            var context = contextualEncryptor is null
+                ? null
+                : StorageEncryptionContext.Create(_contractConfig, "file", physicalKey);
+            var decrypted = contextualEncryptor is null
+                ? rotatingEncryptor.DecryptWithMetadata(original)
+                : contextualEncryptor.DecryptWithMetadata(original, context);
+            _ = BoundedStoredPayload.ValidateLength(
+                decrypted.Plaintext.LongLength,
+                _storagePolicy.NormalizedMaximumStoredObjectBytes);
             if (decrypted.UsesCurrentEncryption)
             {
                 unchanged++;
                 continue;
             }
 
-            var replacement = _encryptor.Encrypt(decrypted.Plaintext);
+            var replacement = contextualEncryptor is null
+                ? _encryptor.Encrypt(decrypted.Plaintext)
+                : contextualEncryptor.Encrypt(decrypted.Plaintext, context);
+            _ = BoundedStoredPayload.ValidateLength(
+                replacement.LongLength,
+                _storagePolicy.NormalizedMaximumStoredObjectBytes);
             if (await _fileWriteCoordinator.ReplaceIfUnchangedAsync(
                 file,
                 original,

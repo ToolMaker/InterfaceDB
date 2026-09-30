@@ -89,7 +89,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         // the rebuild is installed, then replayed under the same gate used by live updates.
         StartIndexSubscriptions();
 
-        if (_envelopeRepository is IPersistentSearchIndexCatalogRepository persistentCatalog)
+        if (_envelopeRepository is IPersistentSearchIndexCatalogRepository
+            { PersistentSearchIndexCatalogEnabled: true } persistentCatalog)
         {
             await persistentCatalog.InitializeForSearchIndexCatalogAsync(CancellationToken.None).ConfigureAwait(false);
             _persistentCatalogRepository = persistentCatalog;

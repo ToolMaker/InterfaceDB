@@ -137,9 +137,9 @@ The active version comes from contract config, usually `IDbContractConfigDto<TCo
 
 ## Serialization
 
-`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB6` payload format. Legacy `IDB2`, `IDB3`, `IDB4`, and `IDB5` payloads remain readable for backward compatibility.
+`BinaryObjectSerializer<TContract>` uses MessagePack and writes the current `IDB6` plaintext envelope format. `IDB2`, `IDB3`, `IDB4`, and `IDB5` remain readable for backward compatibility.
 
-Serialization is already behind `IObjectSerializer<TContract>`. The default registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so future serializer implementations can be registered below the repository without changing `IRepository<TContract>` or the file reader/writer contracts.
+Serialization is behind `IObjectSerializer<TContract>`. Default repository registration wraps `BinaryObjectSerializer<TContract>` with `EncryptingObjectSerializer<TContract>`, so the repository and providers retain one envelope boundary.
 
 The current format stores:
 
@@ -153,60 +153,47 @@ The current format stores:
 - optional opaque extension metadata
 - serialized object payload
 
-Envelope references are guarded during serialization to avoid object-envelope-object cycles.
+Envelope references are guarded during serialization to avoid object-envelope-object cycles. MessagePack uses `MessagePackSecurity.UntrustedData`. Before construction, a persisted runtime-type identifier must resolve through the frozen `StoredRuntimeTypeAllowlist<TContract>`; writes must also use an enrolled closed concrete implementation of the requested contract.
 
-`IDB3` differs from `IDB2` by persisting `IObjectEnvelope<TContract>.CacheObjectInstance`. That flag lets an individual object opt into full object retention even when the concrete type is not marked with `[StorageCached]`.
+The compatibility default enrolls concrete implementations already declared in the contract assembly and never expands because another assembly is loaded later. Applications whose implementations live elsewhere, or that require a narrower production set, pass an explicit allowlist to `AddRepository`, `AddFileRepository`, or `AddSegmentCoreRepository`.
 
-`IDB4` differs from `IDB3` by persisting `IObjectEnvelope<TContract>.EncryptedFields`. That dictionary stores ciphertext for properties marked with `[EncryptedStorageField]`.
+Legacy non-`IDB` typeless MessagePack payloads are disabled by default. The serializer has an explicit compatibility constructor for trusted offline conversion, but normal repository registration does not enable it. `StoragePolicy.MaximumStoredObjectBytes` defaults to 256 MiB; file-backed reads reject a larger envelope before allocating its complete payload buffer.
 
-`IDB5` differs from `IDB4` by persisting optional `IObjectEnvelope<TContract>.ExtensionMetadata` bytes. InterfaceDB copies and stores these bytes without interpreting them. One envelope may carry at most 64 KiB (`EnvelopeExtensionMetadataLimits.MaximumByteLength`); metadata-aware saves, serialization, deserialization, and migration reject larger values.
+`IDB3` added `IObjectEnvelope<TContract>.CacheObjectInstance`. `IDB4` added `EncryptedFields`. `IDB5` added optional opaque `ExtensionMetadata`, limited to 64 KiB. `IDB6` added the monotonic persisted revision used by conditional writes.
 
-`IEnvelopeMetadataRepository<TContract>.SaveWithExtensionMetadataAsync` is the supported way to write
-this metadata. It accepts a detached candidate and either a provider-issued exact cache key for an
-update or `null` for an insert. Staging is deliberately internal so a caller cannot use the envelope
-lifecycle to skip exact-key validation. Validation failures before staging leave the candidate
-detached. After staging starts, the candidate is consumed even if the provider write fails; create a
-new detached candidate for a retry.
+`IEnvelopeMetadataRepository<TContract>.SaveWithExtensionMetadataAsync` is the supported way to write extension metadata. It accepts a detached candidate and either a provider-issued exact cache key for an update or `null` for an insert. Staging remains internal, so callers cannot skip exact-key validation. Validation failures before staging leave the candidate detached; after staging begins, the candidate is consumed even when the provider write fails. Existing-key metadata writes require an explicit `EnvelopeWriteCondition`; the provider checks revision and metadata under the same write guard as the payload commit. See [Envelope revisions](envelope-revisions.md).
 
-Existing-key metadata writes now require an explicit `EnvelopeWriteCondition`. The provider validates the exact committed revision under the same write guard as the payload commit. The overload without a condition is insert-only. See [Envelope revisions](envelope-revisions.md) for infrastructure import and acknowledgement semantics.
-
-The preview.7 IDB6 writer is a one-way format transition: revised readers accept IDB2–IDB6; old readers cannot read IDB6. Stop old writers before upgrade and retain a full pre-upgrade backup. See preview7-release-notes.md for the release qualification.
-
-Current limitation: payloads still depend on concrete .NET type names. Stable type aliases are a future hardening item.
+The preview.7 `IDB6` transition remains one-way for older readers: current readers accept `IDB2`–`IDB6`, while pre-preview.7 readers cannot read `IDB6`. Payloads still carry concrete .NET type names, so type and assembly renames remain a compatibility constraint.
 
 ## Encryption At Rest
 
-Encryption is applied after the complete envelope has been serialized and before its bytes are written:
+Encryption is applied after complete-envelope serialization. Context-aware repository paths pass a derived storage context into the encryption layer:
 
 ```text
-object -> IDB6 serialization -> IEncryptor.Encrypt -> file
-file -> IEncryptor.Decrypt -> IDB6 deserialization -> object
+object -> IDB6 serialization -> contextual encryptor -> IDBE v3
+IDBE v3 -> contextual decryptor -> IDB6 deserialization -> object
 ```
 
-`EncryptionNone` is registered by default and returns the serialized bytes unchanged. New unencrypted repositories therefore use the normal plaintext `IDB6` file format. Existing `IDB2`, `IDB3`, and `IDB4` files remain readable.
+`EncryptionNone` is the default and leaves `IDB6` plaintext. `AesGcmEncryptor` writes authenticated `IDBE` version 3 frames containing the key identifier, random nonce, authentication tag, ciphertext, and a SHA-256 digest of the authenticated storage context. Associated data and the stored digest bind the payload to:
 
-`AesGcmEncryptor` provides authenticated AES-GCM storage. Its files use an outer `IDBE` frame containing:
+- provider identity (`file` or `segment-core`);
+- contract assembly and full type name;
+- repository registration key (`EnvelopeDICacheKey`);
+- configured contract name;
+- physical record key.
 
-- encryption format version;
-- nonce size;
-- authentication tag size;
-- key identifier for key-aware version 2 payloads;
-- random nonce;
-- authentication tag;
-- encrypted plaintext envelope payload.
+Moving a v3 frame to a different bound context fails authentication. The context does not include a monotonic record revision, so replaying an older valid v3 frame at the same physical key remains a separate same-key anti-rollback policy decision. Filenames, directory names, file sizes, and timestamps remain visible.
 
-The plaintext envelope metadata and object body are both encrypted. The filename and version directory remain visible.
+`IDBE` version 1 and version 2 are contextless. Contextual repository reads reject them unless `AesGcmEncryptorOptions.AllowContextlessPayloadMigration` is enabled. Accepted legacy frames are marked for re-encryption. The File provider exposes `IEncryptionRotationOperation<TContract>.RotateAllAsync` for complete conversion. SegmentCore has no full-store rotation operation; enumerate and materialize every record to trigger its bounded compare-before-replace path, then checkpoint and verify integrity. Reopen with the option disabled and enumerate every record again. Preview.8 and earlier cannot read v3, so rollback after v3 writes requires restoring the complete pre-upgrade backup.
 
-AES-GCM can be selected before repository registration:
+An explicit named encryption registration replaces the repository's same-key fallback whether it is registered before or after the repository:
 
 ```csharp
-services.AddInterfaceDbAesGcmEncryption(
-    keyProvider,
-    new AesGcmEncryptorOptions());
-services.AddRepository<IMyContract>(options);
+services.AddRepository<IMyContract>(options, "Secure");
+services.AddInterfaceDbAesGcmEncryption("Secure", keyProvider);
 ```
 
-Custom encryption can be registered with `AddInterfaceDbEncryption(IEncryptor)`.
+Custom repository encryption must implement `IContextualEncryptor`; a contextless `IEncryptor` fails closed when the repository requires contextual encryption.
 
 ## Field-Level Encryption
 
@@ -228,13 +215,13 @@ On write, `EnvelopeLifecycle<TContract>` asks `EncryptedStorageFieldProcessor<TC
 
 On read, `EnvelopeLifecycle<TContract>` wraps the materialized object in `EncryptedStorageDispatchProxy<TContract>` when encrypted field definitions exist. Non-encrypted properties delegate to the concrete object. Encrypted getters decrypt the envelope field value on demand. Encrypted setters update the envelope ciphertext and clear the concrete backing property.
 
-Field-only encryption protects only values selected with `[EncryptedStorageField]`. It does not
-encrypt `ExtensionMetadata` or other envelope fields. Use whole-envelope encryption when extension
-metadata is sensitive.
+Field-only encryption protects only values selected with `[EncryptedStorageField]`. It does not encrypt `ExtensionMetadata` or other envelope fields. Use whole-envelope encryption when extension metadata is sensitive.
 
-The attribute argument is a profile name, not a raw secret. It is intended to point to DI/configuration that resolves the actual key store and key selection policy. The first implementation stores the profile name in field metadata; a full encryption profile resolver remains roadmap work.
+Encrypted values are excluded from search-index derivatives. Type-level `[SearchIndex]` discovery skips encrypted members, and applying `[SearchIndex]` directly to a member that also has `[EncryptedStorageField]` is rejected. SegmentCore disables and purges its plaintext persistent search-index catalog when repository encryption is active, then rebuilds indexes in memory from authoritative decrypted records.
 
-For rollout over existing plaintext files, `AesGcmEncryptorOptions.AllowUnencryptedPayloads` permits old plaintext payloads to be read while all new writes use `IDBE`. This compatibility setting should be disabled after the old files have been rewritten.
+The attribute argument is a profile label, not a secret. The repository's registered encryptor performs field encryption; the persisted label does not select a separate key resolver.
+
+For a controlled plaintext-to-encrypted rollout, both `AllowUnencryptedPayloads` and `AllowContextlessPayloadMigration` are required by contextual repository reads. Use the same provider-specific complete conversion and verification process before disabling both settings.
 
 `IKeyProvider` remains the simple single-key contract. `IRotatingKeyProvider` resolves an active key ID and historical keys by ID. New key-aware payloads store only the non-secret key ID; key material remains in the configured key store.
 
@@ -258,14 +245,15 @@ services.AddRepository<IPerson>(options);
 
 `LegacyKeyId` is required when a rotating provider must read version 1 `IDBE` files because those files predate key identifiers.
 
-Rotation has two independent execution modes:
+Rotation support differs by provider:
 
-- `ReencryptOnRead` decrypts once with the payload's historical key and encrypts once with the active key. It does not process intermediate keys. The replacement is committed only if the stored bytes have not changed since the read.
-- `IEncryptionRotationOperation<TContract>.RotateAllAsync` acquires the exclusive storage scope, drains pending writes, and rewrites every payload not already using the active key. This is an encryption maintenance operation, not a schema migration.
+- `ReencryptOnRead` decrypts once with the payload's historical key and encrypts once with the active key. It does not process intermediate keys. File and SegmentCore replacements are committed only if the stored bytes have not changed since the read.
+- The File provider registers `IEncryptionRotationOperation<TContract>.RotateAllAsync`. It acquires the exclusive File storage scope, drains pending writes, and rewrites every payload not already using the active key.
+- SegmentCore does not register a full-store rotation operation. A complete SegmentCore rotation enumerates and materializes every record, checkpoints, verifies integrity, reopens in strict mode, and enumerates again.
 
-Lazy rotation is activated through `AesGcmEncryptorOptions.RotationMode` during encryption registration. It is intentionally not part of `StoragePolicy` because encryption behavior belongs to the selected encryption provider.
+Read-driven rotation is activated through `AesGcmEncryptorOptions.RotationMode` during encryption registration. It is intentionally not part of `StoragePolicy` because encryption behavior belongs to the selected encryption provider.
 
-Full rotation can be invoked in application code through `IEncryptionRotationOperation<TContract>` or from the maintenance CLI:
+File-provider full rotation can be invoked in application code through `IEncryptionRotationOperation<TContract>` or from the maintenance CLI:
 
 ```text
 dotnet run --project MigrationTool/MigrationTool.csproj -- encryption rotate
@@ -275,9 +263,9 @@ dotnet run --project MigrationTool/MigrationTool.csproj -- encryption rotate
   --legacy-key-id key-2025
 ```
 
-The CLI project retains the `MigrationTool` name for backward compatibility, but presents itself as the InterfaceDB Maintenance Tool because it now owns baseline, migration-scaffolding, and encryption-maintenance commands.
+The CLI project retains the `MigrationTool` name for backward compatibility, but presents itself as the InterfaceDB Maintenance Tool because it now owns baseline, migration-scaffolding, and File-provider encryption-maintenance commands.
 
-Historical keys must remain available while any payload references them. Remove an old key only after a full rotation reports that all payloads are current.
+Historical keys must remain available while any payload references them. For File stores, remove an old key only after full rotation and strict reopen verification. For SegmentCore, remove it only after complete enumeration, checkpoint, integrity verification, and a strict reopen/enumeration pass.
 
 ## Envelope Lifecycle
 
@@ -350,7 +338,7 @@ services.AddRepository<IPerson>(personOptions, "LocalPeople");
 
 The keyed graph isolates configuration, repository, cache, serializer, envelope lifecycle, reader/writer, change watcher, migration strategy, and write coordination.
 
-Database-specific encryption can be registered before the repository, and storage identity factories can be passed into repository registration:
+Database-specific encryption can be registered before or after the repository; explicit named encryption replaces the same-key fallback. Storage identity factories can be passed into repository registration:
 
 ```csharp
 services.AddInterfaceDbAesGcmEncryption("SecurePeople", keyProvider);
@@ -400,8 +388,8 @@ If hydration is disabled, envelopes can remain lightweight until query/read time
 When a search-index rebuild already has to materialize every object, the file repository exposes one
 initialization/enumeration stream. Index construction therefore performs one payload-deserialization
 pass rather than a hydration pass followed by a second enumeration pass. SegmentCore uses the same
-shared index-bootstrap contract; providers with persistent catalogs can stay metadata-only on a valid
-warm catalog.
+shared index-bootstrap contract; plaintext repositories with a valid persistent catalog can stay metadata-only on a
+warm catalog. Encrypted repositories rebuild their indexes in memory from authoritative decrypted records.
 
 The envelope metadata catalog is always maintained. Full object instances are retained only when one of these policies allows it:
 
@@ -415,7 +403,7 @@ The default is metadata-only object caching. A query that materializes an uncach
 
 The delegate query path is still pass-through because a compiled `Func<TContract, bool>` cannot be inspected. Indexed queries use expression-based search APIs such as `SearchManyAsync` and `SearchFirstAsync`.
 
-Search indexes are opt-in with `[SearchIndex]` and `[NotSearchIndexed]`. No attribute means no automatic indexing. A type-level `[SearchIndex]` indexes eligible scalar root members, and member-level attributes override the inherited default. Nested objects are traversed only when the nested property is explicitly marked with `[SearchIndex]`.
+Search indexes are opt-in with `[SearchIndex]` and `[NotSearchIndexed]`. No attribute means no automatic indexing. A type-level `[SearchIndex]` indexes eligible scalar root members, and member-level attributes override the inherited default. Nested objects are traversed only when the nested property is explicitly marked with `[SearchIndex]`. Encrypted members are excluded from inherited indexing, and an explicit `[SearchIndex]` plus `[EncryptedStorageField]` combination is rejected.
 
 Each indexed property path owns a property index container. That container can hold more than one internal index:
 
@@ -643,7 +631,8 @@ profile plus repository-level behavior:
 - sidecar locks;
 - stale lock handling;
 - initialization hydration;
-- file watcher behavior.
+- file watcher behavior;
+- maximum stored-object byte admission.
 
 The policy is supplied through `IDbContractConfigDto<TContract>.StoragePolicy` or overridden at
 registration. The file provider consumes the applicable file, lock, watcher, concurrency, and
@@ -655,7 +644,7 @@ ensuring every effective physical setting is public and observable.
 
 ## Migration Tool
 
-The InterfaceDB Maintenance Tool, currently hosted by the backward-compatible `MigrationTool` project, creates versioned contract baselines and migration stubs and can run explicit encryption rotation.
+The InterfaceDB Maintenance Tool, currently hosted by the backward-compatible `MigrationTool` project, creates versioned contract baselines and migration stubs and can run explicit File-provider encryption rotation.
 
 Each generated baseline also contains `.interfacedb-baseline`, an immutable identity manifest recording the logical contract name, storage version, and fully qualified interface name.
 
@@ -798,7 +787,9 @@ The current system provides:
 - external file create/update/delete/rename reconciliation;
 - in-process pub/sub notifications;
 - baseline/migration scaffolding and eager/lazy runtime migration;
-- AES-GCM envelope and selected-field encryption with key rotation;
+- context-bound AES-GCM envelope encryption, selected-field encryption, File full-store rotation, and compare-before-replace rotation on read;
+- encrypted-field exclusion from index derivatives;
+- bounded stored-object admission and hardened SegmentCore restore admission;
 - contract baseline analyzer diagnostics;
 - clean solution build.
 
@@ -807,8 +798,9 @@ The current system provides:
 The current system does not yet provide:
 
 - distributed event bus;
-- stable type alias serialization;
-- transactional multi-record commits;
+- stable aliases for persisted concrete runtime type names;
+- cross-contract or cross-store transactions;
+- same-key ciphertext anti-rollback enforcement;
 - persistent full-text, fuzzy, or vector indexes;
 - replication, remote query transport, or distributed transactions;
 - automatic replacement of all object references held by user code after external file changes.
@@ -833,5 +825,8 @@ Current practical verification:
 - watcher create/update/delete/rename and rescan behavior;
 - exact/range/prefix/suffix/contains index correctness and maintenance;
 - multi-step, strict, tolerant, and lazy migration behavior;
-- encrypted round trips, tamper rejection, field proxies, and key rotation;
+- context-bound encrypted round trips, context-mismatch/tamper rejection, field proxies, File full-store rotation, and SegmentCore read-driven replacement;
+- default rejection of contextless encrypted frames and non-IDB typeless payloads, plus frozen per-contract runtime-type allowlists;
+- encrypted-field index exclusion, encrypted-repository catalog purge, and registration-order independence;
+- stored-object size limits and SegmentCore restore inventory, quota, link/reparse, and free-space checks;
 - keyed database isolation, cardinality, bulk failure reporting, and object cache modes.

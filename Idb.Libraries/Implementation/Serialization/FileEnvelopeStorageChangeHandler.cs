@@ -174,8 +174,20 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
                     BufferSize = _storagePolicy.NormalizedBufferSize
                 };
 
-                using var stream = new FileStream(file.FullName, fso);
-                return await _serializer.DeserializeAsync(stream, cancellationToken).ConfigureAwait(false);
+                await using var stream = new FileStream(file.FullName, fso);
+                if (stream.Length > _storagePolicy.NormalizedMaximumStoredObjectBytes)
+                {
+                    throw new InvalidDataException(
+                        $"Stored envelope exceeds the configured {_storagePolicy.NormalizedMaximumStoredObjectBytes}-byte limit.");
+                }
+
+                var payload = new byte[checked((int)stream.Length)];
+                await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
+                var physicalKey = Path.GetFileNameWithoutExtension(file.Name);
+                return ContextualObjectSerialization.Deserialize(
+                    _serializer,
+                    payload,
+                    StorageEncryptionContext.Create(_contractConfig, "file", physicalKey));
             }
             catch (IOException) when (attempt < attempts)
             {

@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The next public preview is `1.0.0-preview.7`; its [release notes](preview7-release-notes.md) record qualification and compatibility. Virtualized Linux correctness remains
+The public source is prepared for `1.0.0-preview.9`; this repository change does not publish the packages. Its [release notes](preview9-release-notes.md) record the security changes, migration, rollback, and remaining qualification. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:
@@ -102,7 +102,7 @@ See [SegmentCore Storage Provider](segment-core-storage-provider.md) for the usa
 
 Execute and retain an actual physical power cut. Docker, abrupt process-kill windows, fault
 injection, and the graceful two-boot rehearsal pass but are not substitutes for controller-level
-evidence. This does not block `1.0.0-preview.5`; it blocks the strongest durability claim and stable
+evidence. This does not block preview releases; it blocks the strongest durability claim and stable
 `1.0.0`.
 
 ### Deferred Product Decisions
@@ -166,11 +166,60 @@ A vector index is not a replacement for literal substring search. Each family ne
 
 ## Priority 4: Security And Operations
 
-- Resolve named encryption profiles to provider-specific key policies.
+### Pre-Stable Security Hardening Status — 30 September 2026
+
+Preview.9 closes the current source-level hardening items below. Each completed item has focused
+regression coverage in the public test projects; final package publication still runs the normal
+Windows/Linux, clean-package, upgrade, package-boundary, and advisory gates.
+
+- [x] New AES-GCM writes use context-bound `IDBE` v3. The authenticated context covers provider,
+  repository registration, contract identity, and physical record key.
+- [x] Contextless `IDBE` v1/v2 reads fail closed unless
+  `AllowContextlessPayloadMigration` is enabled. Accepted records are marked for rewrite. The File
+  provider supplies complete rotation; SegmentCore supplies bounded compare-before-replace on read
+  for a required complete enumeration, checkpoint, integrity verification, and strict reopen pass.
+- [x] Legacy non-`IDB` typeless MessagePack input is disabled by default. Versioned envelope
+  runtime types must resolve through a frozen per-contract `StoredRuntimeTypeAllowlist<TContract>`
+  before object construction, and MessagePack uses its untrusted-data security settings.
+- [x] `StoragePolicy.MaximumStoredObjectBytes` provides pre-allocation file-envelope admission
+  with a 256 MiB default.
+- [x] Encrypted fields are excluded from inherited type-level indexes, and an explicit
+  `[SearchIndex]` plus `[EncryptedStorageField]` combination is rejected.
+- [x] Encrypted SegmentCore repositories disable and purge the plaintext persistent search-index
+  catalog and rebuild indexes in memory from authoritative decrypted records.
+- [x] Explicit named encryption registration replaces the repository's same-key fallback whether
+  it is registered before or after repository registration.
+- [x] SegmentCore restore has an explicit `SegmentCoreRestoreOptions` overload and default limits
+  for manifest bytes, file count, aggregate bytes, one-file bytes, path depth, duration, free space,
+  and remaining reserve. Backup/restore reject observed links, junctions, devices and reparse
+  points; restore rejects paths outside the known inventory and does not publish unknown extra files.
+
+The remaining pre-stable qualification work is explicit:
+
+- [ ] Add platform-specific no-follow and handle-pinned filesystem operations so a concurrent
+  namespace swap cannot replace a path after validation.
+- [ ] Complete adversarial filesystem qualification on both Windows and Linux, including
+  link/junction races, destination-parent replacement, unknown entries, quota exhaustion, and
+  cleanup after interruption.
+- [ ] Define and implement the same-key anti-rollback policy for an older valid ciphertext replayed
+  at the same bound physical key.
+- [ ] Provide explicit legacy migration tooling that inventories and converts trusted contextless
+  ciphertext and non-`IDB` typeless payloads with complete reporting. The runtime compatibility
+  flag, File rotation operation, and SegmentCore read-driven conversion path are available, but
+  they are not a dedicated offline migration tool.
+- [ ] Pin release-workflow actions to immutable commit SHAs while retaining dependency-advisory,
+  clean-package, package-boundary, version, test, and OIDC publication gates.
+
+These remaining items gate stable `1.0.0` and unqualified production-security claims. The completed
+preview.9 controls are implemented work rather than open blockers. Preview.9 can proceed with its
+documented migration and platform boundaries.
+
+Lower-priority security and operations work remains:
+
 - Add cross-platform keychain and external vault providers.
+- Decide whether field-encryption profile labels should resolve distinct provider-specific key policies.
 - Add application-level traces/log correlation around the completed low-cardinality SegmentCore metrics without leaking secrets.
-- Add integrity scanning, repair reporting, and backup consistency points.
-- Define key-loss, rotation-failure, and partial-store recovery runbooks.
+- Add repair reporting and recovery runbooks for key loss, rotation failure, and partial-store recovery.
 
 ## Deferred Research
 

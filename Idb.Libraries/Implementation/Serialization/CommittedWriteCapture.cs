@@ -15,11 +15,16 @@ internal sealed class CommittedWriteCapture<T> : IDisposable where T : class, IS
     private CommittedWriteCapture() { _previous = Current.Value; Current.Value = this; }
     internal static CommittedWriteCapture<T> Begin() => new();
     internal static bool Enabled => Current.Value is not null;
-    internal static void Remember(IObjectEnvelope<T> envelope, byte[] payload, IObjectSerializer<T> serializer, IEnvelopeLifecycle<T> lifecycle)
+    internal static void Remember(
+        IObjectEnvelope<T> envelope,
+        byte[] payload,
+        IObjectSerializer<T> serializer,
+        IEnvelopeLifecycle<T> lifecycle,
+        byte[]? associatedData = null)
     {
         if (Current.Value is { } capture)
             capture._snapshots[envelope] = new CommittedEnvelopeSnapshot<T>(payload, serializer, lifecycle,
-                envelope.EnvelopeCacheKey, envelope.Location);
+                envelope.EnvelopeCacheKey, envelope.Location, associatedData);
     }
     internal static ICommittedEnvelopeSnapshot<T>? Find(IObjectEnvelope<T>? envelope)
         => envelope is not null && Current.Value is { } capture && capture._snapshots.TryGetValue(envelope, out var snapshot) ? snapshot : null;

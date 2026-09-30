@@ -49,12 +49,19 @@ namespace Idb.Libraries.Implementation.Serialization
             _pathComparer = FileSystemPathIdentity.ResolveComparer(_identityLockScope);
             if (storagePolicy.RetainedVersions is { } retention)
             {
-                retention.Validate(); _editing = new(serializer, envelopeLifecycle);
+                retention.Validate(); _editing = new(serializer, envelopeLifecycle, CreateEncryptionContext);
                 _retention = new(_identityLockScope, retention, _ => ValueTask.FromResult<IDisposable>(HistoryRead.Instance),
-                    (_, _, _) => throw new InvalidOperationException("A File baseline must be archived before reading."));
+                    (_, _, _) => throw new InvalidOperationException("A File baseline must be archived before reading."),
+                    maximumPayloadBytes: _storagePolicy.NormalizedMaximumStoredObjectBytes);
             }
             _mayResolve = writeConflictStrategy is not null and not StrictTimestampMatchStrategy<TContract>;
-            _revisions = new(_identityLockScope, serializer, envelopeLifecycle, writeConflictStrategy, _editing);
+            _revisions = new(
+                _identityLockScope,
+                serializer,
+                envelopeLifecycle,
+                writeConflictStrategy,
+                _editing,
+                CreateEncryptionContext);
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
                 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
@@ -127,11 +134,21 @@ namespace Idb.Libraries.Implementation.Serialization
 
                 async ValueTask WriteProposalAsync(string proposalPath, CancellationToken token)
                 {
-                    if (_storagePolicy.UseSingleWriteBuffer)
+                    if (_storagePolicy.UseSingleWriteBuffer
+                        || _serializer is EncryptingObjectSerializer<TContract>)
                     {
                         // WriteThrough already directs the write through intermediate caches.
-                        var payload = _serializer.Serialize(envelope);
-                        CommittedWriteCapture<TContract>.Remember(envelope, payload, _serializer, _envelopeLifecycle);
+                        var payload = ContextualObjectSerialization.Serialize(
+                            _serializer,
+                            envelope,
+                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
+                        ValidatePayloadLength(payload.LongLength);
+                        CommittedWriteCapture<TContract>.Remember(
+                            envelope,
+                            payload,
+                            _serializer,
+                            _envelopeLifecycle,
+                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
                         using var handle = File.OpenHandle(
                             proposalPath,
                             FileMode.CreateNew,
@@ -156,6 +173,7 @@ namespace Idb.Libraries.Implementation.Serialization
                         await using var stream = new FileStream(proposalPath, fso);
                         await _serializer.SerializeAsync(envelope, stream, token).ConfigureAwait(false);
                         await stream.FlushAsync(token).ConfigureAwait(false);
+                        ValidatePayloadLength(stream.Length);
                     }
                 }
 
@@ -164,13 +182,23 @@ namespace Idb.Libraries.Implementation.Serialization
                 TContract saved = null!;
                 async ValueTask Prepare(string? currentPath, string stagingPath, CancellationToken token)
                 {
-                    var current = await ReadRevisionAsync(currentPath, token).ConfigureAwait(false);
+                    var current = await ReadRevisionAsync(currentPath, envelope.EnvelopeCacheKey, token).ConfigureAwait(false);
                     envelope = await _revisions.PrepareAsync(envelope, isNewStorageObject, current,
                         ct => ReadPayloadAsync(path, ct), token).ConfigureAwait(false);
                     if (EnvelopeWriteOutcome.IsNoChange(envelope)) return;
                     await WriteProposalAsync(stagingPath, token).ConfigureAwait(false);
                     if (!_storagePolicy.UseSingleWriteBuffer && CommittedWriteCapture<TContract>.Enabled)
-                        CommittedWriteCapture<TContract>.Remember(envelope, await File.ReadAllBytesAsync(stagingPath, token).ConfigureAwait(false), _serializer, _envelopeLifecycle);
+                        CommittedWriteCapture<TContract>.Remember(
+                            envelope,
+                            await BoundedStoredPayload
+                                .ReadFileAsync(
+                                    stagingPath,
+                                    _storagePolicy.NormalizedMaximumStoredObjectBytes,
+                                    token)
+                                .ConfigureAwait(false),
+                            _serializer,
+                            _envelopeLifecycle,
+                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
                 }
                 void Publish()
                 {
@@ -509,31 +537,57 @@ namespace Idb.Libraries.Implementation.Serialization
                 ?? throw new NotSupportedException("File deletes require conditional commit coordination.");
             return await coordinator.CommitEnvelopeAsync(path, true, async (currentPath, staging, token) =>
             {
-                var current = await ReadRevisionAsync(currentPath, token).ConfigureAwait(false);
+                var current = await ReadRevisionAsync(currentPath, envelope.EnvelopeCacheKey, token).ConfigureAwait(false);
                 await _revisions.PrepareAsync(envelope, false, current, ct => ReadPayloadAsync(path, ct), token, deleting: true).ConfigureAwait(false);
             }, cancellationToken, () => EnvelopeCommitOrder.Stamp(envelope)).ConfigureAwait(false);
         }
 
-        private async ValueTask<long?> ReadRevisionAsync(string? path, CancellationToken token)
+        private async ValueTask<long?> ReadRevisionAsync(
+            string? path,
+            string physicalKey,
+            CancellationToken token)
         {
             if (path is null) return null;
             await using var source = new FileStream(path, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (_serializer is EncryptingObjectSerializer<TContract>)
+            {
+                var payload = new byte[ValidatePayloadLength(source.Length)];
+                await source.ReadExactlyAsync(payload, token).ConfigureAwait(false);
+                return ContextualObjectSerialization.ReadRevision(
+                    _serializer,
+                    payload,
+                    CreateEncryptionContext(physicalKey));
+            }
             return await ((IRevisionObjectSerializer<TContract>)_serializer).ReadRevisionAsync(source, token).ConfigureAwait(false);
         }
 
-        private static async ValueTask<byte[]?> ReadPayloadAsync(string path, CancellationToken token)
+        private byte[] CreateEncryptionContext(string physicalKey)
+            => StorageEncryptionContext.Create(_contractConfig, "file", physicalKey);
+
+        private async ValueTask<byte[]?> ReadPayloadAsync(string path, CancellationToken token)
         {
             try
             {
                 await using var source = new FileStream(path, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                var bytes = new byte[checked((int)source.Length)];
+                var bytes = new byte[ValidatePayloadLength(source.Length)];
                 await source.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
                 return bytes;
             }
             catch (FileNotFoundException) { return null; }
             catch (DirectoryNotFoundException) { return null; }
+        }
+
+        private int ValidatePayloadLength(long length)
+        {
+            if (length < 0 || length > _storagePolicy.NormalizedMaximumStoredObjectBytes)
+            {
+                throw new InvalidDataException(
+                    $"Stored envelope exceeds the configured {_storagePolicy.NormalizedMaximumStoredObjectBytes}-byte limit.");
+            }
+
+            return checked((int)length);
         }
 
         private void UpdateEnvelopeCache(IObjectEnvelope<TContract> envelope, TContract? instance)

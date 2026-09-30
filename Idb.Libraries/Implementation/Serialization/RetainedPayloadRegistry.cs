@@ -16,6 +16,7 @@ public sealed class RetainedPayloadRegistry<TAddress> : IDisposable where TAddre
     private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterRead;
     private readonly Func<string, TAddress, CancellationToken, ValueTask<byte[]>> _read;
     private readonly Func<string, TAddress, IMaintenanceBudget, CancellationToken, ValueTask<byte[]>>? _budgetedRead;
+    private readonly int _maximumPayloadBytes;
     private readonly string _historyRoot;
     private string? _ownerRoot;
     private FileStream? _ownerLock;
@@ -25,15 +26,19 @@ public sealed class RetainedPayloadRegistry<TAddress> : IDisposable where TAddre
 
     public RetainedPayloadRegistry(string root, RetainedVersionOptions options,
         Func<CancellationToken, ValueTask<IDisposable>> enterRead,
-        Func<string, TAddress, CancellationToken, ValueTask<byte[]>> read)
-        : this(root, options, enterRead, read, null) { }
+        Func<string, TAddress, CancellationToken, ValueTask<byte[]>> read,
+        int maximumPayloadBytes = int.MaxValue)
+        : this(root, options, enterRead, read, null, maximumPayloadBytes) { }
 
     public RetainedPayloadRegistry(string root, RetainedVersionOptions options,
         Func<CancellationToken, ValueTask<IDisposable>> enterRead,
         Func<string, TAddress, CancellationToken, ValueTask<byte[]>> read,
-        Func<string, TAddress, IMaintenanceBudget, CancellationToken, ValueTask<byte[]>>? budgetedRead)
+        Func<string, TAddress, IMaintenanceBudget, CancellationToken, ValueTask<byte[]>>? budgetedRead,
+        int maximumPayloadBytes = int.MaxValue)
     {
         options.Validate(); _options = options; _enterRead = enterRead; _read = read; _budgetedRead = budgetedRead;
+        if (maximumPayloadBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumPayloadBytes));
+        _maximumPayloadBytes = maximumPayloadBytes;
         _historyRoot = Path.Combine(Path.GetFullPath(root), ".idb-history");
         // Recovery never treats session history as current data. Only enabled stores scan it.
         if (Directory.Exists(_historyRoot))
@@ -59,7 +64,8 @@ public sealed class RetainedPayloadRegistry<TAddress> : IDisposable where TAddre
         lock (_gate)
         {
             ThrowIfClosed(); ExpireUnderLock();
-            if (bytes < 0 || bytes > _options.MaximumBytes || _leases.Count >= _options.MaximumSessions)
+            if (bytes < 0 || bytes > _options.MaximumBytes || bytes > _maximumPayloadBytes
+                || _leases.Count >= _options.MaximumSessions)
                 throw new RetainedVersionUnavailableException("Historical session/byte admission limit reached.");
             if (!_records.TryGetValue(address, out var record))
             {
@@ -131,8 +137,15 @@ public sealed class RetainedPayloadRegistry<TAddress> : IDisposable where TAddre
         using var admission = await _enterRead(token).ConfigureAwait(false);
         string? archive;
         lock (_gate) archive = record.Archive;
-        var payload = archive is null ? await _read(record.Key, record.Address, token).ConfigureAwait(false)
-            : await File.ReadAllBytesAsync(archive, token).ConfigureAwait(false);
+        var payload = archive is null
+            ? await _read(record.Key, record.Address, token).ConfigureAwait(false)
+            : await BoundedStoredPayload
+                .ReadFileAsync(
+                    archive,
+                    Math.Min(_maximumPayloadBytes, checked((int)record.ArchiveBytes)),
+                    token)
+                .ConfigureAwait(false);
+        _ = BoundedStoredPayload.ValidateLength(payload.LongLength, _maximumPayloadBytes);
         Interlocked.Add(ref _readBytes, payload.Length);
         return payload;
     }
@@ -180,6 +193,7 @@ public sealed class RetainedPayloadRegistry<TAddress> : IDisposable where TAddre
 
     private async ValueTask ArchiveAsync(Entry record, byte[] payload, CancellationToken token, IMaintenanceBudget? budget = null)
     {
+        _ = BoundedStoredPayload.ValidateLength(payload.LongLength, _maximumPayloadBytes);
         string path;
         lock (_gate)
         {

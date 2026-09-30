@@ -2236,10 +2236,13 @@ static Task WindowsCredentialManagerStoresKeyRingAsync()
 
 static string ReadEncryptedKeyId(byte[] payload)
 {
-    Assert(payload.Length >= 9 && payload.AsSpan(0, 4).SequenceEqual("IDBE"u8),
-        "Expected an IDBE encrypted payload.");
-    Assert(payload[4] == 0x02, "Expected the key-aware IDBE version 2 frame.");
+    const int contextualHeaderBytes = 9 + 32;
+    Assert(payload.Length >= contextualHeaderBytes && payload.AsSpan(0, 4).SequenceEqual("IDBE"u8),
+        "Expected a context-bound IDBE encrypted payload.");
+    Assert(payload[4] == 0x03, "Expected the context-bound IDBE version 3 frame.");
     var keyIdSize = BitConverter.ToUInt16(payload, 7);
+    Assert(keyIdSize > 0 && payload.Length >= contextualHeaderBytes + keyIdSize,
+        "Expected the IDBE version 3 frame to contain a complete key identifier and context hash.");
     return Encoding.UTF8.GetString(payload, 9, keyIdSize);
 }
 
@@ -2251,6 +2254,7 @@ static async Task EncryptedEagerMigrationDrainsAndMigratesProposalsAsync()
         var legacyDirectory = Path.Combine(testRoot, "1.0.0");
         Directory.CreateDirectory(legacyDirectory);
         var legacyPayloadPath = Path.Combine(legacyDirectory, "shared.mpk");
+        var contractOptions = new VersionedTestOptions(testRoot);
 
         await using (var writerProvider = BuildEncryptedMigrationProvider(testRoot))
         {
@@ -2261,8 +2265,20 @@ static async Task EncryptedEagerMigrationDrainsAndMigratesProposalsAsync()
                 lifecycle,
                 legacyPayloadPath,
                 "encrypted-newest",
-                "0000000000000000001").ConfigureAwait(false);
+                "0000000000000000001",
+                storageContext: StorageEncryptionContext.Create(
+                    contractOptions,
+                    "file",
+                    "shared")).ConfigureAwait(false);
         }
+
+        var encryptedProposal = Directory.EnumerateFiles(
+            legacyDirectory,
+            "shared.mpk.pending.*.ready",
+            SearchOption.TopDirectoryOnly).Single();
+        var sourceFrame = await File.ReadAllBytesAsync(encryptedProposal).ConfigureAwait(false);
+        Assert(sourceFrame.Length > 5 && sourceFrame[4] == 0x03,
+            "Encrypted migration source should use the context-bound IDBE version 3 frame.");
 
         await using var migrationProvider = BuildEncryptedMigrationProvider(testRoot);
         var repository = migrationProvider.GetRequiredService<IRepository<IVersionedTestRecord>>();
@@ -2307,7 +2323,8 @@ static async Task WriteVersionedReadyProposalAsync(
     string payloadPath,
     string value,
     string order,
-    byte[]? extensionMetadata = null)
+    byte[]? extensionMetadata = null,
+    byte[]? storageContext = null)
 {
     var record = new VersionedTestRecord { Id = "shared", Value = value };
     var envelope = await lifecycle.WrapAsync(record).ConfigureAwait(false);
@@ -2317,7 +2334,10 @@ static async Task WriteVersionedReadyProposalAsync(
     envelope.ExtensionMetadata = extensionMetadata?.ToArray();
 
     var proposalPath = payloadPath + ".pending." + order + "." + Guid.NewGuid().ToString("N") + ".ready";
-    await File.WriteAllBytesAsync(proposalPath, serializer.Serialize(envelope)).ConfigureAwait(false);
+    var payload = storageContext is null
+        ? serializer.Serialize(envelope)
+        : ContextualObjectSerialization.Serialize(serializer, envelope, storageContext);
+    await File.WriteAllBytesAsync(proposalPath, payload).ConfigureAwait(false);
 }
 
 static async Task RunChildWriterAsync(

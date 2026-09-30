@@ -292,6 +292,13 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
             throw new ArgumentException("Payload path cannot be null or whitespace.", nameof(payloadPath));
         }
 
+        _ = BoundedStoredPayload.ValidateLength(
+            expectedPayload.Length,
+            _storagePolicy.NormalizedMaximumStoredObjectBytes);
+        _ = BoundedStoredPayload.ValidateLength(
+            replacementPayload.Length,
+            _storagePolicy.NormalizedMaximumStoredObjectBytes);
+
         await using var writerLease = Volatile.Read(ref _localMigrationScopeActive) != 0
             ? NoopLease.Instance
             : await AcquireWriterLeaseAsync(cancellationToken).ConfigureAwait(false);
@@ -305,7 +312,12 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
             return false;
         }
 
-        var currentPayload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var currentPayload = await BoundedStoredPayload
+            .ReadFileAsync(
+                payloadPath,
+                _storagePolicy.NormalizedMaximumStoredObjectBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
         if (!currentPayload.AsSpan().SequenceEqual(expectedPayload.Span))
         {
             return false;

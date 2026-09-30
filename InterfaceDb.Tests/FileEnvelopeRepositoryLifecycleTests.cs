@@ -1404,7 +1404,7 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
         public IObjectEnvelope<TContract> Deserialize(byte[] data) => envelope;
     }
 
-    private sealed class SwitchableEncryptor : IEncryptor
+    private sealed class SwitchableEncryptor : IContextualEncryptor
     {
         public bool FailEncryption { get; set; }
         public bool FailedEncryptionObserved { get; private set; }
@@ -1421,6 +1421,15 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
         }
 
         public byte[] Decrypt(ReadOnlySpan<byte> cipher) => cipher.ToArray();
+
+        public byte[] Encrypt(ReadOnlySpan<byte> plain, ReadOnlySpan<byte> associatedData) => Encrypt(plain);
+
+        public byte[] Decrypt(ReadOnlySpan<byte> cipher, ReadOnlySpan<byte> associatedData) => Decrypt(cipher);
+
+        public EncryptionDecryptionResult DecryptWithMetadata(
+            ReadOnlySpan<byte> cipher,
+            ReadOnlySpan<byte> associatedData)
+            => new(Decrypt(cipher), null, RequiresReencryption: false, UsesCurrentEncryption: true);
     }
 
     private sealed class RejectingEnvelopeLifecycle<TContract> : IEnvelopeLifecycle<TContract>

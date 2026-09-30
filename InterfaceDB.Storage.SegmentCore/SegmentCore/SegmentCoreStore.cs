@@ -1750,6 +1750,8 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 nameof(destinationDirectory));
         }
 
+        SegmentCoreBackupFiles.EnsureRegularDirectoryTree(_rootDirectory);
+
         var stopwatch = Stopwatch.StartNew();
         var telemetryStarted = SegmentCoreDiagnostics.StartTimestamp();
         var staging = SegmentCoreBackupFiles.CreateStagingDirectory(destination, "backup");
@@ -1795,9 +1797,15 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             var files = new List<SegmentCoreBackupFile>();
             var revisionClock = Path.Combine(_rootDirectory, ".idb-revision-clock");
             if (File.Exists(revisionClock))
-                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(revisionClock, staging,
-                    ".idb-revision-clock", new FileInfo(revisionClock).Length,
-                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    _rootDirectory,
+                    revisionClock,
+                    staging,
+                    ".idb-revision-clock",
+                    SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, revisionClock),
+                    _options.DurableFileSystem,
+                    admission: null,
+                    cancellationToken).ConfigureAwait(false));
             foreach (var relativePath in new[]
                      {
                          "storage-format.manifest",
@@ -1807,11 +1815,13 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             {
                 var source = Path.Combine(_rootDirectory, relativePath);
                 files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    _rootDirectory,
                     source,
                     staging,
                     relativePath,
-                    new FileInfo(source).Length,
+                    SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, source),
                     _options.DurableFileSystem,
+                    admission: null,
                     cancellationToken).ConfigureAwait(false));
             }
 
@@ -1820,22 +1830,26 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 $"checkpoint-{state.Generation:D20}.idbidx");
             var checkpointPath = Path.Combine(_rootDirectory, checkpointRelative);
             files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                _rootDirectory,
                 checkpointPath,
                 staging,
                 checkpointRelative,
-                new FileInfo(checkpointPath).Length,
+                SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, checkpointPath),
                 _options.DurableFileSystem,
+                admission: null,
                 cancellationToken).ConfigureAwait(false));
             var pageMapPath = Path.ChangeExtension(checkpointPath, ".idbmap");
             if (File.Exists(pageMapPath))
             {
                 var pageMapRelative = Path.ChangeExtension(checkpointRelative, ".idbmap");
                 files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    _rootDirectory,
                     pageMapPath,
                     staging,
                     pageMapRelative,
-                    new FileInfo(pageMapPath).Length,
+                    SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, pageMapPath),
                     _options.DurableFileSystem,
+                    admission: null,
                     cancellationToken).ConfigureAwait(false));
             }
 
@@ -1845,6 +1859,7 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 var segmentsDirectory = Path.Combine(
                     StripedObjectLogRecovery.StripeRoot(_rootDirectory, stripe),
                     "segments");
+                SegmentCoreBackupFiles.EnsureRegularDirectory(_rootDirectory, segmentsDirectory);
                 foreach (var source in Directory
                              .EnumerateFiles(segmentsDirectory, "segment-*.idbseg", SearchOption.TopDirectoryOnly)
                              .OrderBy(static path => path, StringComparer.Ordinal))
@@ -1857,14 +1872,16 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
 
                     var length = segmentId == position.SegmentId
                         ? position.NextOffset
-                        : new FileInfo(source).Length;
+                        : SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, source);
                     var relative = Path.GetRelativePath(_rootDirectory, source);
                     files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                        _rootDirectory,
                         source,
                         staging,
                         relative,
                         length,
                         _options.DurableFileSystem,
+                        admission: null,
                         cancellationToken).ConfigureAwait(false));
                 }
             }
@@ -1873,15 +1890,27 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                          .Select(a => (a.Stripe, a.Address.SegmentId)).Distinct())
             {
                 var source = SegmentCoreIndependentFiles.Resolve(_rootDirectory, file.Stripe, file.SegmentId);
-                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(source, staging,
-                    Path.GetRelativePath(_rootDirectory, source), new FileInfo(source).Length,
-                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    _rootDirectory,
+                    source,
+                    staging,
+                    Path.GetRelativePath(_rootDirectory, source),
+                    SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, source),
+                    _options.DurableFileSystem,
+                    admission: null,
+                    cancellationToken).ConfigureAwait(false));
             }
             var floorPath = Path.Combine(_rootDirectory, SegmentCoreIndependentFiles.FloorFileName);
             if (File.Exists(floorPath))
-                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(floorPath, staging,
-                    SegmentCoreIndependentFiles.FloorFileName, new FileInfo(floorPath).Length,
-                    _options.DurableFileSystem, cancellationToken).ConfigureAwait(false));
+                files.Add(await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    _rootDirectory,
+                    floorPath,
+                    staging,
+                    SegmentCoreIndependentFiles.FloorFileName,
+                    SegmentCoreBackupFiles.GetRegularFileLength(_rootDirectory, floorPath),
+                    _options.DurableFileSystem,
+                    admission: null,
+                    cancellationToken).ConfigureAwait(false));
 
             var transactionRelative = Path.Combine(
                 "transactions",
@@ -1986,14 +2015,33 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    public static async ValueTask<SegmentCoreRestoreResult> RestoreBackupAsync(
+    public static ValueTask<SegmentCoreRestoreResult> RestoreBackupAsync(
         string backupDirectory,
         string destinationDirectory,
         SegmentCoreOptions? options = null,
         CancellationToken cancellationToken = default)
+        => RestoreBackupAsync(
+            backupDirectory,
+            destinationDirectory,
+            options,
+            new SegmentCoreRestoreOptions(),
+            cancellationToken);
+
+    public static async ValueTask<SegmentCoreRestoreResult> RestoreBackupAsync(
+        string backupDirectory,
+        string destinationDirectory,
+        SegmentCoreOptions? options,
+        SegmentCoreRestoreOptions restoreOptions,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(backupDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationDirectory);
+        ArgumentNullException.ThrowIfNull(restoreOptions);
+        restoreOptions.Validate();
+        var admission = new SegmentCoreRestoreAdmission(restoreOptions);
+        using var restoreCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        restoreCancellation.CancelAfter(restoreOptions.MaximumDuration);
+        var restoreToken = restoreCancellation.Token;
         var backup = Path.GetFullPath(backupDirectory);
         var destination = Path.GetFullPath(destinationDirectory);
         if (IsPathWithin(destination, backup) || IsPathWithin(backup, destination))
@@ -2001,7 +2049,8 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             throw new ArgumentException("Backup and restore directories must not contain one another.");
         }
 
-        var manifest = SegmentCoreBackupFiles.ReadAndValidateManifest(backup);
+        var manifest = SegmentCoreBackupFiles.ReadAndValidateManifest(backup, admission, restoreToken);
+        EnsureRestoreFreeSpace(destination, manifest, restoreOptions);
         if (!SegmentCoreHashRouter.TryParseRouterId(
                 manifest.StorageFormat.RouterId,
                 out var backupHashRouting))
@@ -2041,14 +2090,16 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         {
             foreach (var file in manifest.Files)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                admission.ThrowIfExceeded(restoreToken);
                 var copied = await SegmentCoreBackupFiles.CopyPrefixAsync(
+                    backup,
                     SegmentCoreBackupFiles.ResolveRelativePath(backup, file.RelativePath),
                     staging,
                     file.RelativePath,
                     file.Length,
                     options.DurableFileSystem,
-                    cancellationToken).ConfigureAwait(false);
+                    admission,
+                    restoreToken).ConfigureAwait(false);
                 if (!string.Equals(copied.Sha256, file.Sha256, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidDataException(
@@ -2056,9 +2107,10 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 }
             }
 
-            await using (var verificationStore = await OpenAsync(staging, options, cancellationToken).ConfigureAwait(false))
+            admission.ThrowIfExceeded(restoreToken);
+            await using (var verificationStore = await OpenAsync(staging, options, restoreToken).ConfigureAwait(false))
             {
-                var integrity = await verificationStore.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
+                var integrity = await verificationStore.VerifyIntegrityAsync(restoreToken).ConfigureAwait(false);
                 if (!integrity.IsValid
                     || verificationStore.Count != manifest.Entries
                     || verificationStore.Statistics.CheckpointGeneration != manifest.CheckpointGeneration)
@@ -2069,6 +2121,7 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 }
             }
 
+            admission.ThrowIfExceeded(restoreToken);
             SegmentCoreBackupFiles.PublishDirectory(staging, destination, options.DurableFileSystem);
             stopwatch.Stop();
             var result = new SegmentCoreRestoreResult(
@@ -2095,6 +2148,33 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 succeeded: false);
             SegmentCoreBackupFiles.TryDeleteStaging(staging);
             throw;
+        }
+    }
+
+    private static void EnsureRestoreFreeSpace(
+        string destination,
+        SegmentCoreBackupManifest manifest,
+        SegmentCoreRestoreOptions options)
+    {
+        if (!options.RequireFreeSpaceAdmission)
+        {
+            return;
+        }
+
+        long requiredBytes = 0;
+        foreach (var file in manifest.Files)
+        {
+            requiredBytes = checked(requiredBytes + file.Length);
+        }
+
+        var root = Path.GetPathRoot(destination)
+            ?? throw new IOException($"Restore destination '{destination}' has no filesystem root.");
+        var availableBytes = new DriveInfo(root).AvailableFreeSpace;
+        if (availableBytes < requiredBytes
+            || availableBytes - requiredBytes < options.MinimumFreeSpaceReserveBytes)
+        {
+            throw new IOException(
+                $"SegmentCore restore requires {requiredBytes:N0} bytes plus a {options.MinimumFreeSpaceReserveBytes:N0}-byte free-space reserve, but only {availableBytes:N0} bytes are available.");
         }
     }
 

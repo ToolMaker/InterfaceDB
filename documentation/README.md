@@ -10,7 +10,8 @@ Start with these documents:
 
 Use the focused guides when needed:
 
-- [Public package overview](../Idb.Libraries/README.md): all preview.7 additions, examples, defaults and upgrade requirements.
+- [Public package overview](../Idb.Libraries/README.md): current preview.9 behavior, examples, defaults and upgrade requirements.
+- [Preview.9 Release Notes](preview9-release-notes.md): context-bound encryption, runtime-type enrollment, input limits, encrypted-index isolation and hardened SegmentCore restore.
 - [Preview.8 Release Notes](preview8-release-notes.md): expanded NuGet documentation; unchanged preview.7 runtime.
 - [Preview.7 Release Notes](preview7-release-notes.md): IDB6 compatibility, revisions, retained editing, maintenance and qualification.
 - [Retained editing](retained-editing.md): explicit editing scopes, history limits, compaction protection and free strategy extension points.

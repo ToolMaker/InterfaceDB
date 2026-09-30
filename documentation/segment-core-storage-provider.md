@@ -20,7 +20,7 @@ Choose the file-per-object provider when every object must remain a separately i
 
 ## Install And Register
 
-The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is currently versioned `1.0.0-preview.8`. This [documentation-only release](preview8-release-notes.md) retains the preview.7 runtime implementation. Read the [upgrade notes](preview7-release-notes.md) before upgrading existing stores. While working from this repository, reference the project directly. The consumer command is:
+The package project is `InterfaceDB.Storage.SegmentCore`, targets .NET 10, and is source-prepared as `1.0.0-preview.9`. This source change does not publish the package. Preview.9 changes encrypted payload framing and restore admission; read the [preview.9 release notes](preview9-release-notes.md) before upgrading an existing store. While working from this repository, reference the project directly. The consumer command is:
 
 ```powershell
 dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
@@ -32,6 +32,7 @@ Set the repository type and register the provider at the composition root:
 ```csharp
 using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Repository;
+using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Storage.SegmentCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -46,6 +47,21 @@ await people.InitializeAsync();
 ```
 
 `AddSegmentCoreRepository` registers the complete stack: envelope serialization, encryption hooks, polymorphic lifecycle, cache, InterfaceDB search indexes, query planner, repository facade, SegmentCore store, and maintenance controls.
+
+Persisted concrete types must be enrolled before construction. The default
+`StoredRuntimeTypeAllowlist<TContract>` contains closed concrete implementations declared in the
+contract assembly. Supply an explicit frozen set when implementations live elsewhere or production
+should admit fewer types:
+
+```csharp
+var personTypes = new StoredRuntimeTypeAllowlist<IPerson>(
+    typeof(Student),
+    typeof(Employee));
+
+services.AddSegmentCoreRepository(
+    config,
+    runtimeTypeAllowlist: personTypes);
+```
 
 ## Android Support
 
@@ -449,18 +465,40 @@ prefixes through that checkpoint, rebases the transaction coordinator at the cap
 hashes every copied file with SHA-256, opens and verifies the staged backup, and only then publishes
 the destination directory. A backup/restore target is never overwritten.
 
-Restore into a new, offline directory and then point a repository configuration at that root:
+Backup and restore reject observed symbolic links, junctions, device entries, and reparse points in
+source, staging, destination-parent, and manifest-listed paths. Restore accepts only canonical paths
+from the known SegmentCore inventory, rejects duplicate and unknown manifest entries, and verifies
+the declared length and SHA-256 digest before publication.
+
+Restore into a new, offline directory and pass explicit admission settings when application limits
+should be lower than the defaults:
 
 ```csharp
+var restoreLimits = new SegmentCoreRestoreOptions
+{
+    MaximumFiles = 20_000,
+    MaximumTotalBytes = 128L * 1024 * 1024 * 1024,
+    MaximumDuration = TimeSpan.FromHours(2)
+};
+
 SegmentCoreRestoreResult restored = await SegmentCoreStore.RestoreBackupAsync(
     @"E:\Backups\People-2026-08-26",
     @"D:\Recovered\People\1.0.0",
-    maintenance.Options.StoreOptions);
+    maintenance.Options.StoreOptions,
+    restoreLimits,
+    cancellationToken);
 ```
+
+The existing overload remains and applies the defaults: a 16 MiB manifest, 100,000 files, 1 TiB
+aggregate bytes, 256 GiB for one file, path depth 4, 24 hours, required free-space admission, and a
+64 MiB remaining reserve. Restore checks free space before staging begins.
 
 The backup includes encrypted stored payloads but deliberately excludes external encryption keys.
 The SHA-256 manifest detects accidental or hostile file changes only when the manifest itself is
-trusted; sign or protect the backup manifest separately when authenticity is required.
+trusted; sign or protect the backup manifest separately when authenticity is required. Current
+path checks do not yet claim handle-pinned protection against every concurrent namespace swap;
+platform no-follow hardening and Windows/Linux adversarial-filesystem qualification remain release
+work.
 
 ## Crash And Maintenance Model
 
@@ -481,7 +519,7 @@ to the validated resident checkpoint. Small automatic/resident stores do not pay
 map. The raw store therefore has bounded reopen allocation, although the current InterfaceDB
 repository adapter still enumerates physical keys to seed envelope metadata and search-index state.
 
-InterfaceDB's exact, range, RadixForge prefix/suffix, and ordinal-contains structures also have a checksummed derived catalog beside the store. The catalog includes schema and primary-locator fingerprints. A warm matching catalog initializes indexes without deserializing every payload; runtime types are resolved once per distinct type and contains-index compaction is deferred until bulk installation completes. A missing, corrupt, stale, or schema-incompatible catalog is ignored and rebuilt from authoritative objects.
+For plaintext repositories, InterfaceDB's exact, range, RadixForge prefix/suffix, and ordinal-contains structures also have a checksummed derived catalog beside the store. The catalog includes schema and primary-locator fingerprints. A warm matching catalog initializes indexes without deserializing every payload; runtime types are resolved once per distinct type and contains-index compaction is deferred until bulk installation completes. A missing, corrupt, stale, or schema-incompatible catalog is ignored and rebuilt from authoritative objects. For encrypted repositories, persistent catalogs are disabled and stale catalog files are purged at startup; indexes are rebuilt in memory from authoritative decrypted records.
 
 Compaction is copy-forward and interruption-safe. It rotates stripes in bounded preparation slices, copies live frames in bounded record slices, publishes two independent full checkpoints without holding the mutation barrier during file publication, retires readers briefly, and only then deletes superseded segments. Free-space admission requires enough room for another live copy plus the configured reserve. Cancellation or process termination before deletion leaves extra frames, not lost objects; a later compaction can reclaim them.
 
@@ -673,11 +711,19 @@ others:
    component minor than it understands. Unsupported future formats, changed routers, and corrupt
    manifests fail before mutation with `SegmentCoreCompatibilityException`. Router identity and
    transaction protocol are immutable for an existing store.
-3. **Serialized contract envelopes.** New writes use
-   `InterfaceDB.BinaryEnvelope.IDB6`; readers retain `IDB2` through `IDB5` compatibility. Application
-   contract changes use versioned contracts and registered adjacent `IMigration` steps. Old readers
-   are not promised forward compatibility with a newer envelope. Do not remove a legacy reader or
-   migration step while any live store or supported backup may still contain that version.
+3. **Serialized contract envelopes.** Plaintext writes use
+   `InterfaceDB.BinaryEnvelope.IDB6`; readers retain `IDB2` through `IDB5` compatibility. AES-GCM
+   repositories wrap the envelope in context-bound `IDBE` v3. Contextless v1/v2 reads require an
+   explicit `AllowContextlessPayloadMigration` window and a complete rewrite before it is disabled.
+   Application contract changes use versioned contracts and registered adjacent `IMigration` steps.
+   Old readers are not promised forward compatibility with a newer envelope. Do not remove a legacy
+   reader or migration step while any live store or supported backup may still contain that version.
+
+SegmentCore does not register `IEncryptionRotationOperation<TContract>`. To convert contextless
+encrypted frames, temporarily enable `AllowContextlessPayloadMigration`, enumerate and materialize
+every record so bounded compare-before-replace rewrites it, checkpoint, run
+`ISegmentCoreRepositoryMaintenance<TContract>.VerifyIntegrityAsync`, reopen with the option
+disabled, and enumerate every record again.
 
 Object-log frames, full/delta primary checkpoints, mutation WAL records, participant commits, and
 backup manifests are authoritative, checksummed artifacts with explicit versions. Primary page
@@ -700,7 +746,7 @@ verified both the old and new values after reopen. The complete path passed.
 - One writer process owns a store root. Multiple readers inside that process are supported.
 - Atomicity covers one contract store, not several roots or external providers.
 - Multiple-cardinality detached instances are inserts by design. Updates preserve the envelope of a loaded/tracked object; an explicit detached-upsert API is a separate future product decision.
-- Secondary search indexes are persisted as rebuildable derived catalogs. The in-memory structures are still populated on startup, but matching catalogs avoid payload hydration; they are not lazy on-disk indexes.
+- Secondary search indexes use rebuildable derived catalogs only for plaintext repositories. Encrypted repositories disable and purge persistent catalogs and rebuild the in-memory indexes from authoritative records.
 - The raw primary locator can be paged, but the current repository adapter still creates one envelope metadata skeleton per physical key during initialization.
 - SegmentCore provider migration is explicit, source-preserving, and within one contract/version chain; it is not an ambient cross-store transaction.
 - Online backup/restore is local point-in-time copy tooling, not replication, incremental backup, or remote snapshot orchestration.

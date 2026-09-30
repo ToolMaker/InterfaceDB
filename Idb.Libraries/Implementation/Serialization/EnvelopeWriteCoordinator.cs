@@ -17,6 +17,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
     private readonly IRevisionObjectSerializer<TContract> _serializer;
     private readonly IEnvelopeLifecycle<TContract> _lifecycle;
     private readonly RetainedEditingSupport<TContract>? _editing;
+    private readonly Func<string, byte[]>? _contextFactory;
     private static readonly ConditionalWeakTable<IObjectEnvelope<TContract>, EnvelopeWriteCondition> Conditions = new();
 
     public EnvelopeWriteCoordinator(string storeRoot, IObjectSerializer<TContract> serializer,
@@ -25,7 +26,8 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
 
     public EnvelopeWriteCoordinator(string storeRoot, IObjectSerializer<TContract> serializer,
         IEnvelopeLifecycle<TContract> lifecycle, IWriteConflictStrategy<TContract>? strategy,
-        RetainedEditingSupport<TContract>? editing)
+        RetainedEditingSupport<TContract>? editing,
+        Func<string, byte[]>? contextFactory = null)
     {
         _clock = new StoreRevisionClock(storeRoot);
         _serializer = serializer as IRevisionObjectSerializer<TContract>
@@ -33,6 +35,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         _lifecycle = lifecycle;
         _strategy = strategy ?? new StrictTimestampMatchStrategy<TContract>();
         _editing = editing;
+        _contextFactory = contextFactory;
     }
 
     internal static void SetCondition(IObjectEnvelope<TContract> envelope, EnvelopeWriteCondition condition)
@@ -90,7 +93,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
     {
         if (_committed.TryGetValue(key, out var revision)) return revision < 0 ? null : revision;
         var payload = await read(token).ConfigureAwait(false);
-        var current = payload is null ? (long?)null : _serializer.ReadRevision(payload);
+        var current = payload is null ? (long?)null : ReadStoredRevision(key, payload);
         _committed[key] = current ?? -1;
         return current;
     }
@@ -98,7 +101,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
     public void Committed(string key, long? revision) => _committed[key] = revision ?? -1;
 
     public void ObserveCommittedPayload(string key, ReadOnlyMemory<byte> payload)
-        => _committed.TryAdd(key, _serializer.ReadRevision(payload));
+        => _committed.TryAdd(key, ReadStoredRevision(key, payload));
 
     /// <summary>
     /// Seeds an unknown revision from an already materialized, key-validated committed envelope.
@@ -119,7 +122,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         {
             var bytes = await read(ct).ConfigureAwait(false);
             if (bytes is null) return null;
-            var envelope = _serializer.Deserialize(bytes);
+            var envelope = DeserializeStored(key, bytes);
             envelope.EnvelopeCacheKey = key; envelope.Location = location;
             return _lifecycle.Unwrap(envelope);
         }
@@ -182,6 +185,22 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         }
         return resolved;
     }
+
+    private long ReadStoredRevision(string key, ReadOnlyMemory<byte> payload)
+        => _contextFactory is null
+            ? _serializer.ReadRevision(payload)
+            : ContextualObjectSerialization.ReadRevision(
+                (IObjectSerializer<TContract>)_serializer,
+                payload,
+                _contextFactory(key));
+
+    private IObjectEnvelope<TContract> DeserializeStored(string key, byte[] payload)
+        => _contextFactory is null
+            ? _serializer.Deserialize(payload)
+            : ContextualObjectSerialization.Deserialize(
+                (IObjectSerializer<TContract>)_serializer,
+                payload,
+                _contextFactory(key));
 
     private long ObserveImportedRevision(long revision)
     {

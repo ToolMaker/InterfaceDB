@@ -40,7 +40,7 @@ namespace Idb.Libraries.Implementation.Extensions
         {
             ArgumentNullException.ThrowIfNull(services);
             ArgumentNullException.ThrowIfNull(encryptor);
-            services.TryAdd(ServiceDescriptor.KeyedSingleton(
+            ReplaceKeyedSingleton(services, ServiceDescriptor.KeyedSingleton(
                 typeof(IEncryptor),
                 NormalizeDatabaseKey(databaseName),
                 encryptor));
@@ -70,18 +70,19 @@ namespace Idb.Libraries.Implementation.Extensions
             ArgumentNullException.ThrowIfNull(keyProvider);
 
             var key = NormalizeDatabaseKey(databaseName);
-            services.TryAdd(ServiceDescriptor.KeyedSingleton(
+            ReplaceKeyedSingleton(services, ServiceDescriptor.KeyedSingleton(
                 typeof(IKeyProvider),
                 key,
                 keyProvider));
-            services.TryAdd(ServiceDescriptor.KeyedSingleton(
+            ReplaceKeyedSingleton(services, ServiceDescriptor.KeyedSingleton(
                 typeof(AesGcmEncryptorOptions),
                 key,
                 options ?? new AesGcmEncryptorOptions()));
-            services.TryAddKeyedSingleton<IEncryptor>(key, (sp, serviceKey) =>
+            ReplaceKeyedSingleton(services, ServiceDescriptor.KeyedSingleton(
+                typeof(IEncryptor), key, (sp, serviceKey) =>
                 new AesGcmEncryptor(
                     sp.GetRequiredKeyedService<IKeyProvider>(serviceKey),
-                    sp.GetRequiredKeyedService<AesGcmEncryptorOptions>(serviceKey)));
+                    sp.GetRequiredKeyedService<AesGcmEncryptorOptions>(serviceKey))));
             return services;
         }
 
@@ -104,7 +105,7 @@ namespace Idb.Libraries.Implementation.Extensions
         {
             ArgumentNullException.ThrowIfNull(services);
             var keyStore = new WindowsCredentialEncryptionKeyStore(credentialDatabaseName);
-            services.TryAdd(ServiceDescriptor.KeyedSingleton(
+            ReplaceKeyedSingleton(services, ServiceDescriptor.KeyedSingleton(
                 typeof(IEncryptionKeyStore),
                 NormalizeDatabaseKey(registrationKey),
                 keyStore));
@@ -117,7 +118,8 @@ namespace Idb.Libraries.Implementation.Extensions
             MigrationStrategyType strategyType = MigrationStrategyType.None,
             StoragePolicy? storagePolicy = null,
             IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
-            StorageDurabilityMode? durabilityMode = null)
+            StorageDurabilityMode? durabilityMode = null,
+            StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
             where TContract : class, IStoredContract<TContract>
         {
             ArgumentNullException.ThrowIfNull(contractConfig);
@@ -129,7 +131,8 @@ namespace Idb.Libraries.Implementation.Extensions
                         strategyType,
                         storagePolicy,
                         storageIdentityFactory,
-                        durabilityMode),
+                        durabilityMode,
+                        runtimeTypeAllowlist),
                 _ => throw new InvalidOperationException(
                     $"Unsupported repository type '{contractConfig.RepositoryType}'.")
             };
@@ -142,7 +145,8 @@ namespace Idb.Libraries.Implementation.Extensions
             MigrationStrategyType strategyType = MigrationStrategyType.None,
             StoragePolicy? storagePolicy = null,
             IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
-            StorageDurabilityMode? durabilityMode = null)
+            StorageDurabilityMode? durabilityMode = null,
+            StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
             where TContract : class, IStoredContract<TContract>
         {
             ArgumentNullException.ThrowIfNull(contractConfig);
@@ -151,7 +155,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 strategyType,
                 storagePolicy,
                 storageIdentityFactory,
-                durabilityMode);
+                durabilityMode,
+                runtimeTypeAllowlist);
         }
 
         public static IServiceCollection AddFileRepository<TContract>(
@@ -160,7 +165,8 @@ namespace Idb.Libraries.Implementation.Extensions
             MigrationStrategyType strategyType = MigrationStrategyType.None,
             StoragePolicy? storagePolicy = null,
             IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
-            StorageDurabilityMode? durabilityMode = null)
+            StorageDurabilityMode? durabilityMode = null,
+            StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
             where TContract : class, IStoredContract<TContract>
         {
             ArgumentNullException.ThrowIfNull(services);
@@ -172,7 +178,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 strategyType,
                 storagePolicy,
                 storageIdentityFactory,
-                durabilityMode);
+                durabilityMode,
+                runtimeTypeAllowlist);
         }
 
         public static IServiceCollection AddFileRepository<TContract>(
@@ -182,7 +189,8 @@ namespace Idb.Libraries.Implementation.Extensions
             MigrationStrategyType strategyType = MigrationStrategyType.None,
             StoragePolicy? storagePolicy = null,
             IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
-            StorageDurabilityMode? durabilityMode = null)
+            StorageDurabilityMode? durabilityMode = null,
+            StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
             where TContract : class, IStoredContract<TContract>
         {
             ArgumentNullException.ThrowIfNull(contractConfig);
@@ -191,7 +199,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 strategyType,
                 storagePolicy,
                 storageIdentityFactory,
-                durabilityMode);
+                durabilityMode,
+                runtimeTypeAllowlist);
         }
 
         public static IRepository<TContract> GetInterfaceDbRepository<TContract>(
@@ -210,7 +219,8 @@ namespace Idb.Libraries.Implementation.Extensions
             MigrationStrategyType strategyType,
             StoragePolicy? storagePolicy,
             IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory,
-            StorageDurabilityMode? durabilityMode)
+            StorageDurabilityMode? durabilityMode,
+            StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist)
             where TContract : class, IStoredContract<TContract>
         {
             ValidateRepositoryType(contractConfig.RepositoryType, ContractRepositoryType.FileSystem);
@@ -221,6 +231,8 @@ namespace Idb.Libraries.Implementation.Extensions
             var effectiveStoragePolicy = durabilityMode is null
                 ? configuredStoragePolicy
                 : configuredStoragePolicy with { DurabilityMode = durabilityMode.Value };
+            var effectiveRuntimeTypeAllowlist = runtimeTypeAllowlist
+                ?? StoredRuntimeTypeAllowlist<TContract>.Default;
             var hasExistingDatabaseRegistration = services.Any(descriptor =>
                 descriptor.ServiceType == typeof(RegistrationMarker<TContract>)
                 && descriptor.ImplementationInstance is RegistrationMarker<TContract>);
@@ -238,6 +250,7 @@ namespace Idb.Libraries.Implementation.Extensions
             services.TryAddSingleton<IEncryptor, EncryptionNone>();
             services.TryAddKeyedSingleton<IDbContractConfigDto<TContract>>(databaseKey, contractConfig);
             services.TryAddKeyedSingleton(databaseKey, effectiveStoragePolicy);
+            services.TryAddKeyedSingleton(databaseKey, effectiveRuntimeTypeAllowlist);
             if (storageIdentityFactory is not null)
             {
                 services.Add(ServiceDescriptor.KeyedSingleton(
@@ -259,9 +272,11 @@ namespace Idb.Libraries.Implementation.Extensions
 
             services.TryAddKeyedSingleton(
                 databaseKey,
-                (_, _) => new BinaryObjectSerializer<TContract>(
+                (sp, key) => new BinaryObjectSerializer<TContract>(
                     MessagePackSerializerOptions.Standard.WithResolver(
-                        MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance)));
+                        MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance),
+                    maximumPayloadBytes: sp.GetRequiredKeyedService<StoragePolicy>(key).NormalizedMaximumStoredObjectBytes,
+                    runtimeTypeAllowlist: sp.GetRequiredKeyedService<StoredRuntimeTypeAllowlist<TContract>>(key)));
             services.TryAddKeyedSingleton<IObjectSerializer<TContract>>(databaseKey, (sp, key) =>
             {
                 var serializer = sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(key);
@@ -303,7 +318,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 (sp, key) => new FileSystemEncryptionRotationOperation<TContract>(
                     contractConfig,
                     sp.GetRequiredKeyedService<IEncryptor>(key),
-                    sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey)));
+                    sp.GetRequiredKeyedService<IFileWriteCoordinator>(internalKey),
+                    sp.GetRequiredKeyedService<StoragePolicy>(key)));
             services.TryAddKeyedSingleton<IEnvelopeStorageChangeSource<TContract>>(
                 databaseKey,
                 (sp, _) => new FileEnvelopeStorageChangeSource<TContract>(
@@ -443,6 +459,8 @@ namespace Idb.Libraries.Implementation.Extensions
 
             services.TryAddSingleton<StoragePolicy>(sp =>
                 sp.GetRequiredKeyedService<StoragePolicy>(databaseKey));
+            services.TryAddSingleton<StoredRuntimeTypeAllowlist<TContract>>(sp =>
+                sp.GetRequiredKeyedService<StoredRuntimeTypeAllowlist<TContract>>(databaseKey));
             services.TryAddSingleton<BinaryObjectSerializer<TContract>>(sp =>
                 sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(databaseKey));
             services.TryAddSingleton<IObjectSerializer<TContract>>(sp =>
@@ -537,6 +555,24 @@ namespace Idb.Libraries.Implementation.Extensions
             }
 
             return databaseName.Trim();
+        }
+
+        private static void ReplaceKeyedSingleton(
+            IServiceCollection services,
+            ServiceDescriptor replacement)
+        {
+            for (var index = services.Count - 1; index >= 0; index--)
+            {
+                var descriptor = services[index];
+                if (descriptor.IsKeyedService
+                    && descriptor.ServiceType == replacement.ServiceType
+                    && Equals(descriptor.ServiceKey, replacement.ServiceKey))
+                {
+                    services.RemoveAt(index);
+                }
+            }
+
+            services.Add(replacement);
         }
 
         private static IDbContractConfigDto<TContract> WithDatabaseKey<TContract>(

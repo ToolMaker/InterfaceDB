@@ -62,6 +62,28 @@ public sealed class SeniorCitizen : IPerson
 }
 ```
 
+## Enroll The Runtime Types
+
+InterfaceDB resolves a persisted runtime-type identifier through a frozen
+`StoredRuntimeTypeAllowlist<IPerson>` before construction and rejects writes of unenrolled types.
+The compatibility default enrolls concrete implementations declared in the same assembly as
+`IPerson`. When implementations live in another assembly, register them explicitly:
+
+```csharp
+using Idb.Libraries.Abstractions.Services.Serialization;
+
+var personTypes = new StoredRuntimeTypeAllowlist<IPerson>(
+    typeof(Student),
+    typeof(Employee),
+    typeof(SeniorCitizen));
+
+services.AddRepository(
+    new PersonOptions(),
+    runtimeTypeAllowlist: personTypes);
+```
+
+Inventory every concrete type already present before narrowing an existing repository's allowlist.
+
 ## Save Them Through One Repository
 
 The repository accepts the interface, so every implementation can be written through the same abstraction:
@@ -95,7 +117,7 @@ await people.SaveManyAsync(new IPerson[]
 });
 ```
 
-InterfaceDB writes the concrete type identity into each object's envelope. Its serializer stores the complete concrete object, including implementation-only properties.
+InterfaceDB writes the enrolled concrete type identity into each object's envelope. Its serializer stores the complete concrete object, including implementation-only properties.
 
 ## Read The Mixed Collection
 

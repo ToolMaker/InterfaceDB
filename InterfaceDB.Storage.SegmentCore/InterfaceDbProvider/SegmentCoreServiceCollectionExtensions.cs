@@ -32,7 +32,8 @@ public static class SegmentCoreServiceCollectionExtensions
         SegmentCoreRepositoryOptions? segmentCoreOptions = null,
         StoragePolicy? storagePolicy = null,
         IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory = null,
-        IEncryptor? encryptor = null)
+        IEncryptor? encryptor = null,
+        StoredRuntimeTypeAllowlist<TContract>? runtimeTypeAllowlist = null)
         where TContract : class, IStoredContract<TContract>
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -84,7 +85,10 @@ public static class SegmentCoreServiceCollectionExtensions
             databaseKey,
             (_, _) => new BinaryObjectSerializer<TContract>(
                 MessagePackSerializerOptions.Standard.WithResolver(
-                    MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance)));
+                    MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance),
+                policy.NormalizedMaximumStoredObjectBytes,
+                allowLegacyTypelessPayloads: false,
+                runtimeTypeAllowlist));
         services.TryAddKeyedSingleton<IObjectSerializer<TContract>>(databaseKey, (sp, key) =>
         {
             var serializer = sp.GetRequiredKeyedService<BinaryObjectSerializer<TContract>>(key);

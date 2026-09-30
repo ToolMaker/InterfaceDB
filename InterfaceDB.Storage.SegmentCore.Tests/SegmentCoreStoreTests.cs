@@ -1254,6 +1254,270 @@ public sealed class SegmentCoreStoreTests
     }
 
     [TestMethod]
+    public async Task OnlineBackup_RejectsReparseSourceWithoutPublishingDestination()
+    {
+        using var root = new TemporaryDirectory();
+        var source = Path.Combine(root.Path, "source");
+        var backup = Path.Combine(root.Path, "backup");
+        var sourceManifest = Path.Combine(source, "storage-format.manifest");
+        var originalManifest = Path.Combine(root.Path, "original-storage-format.manifest");
+        var linkTarget = Path.Combine(root.Path, "outside-link-target");
+        var options = WalOptions(stripes: 2);
+        await using var store = await SegmentCoreStore.OpenAsync(source, options);
+        await store.SaveAsync("protected", Payload(7, 64));
+        File.Move(sourceManifest, originalManifest);
+        Directory.CreateDirectory(linkTarget);
+
+        try
+        {
+            if (!TryCreateDirectoryLink(sourceManifest, linkTarget, out var failure))
+            {
+                Assert.Inconclusive($"Directory links are unavailable: {failure}");
+                return;
+            }
+
+            _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => store.BackupAsync(backup).AsTask());
+            Assert.IsFalse(Directory.Exists(backup));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(sourceManifest);
+            }
+            catch
+            {
+                // Link cleanup should not hide the security assertion.
+            }
+
+            if (!File.Exists(sourceManifest) && File.Exists(originalManifest))
+            {
+                File.Move(originalManifest, sourceManifest);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task OnlineBackup_RejectsReparseDestinationParentWithoutWritingOutside()
+    {
+        using var root = new TemporaryDirectory();
+        var source = Path.Combine(root.Path, "source-destination-link");
+        var outside = Path.Combine(root.Path, "outside-backup-parent");
+        var alias = Path.Combine(root.Path, "backup-parent-link");
+        var backup = Path.Combine(alias, "backup");
+        Directory.CreateDirectory(outside);
+        await using var store = await SegmentCoreStore.OpenAsync(source, WalOptions(stripes: 2));
+        await store.SaveAsync("protected", Payload(8, 64));
+
+        try
+        {
+            if (!TryCreateDirectoryLink(alias, outside, out var failure))
+            {
+                Assert.Inconclusive($"Directory links are unavailable: {failure}");
+                return;
+            }
+
+            _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => store.BackupAsync(backup).AsTask());
+            Assert.IsFalse(Directory.Exists(Path.Combine(outside, "backup")));
+            Assert.IsFalse(Directory.EnumerateFileSystemEntries(outside).Any());
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(alias);
+            }
+            catch
+            {
+                // Link cleanup should not hide the security assertion.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_RejectsDirectoryLinkBeforeHashingOrPublishing()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var restored = Path.Combine(root.Path, "restored-link");
+        var options = WalOptions(stripes: 2);
+        var segments = Path.Combine(backup, "stripes", "00", "segments");
+        var outsideSegments = Path.Combine(root.Path, "outside-segments");
+        Directory.Move(segments, outsideSegments);
+
+        try
+        {
+            if (!TryCreateDirectoryLink(segments, outsideSegments, out var failure))
+            {
+                Assert.Inconclusive($"Directory links are unavailable: {failure}");
+                return;
+            }
+
+            _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => SegmentCoreStore.RestoreBackupAsync(backup, restored, options).AsTask());
+            Assert.IsFalse(Directory.Exists(restored));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(segments);
+            }
+            catch
+            {
+                // Link cleanup should not hide the security assertion.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_RejectsUnknownManifestPathBeforeHashingOrPublishing()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var restored = Path.Combine(root.Path, "restored-unknown");
+        var manifestPath = Path.Combine(backup, "segment-core-backup.json");
+        const string originalPath = "storage-format.manifest";
+        const string changedPath = "unknown-extra.bin";
+        File.Copy(Path.Combine(backup, originalPath), Path.Combine(backup, changedPath));
+        var json = await File.ReadAllTextAsync(manifestPath);
+        var changed = json.Replace(
+            $"\"RelativePath\": \"{originalPath}\"",
+            $"\"RelativePath\": \"{changedPath}\"",
+            StringComparison.Ordinal);
+        Assert.AreNotEqual(json, changed);
+        await File.WriteAllTextAsync(manifestPath, changed);
+
+        _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                restored,
+                WalOptions(stripes: 2)).AsTask());
+        Assert.IsFalse(Directory.Exists(restored));
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_AdmissionRejectsManifestBeforeDeserialization()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var restored = Path.Combine(root.Path, "restored-manifest-limit");
+        var manifestLength = new FileInfo(Path.Combine(backup, "segment-core-backup.json")).Length;
+        Assert.IsGreaterThan(1, manifestLength);
+
+        _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                restored,
+                WalOptions(stripes: 2),
+                new SegmentCoreRestoreOptions
+                {
+                    MaximumManifestBytes = manifestLength - 1
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(restored));
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_AdmissionEnforcesMaximumDurationBeforePublishing()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var restored = Path.Combine(root.Path, "restored-duration-limit");
+
+        _ = await Assert.ThrowsExactlyAsync<TimeoutException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                restored,
+                WalOptions(stripes: 2),
+                new SegmentCoreRestoreOptions
+                {
+                    MaximumDuration = TimeSpan.FromTicks(1)
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(restored));
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_AdmissionRejectsFileCountTotalAndPerFileLimits()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var storeOptions = WalOptions(stripes: 2);
+        var payloadFiles = SegmentCoreBackupFiles.ReadAndValidateManifest(backup).Files
+            .Select(file => file.Length)
+            .ToArray();
+        Assert.IsGreaterThan(1, payloadFiles.Length);
+        var totalBytes = payloadFiles.Sum();
+        var largestFile = payloadFiles.Max();
+        Assert.IsGreaterThan(1, largestFile);
+        Assert.IsGreaterThan(largestFile, totalBytes);
+
+        var fileCountDestination = Path.Combine(root.Path, "restored-file-count-limit");
+        _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                fileCountDestination,
+                storeOptions,
+                new SegmentCoreRestoreOptions
+                {
+                    MaximumFiles = payloadFiles.Length - 1
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(fileCountDestination));
+
+        var perFileDestination = Path.Combine(root.Path, "restored-per-file-limit");
+        _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                perFileDestination,
+                storeOptions,
+                new SegmentCoreRestoreOptions
+                {
+                    MaximumFileBytes = largestFile - 1
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(perFileDestination));
+
+        var totalDestination = Path.Combine(root.Path, "restored-total-limit");
+        _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                totalDestination,
+                storeOptions,
+                new SegmentCoreRestoreOptions
+                {
+                    MaximumTotalBytes = totalBytes - 1,
+                    MaximumFileBytes = largestFile
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(totalDestination));
+    }
+
+    [TestMethod]
+    public async Task RestoreBackup_AdmissionRejectsInsufficientFreeSpaceBeforeStaging()
+    {
+        using var root = new TemporaryDirectory();
+        var backup = await CreateBackupForRestoreSecurityTestsAsync(root.Path);
+        var restored = Path.Combine(root.Path, "restored-free-space-limit");
+
+        _ = await Assert.ThrowsExactlyAsync<IOException>(
+            () => SegmentCoreStore.RestoreBackupAsync(
+                backup,
+                restored,
+                WalOptions(stripes: 2),
+                new SegmentCoreRestoreOptions
+                {
+                    RequireFreeSpaceAdmission = true,
+                    MinimumFreeSpaceReserveBytes = long.MaxValue
+                },
+                CancellationToken.None).AsTask());
+        Assert.IsFalse(Directory.Exists(restored));
+    }
+
+    [TestMethod]
     public async Task MutationWal_RecyclingPreservesPriorCheckpointFallback()
     {
         using var root = new TemporaryDirectory();
@@ -1717,6 +1981,80 @@ public sealed class SegmentCoreStoreTests
 
             await Task.Delay(1);
         }
+    }
+
+    private static async Task<string> CreateBackupForRestoreSecurityTestsAsync(string root)
+    {
+        var source = Path.Combine(root, "security-source");
+        var backup = Path.Combine(root, "security-backup");
+        await using (var store = await SegmentCoreStore.OpenAsync(source, WalOptions(stripes: 2)))
+        {
+            await store.SaveAsync("first", Payload(31, 256));
+            await store.SaveAsync("second", Payload(32, 512));
+            _ = await store.BackupAsync(backup);
+        }
+
+        return backup;
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath, out string failure)
+    {
+        try
+        {
+            _ = Directory.CreateSymbolicLink(linkPath, targetPath);
+            failure = string.Empty;
+            return true;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException
+                                          or IOException
+                                          or PlatformNotSupportedException
+                                          or NotSupportedException)
+        {
+            failure = exception.Message;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo("cmd.exe")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add("mklink");
+            startInfo.ArgumentList.Add("/J");
+            startInfo.ArgumentList.Add(linkPath);
+            startInfo.ArgumentList.Add(targetPath);
+            using var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start the junction helper.");
+            process.WaitForExit();
+            if (process.ExitCode == 0 && Directory.Exists(linkPath))
+            {
+                failure = string.Empty;
+                return true;
+            }
+
+            failure = process.StandardError.ReadToEnd();
+            if (string.IsNullOrWhiteSpace(failure))
+            {
+                failure = process.StandardOutput.ReadToEnd();
+            }
+        }
+        catch (Exception exception)
+        {
+            failure = exception.Message;
+        }
+
+        return false;
     }
 
     private static string WalPath(string root) => Path.Combine(

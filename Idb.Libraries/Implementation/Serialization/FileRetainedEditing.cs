@@ -37,9 +37,17 @@ public partial class FileObjectWriter<TContract> where TContract : class, IStore
             {
                 if (currentPath is null) throw new RetainedVersionUnavailableException("The requested committed entity is missing.");
                 var size = new FileInfo(currentPath).Length;
+                _ = BoundedStoredPayload.ValidateLength(
+                    size,
+                    _storagePolicy.NormalizedMaximumStoredObjectBytes);
                 var lease = _retention!.Acquire(physicalKey, Guid.NewGuid(), size);
                 captured = lease;
-                var payload = await File.ReadAllBytesAsync(currentPath, token).ConfigureAwait(false);
+                var payload = await BoundedStoredPayload
+                    .ReadFileAsync(
+                        currentPath,
+                        _storagePolicy.NormalizedMaximumStoredObjectBytes,
+                        token)
+                    .ConfigureAwait(false);
                 await _retention.ArchiveAsync(lease, payload, token).ConfigureAwait(false);
                 captured = new IncarnationLease(lease, path, FileRetentionIncarnation.Capture(path));
             }, cancellationToken).ConfigureAwait(false);

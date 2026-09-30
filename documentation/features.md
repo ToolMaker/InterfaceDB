@@ -2,7 +2,7 @@
 
 This document lists the main InterfaceDB capabilities and how they fit together.
 
-The [public package overview](../Idb.Libraries/README.md) explains the latest additions with examples: default revision-checked writes, conditional metadata operations, opt-in repository notifications, retained editing and custom conflict strategies, maintenance policies and budgets, and automatic storage fast paths. Preview.8 documents the preview.7 implementation without changing runtime behavior or storage formats.
+The [public package overview](../Idb.Libraries/README.md) explains the current behavior with examples. Preview.9 adds context-bound encrypted writes, default rejection of legacy typeless payloads, stored-object size admission, encrypted-index isolation, deterministic named-encryption registration, and hardened SegmentCore restore. See the [preview.9 release notes](preview9-release-notes.md) for migration and rollback.
 
 ## Interface-First Persistence
 
@@ -33,7 +33,7 @@ await people.SaveManyAsync(new IPerson[]
 });
 ```
 
-Each envelope records its concrete type. Reading through `IRepository<IPerson>` therefore returns a mixed `IPerson` collection whose runtime objects are still `Student`, `Employee`, and `SeniorCitizen`. See [Storing Multiple Concrete Types](polymorphic-storage.md).
+Each envelope records its concrete type. Reading through `IRepository<IPerson>` therefore returns a mixed `IPerson` collection whose enrolled runtime objects are still `Student`, `Employee`, and `SeniorCitizen`. The default allowlist covers concrete implementations in the contract assembly; pass an explicit `StoredRuntimeTypeAllowlist<IPerson>` when they live elsewhere. See [Storing Multiple Concrete Types](polymorphic-storage.md).
 
 ## Envelopes
 
@@ -125,6 +125,11 @@ public interface IPerson : IStoredContract<IPerson>
 }
 ```
 
+Members marked `[EncryptedStorageField]` are excluded from inherited type-level indexing. Applying
+`[SearchIndex]` directly to the same encrypted member is rejected, so protected values cannot be
+copied into an unprotected search-index derivative. Encrypted SegmentCore repositories also disable
+and purge the persistent catalog; their indexes rebuild in memory from authoritative records.
+
 Supported index operations:
 
 - exact equality;
@@ -185,7 +190,7 @@ This lets the application cache hot object categories without hiding full-object
 InterfaceDB has two opt-in persistence layouts behind the same repository abstraction:
 
 - The file provider stores each object as an independent file and supports file watching, file-oriented migrations, and cross-process last-operation-wins coordination.
-- The SegmentCore provider stores checksummed frames in append-only striped segments and adds atomic bulk transactions, mutation-WAL recovery, full/delta checkpoints, integrity verification, and bounded automatic compaction.
+- The SegmentCore provider stores checksummed frames in append-only striped segments and adds atomic bulk transactions, mutation-WAL recovery, full/delta checkpoints, integrity verification, bounded automatic compaction, point-consistent backup, and quota/free-space/inventory-checked restore.
 
 Provider-neutral `StoragePolicy` hardware profiles resolve into complete, inspectable SegmentCore
 stripe, queue, read, durability, checkpoint, and compaction settings. Explicit
@@ -239,13 +244,15 @@ Migration chains are version-to-version. If a stored object is behind the active
 
 Supported security features:
 
-- whole-envelope encryption with AES-GCM;
-- key-aware encrypted payloads;
-- historical key lookup;
-- lazy re-encryption on read;
-- forced full-store key rotation;
+- context-bound `IDBE` v3 whole-envelope encryption with AES-GCM;
+- explicit `AllowContextlessPayloadMigration` for controlled v1/v2 rewrite;
+- key-aware encrypted payloads and historical key lookup;
+- compare-before-replace re-encryption on read for both providers and forced full-store rotation for the File provider;
+- named encryption registration that is independent of repository-registration order;
 - Windows Credential Manager key store;
-- field-level encryption through interface attributes.
+- field-level encryption through interface attributes with index-derivative exclusion;
+- `MessagePackSecurity.UntrustedData`, default legacy-typeless rejection, and frozen per-contract runtime-type allowlists;
+- `StoragePolicy.MaximumStoredObjectBytes`, 256 MiB by default.
 
 See [Security And Encryption](security.md).
 

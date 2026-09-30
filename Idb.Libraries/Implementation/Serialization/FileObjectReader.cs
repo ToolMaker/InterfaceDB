@@ -56,7 +56,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 }
 
                 // Hydrate from disk without retaining the object unless the cache policy allows it.
-                var deserialized = await ReadEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
+                var deserialized = await ReadEnvelopeAsync(file, candidateKey, cancellationToken).ConfigureAwait(false);
                 deserialized.Location = file.FullName;
                 // The provider locator, rather than serialized metadata, owns physical identity.
                 // A copied or externally renamed payload can legitimately carry its former key.
@@ -87,7 +87,7 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             // Fallback: no cache entry, hydrate directly
-            var envelope = await ReadEnvelopeAsync(file, cancellationToken).ConfigureAwait(false);
+            var envelope = await ReadEnvelopeAsync(file, candidateKey, cancellationToken).ConfigureAwait(false);
 
             envelope.Location = file.FullName;
             envelope.EnvelopeCacheKey = candidateKey;
@@ -106,7 +106,13 @@ namespace Idb.Libraries.Implementation.Serialization
                     throw new InvalidDataException("Notification snapshot exceeds the configured byte limit.");
                 var payload = new byte[checked((int)stream.Length)];
                 await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
-                return new CommittedEnvelopeSnapshot<TContract>(payload, _serializer, _envelopeLifecycle, identity.EnvelopeCacheKey, identity.Location);
+                return new CommittedEnvelopeSnapshot<TContract>(
+                    payload,
+                    _serializer,
+                    _envelopeLifecycle,
+                    identity.EnvelopeCacheKey,
+                    identity.Location,
+                    CreateEncryptionContext(identity.EnvelopeCacheKey));
             }
             catch (FileNotFoundException) { return null; }
             catch (DirectoryNotFoundException) { return null; }
@@ -114,6 +120,7 @@ namespace Idb.Libraries.Implementation.Serialization
 
         private async ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsync(
             FileInfo file,
+            string physicalKey,
             CancellationToken cancellationToken)
         {
             if (_serializer is IMemoryObjectSerializer<TContract> memorySerializer
@@ -121,7 +128,7 @@ namespace Idb.Libraries.Implementation.Serialization
             {
                 await using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                var length = checked((int)stream.Length);
+                var length = ValidatePayloadLength(stream.Length);
                 var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, length));
                 try
                 {
@@ -138,15 +145,13 @@ namespace Idb.Libraries.Implementation.Serialization
             await using (var source = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                payload = new byte[checked((int)source.Length)];
+                payload = new byte[ValidatePayloadLength(source.Length)];
                 await source.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
             }
-            if (_serializer is not IRotationAwareObjectSerializer<TContract> rotationAwareSerializer)
-            {
-                return _serializer.Deserialize(payload);
-            }
-
-            var result = rotationAwareSerializer.DeserializeForRead(payload);
+            var result = ContextualObjectSerialization.DeserializeForRead(
+                _serializer,
+                payload,
+                CreateEncryptionContext(physicalKey));
             if (result.ReplacementPayload is not null)
             {
                 _ = await _fileWriteCoordinator.ReplaceIfUnchangedAsync(
@@ -157,6 +162,20 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             return result.Envelope;
+        }
+
+        private byte[] CreateEncryptionContext(string physicalKey)
+            => StorageEncryptionContext.Create(_contractConfig, "file", physicalKey);
+
+        private int ValidatePayloadLength(long length)
+        {
+            if (length < 0 || length > _storagePolicy.NormalizedMaximumStoredObjectBytes)
+            {
+                throw new InvalidDataException(
+                    $"Stored envelope exceeds the configured {_storagePolicy.NormalizedMaximumStoredObjectBytes}-byte limit.");
+            }
+
+            return checked((int)length);
         }
     }
 }

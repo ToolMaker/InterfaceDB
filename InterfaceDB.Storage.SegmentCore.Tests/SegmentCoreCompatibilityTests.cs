@@ -55,7 +55,29 @@ public sealed class SegmentCoreCompatibilityTests
 
         var store = typeof(SegmentCoreStore);
         Assert.IsNotNull(store.GetMethod(nameof(SegmentCoreStore.BackupAsync)));
-        Assert.IsNotNull(store.GetMethod(nameof(SegmentCoreStore.RestoreBackupAsync)));
+        var restoreMethods = store.GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(static method => method.Name == nameof(SegmentCoreStore.RestoreBackupAsync))
+            .ToArray();
+        Assert.IsTrue(restoreMethods.Any(static method =>
+        {
+            var parameters = method.GetParameters();
+            return parameters.Length == 4
+                && parameters[0].ParameterType == typeof(string)
+                && parameters[1].ParameterType == typeof(string)
+                && parameters[2].ParameterType == typeof(SegmentCoreOptions)
+                && parameters[3].ParameterType == typeof(CancellationToken);
+        }), "The original restore signature must remain available.");
+        Assert.IsTrue(restoreMethods.Any(static method =>
+        {
+            var parameters = method.GetParameters();
+            return parameters.Length == 5
+                && parameters[0].ParameterType == typeof(string)
+                && parameters[1].ParameterType == typeof(string)
+                && parameters[2].ParameterType == typeof(SegmentCoreOptions)
+                && parameters[3].ParameterType == typeof(SegmentCoreRestoreOptions)
+                && parameters[4].ParameterType == typeof(CancellationToken)
+                && !parameters[4].HasDefaultValue;
+        }), "The admission-options restore overload must remain available.");
         Assert.IsNotNull(store.GetMethod(nameof(SegmentCoreStore.BeginTransactionAsync)));
 
         var maintenance = typeof(ISegmentCoreRepositoryMaintenance<>);
@@ -170,13 +192,12 @@ public sealed class SegmentCoreCompatibilityTests
         var text = string.Join('\n', lines);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
-        // Maintenance API 1.1 review: additive mode/options, results, estimate and optional provider
-        // capability. Existing methods/interfaces retain their signatures. Engine minor 1 is an
-        // explicit IndependentOutput capability upgrade; default stores remain engine 1.0.
-        // Binary comparison against the preceding retention baseline found only the two deliberate
-        // PublicApiMinor/EngineMinor constant replacements, with no removed public signatures.
+        // Maintenance API 1.1 review: additive mode/options, results, estimate, optional provider
+        // capability and bounded restore-admission options. Existing methods/interfaces retain
+        // their signatures. Engine minor 1 is an explicit IndependentOutput capability upgrade;
+        // default stores remain engine 1.0. The restore overload and options record are additive.
         Assert.AreEqual(
-            "B349F87857D2A5A54F329F5470FFE813F0A8479C258210BF5622CBC2B8F31154",
+            "3676B1DB683F581D13F5A61E69982957E5C0851F4540C00A28869C971A0E34A3",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

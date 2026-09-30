@@ -102,6 +102,17 @@ The final compiled expression validates all candidates. Call
 `IIndexManager<TContract>.ExplainSearch` to inspect the selected plan without
 executing the query. See [Query Planning](query-planning.md).
 
+## Encrypted Members
+
+Encrypted values are not eligible index inputs. A type-level `[SearchIndex]` declaration skips
+members marked `[EncryptedStorageField]`; putting `[SearchIndex]` directly on the same encrypted
+member is rejected during index discovery. This prevents a protected value from being copied into
+the in-memory index or a plaintext persistent derivative.
+
+SegmentCore persists its rebuildable search-index catalog only for plaintext repositories. When
+repository encryption is active, catalog persistence is disabled, stale catalog files are purged at
+startup, and indexes are rebuilt in memory from authoritative decrypted records.
+
 ## Attribute Defaults
 
 `[SearchIndex]` defaults are:

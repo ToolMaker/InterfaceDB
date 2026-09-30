@@ -92,6 +92,22 @@ using Idb.Libraries.Implementation.Extensions;
 services.AddRepository<IPerson>(new PersonOptions());
 ```
 
+The default `StoredRuntimeTypeAllowlist<IPerson>` enrolls concrete implementations declared in the
+same assembly as `IPerson`. If `Student`, `Employee`, or another stored implementation lives in
+a different assembly, register the frozen set explicitly:
+
+```csharp
+using Idb.Libraries.Abstractions.Services.Serialization;
+
+var personTypes = new StoredRuntimeTypeAllowlist<IPerson>(
+    typeof(Student),
+    typeof(Employee));
+
+services.AddRepository(
+    new PersonOptions(),
+    runtimeTypeAllowlist: personTypes);
+```
+
 Resolve and initialize:
 
 ```csharp

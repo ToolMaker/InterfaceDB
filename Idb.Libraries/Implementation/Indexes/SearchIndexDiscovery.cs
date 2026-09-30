@@ -45,6 +45,20 @@ internal static class SearchIndexDiscovery
 
             var memberType = GetMemberType(member);
             var path = string.IsNullOrWhiteSpace(prefix) ? member.Name : prefix + "." + member.Name;
+            if (member.GetCustomAttribute<EncryptedStorageFieldAttribute>() is not null)
+            {
+                if (memberIndex is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Encrypted storage field '{path}' cannot be search indexed because persistent indexes store searchable values in plaintext.");
+                }
+
+                // A type-level index declaration includes ordinary scalar members by default.
+                // Exclude encrypted fields from that implicit scope so existing contracts remain
+                // usable without ever exposing their decrypted values to an index catalog.
+                continue;
+            }
+
             var nextAccessors = accessors.Concat(new[] { member }).ToArray();
 
             if (IsIndexableScalar(memberType))

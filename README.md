@@ -33,9 +33,9 @@ dotnet add package InterfaceDB.Storage.SegmentCore --prerelease
 ```
 
 > Preview compatibility: APIs and storage formats may still change before stable `1.0.0`.
-> Preview.7 adds [envelope revisions](documentation/envelope-revisions.md) and writes `IDB6`.
-> It reads `IDB2`–`IDB6`; old readers cannot read new payloads. Stop old writers and retain a full
-> pre-upgrade backup and rebuild custom integrations. See the [preview.7 release notes](documentation/preview7-release-notes.md).
+> Preview.9 keeps plaintext envelopes at `IDB6` and changes AES-GCM writes to context-bound `IDBE`
+> version 3. Older contextless encrypted frames require an explicit migration window and complete
+> rewrite before strict mode is restored. See the [preview.9 release notes](documentation/preview9-release-notes.md).
 
 Define a versioned interface in the application contract layer:
 
@@ -93,7 +93,7 @@ public sealed class SeniorCitizen : IPerson
 }
 ```
 
-`IRepository<IPerson>` is one mixed, polymorphic repository. It can store all three classes together. InterfaceDB records each object's concrete type and restores that exact runtime type later, including properties such as `Course`, `Department`, and `DiscountCardNumber` that are not part of `IPerson`.
+`IRepository<IPerson>` is one mixed, polymorphic repository. It can store all three classes together. InterfaceDB records each object's concrete type and restores that exact runtime type later when it is enrolled in the repository's runtime-type allowlist, including properties such as `Course`, `Department`, and `DiscountCardNumber` that are not part of `IPerson`.
 
 At the composition root, register the file provider and resolve the repository abstraction:
 
@@ -148,18 +148,27 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - GUID v7, sequential, and custom storage identity factories.
 - Single and concurrent bulk saves, delete, existence, streaming, first, and single-result APIs.
 - Polymorphic concrete type recovery.
-- Exact, range, ordinal prefix, ordinal suffix, and literal ordinal contains indexes.
+- Exact, range, ordinal prefix, ordinal suffix, and literal ordinal contains indexes; encrypted fields are never persisted into them.
 - Cost-aware `AND` intersections, safe `OR` unions, bounded ranges, residual predicates, and query-plan diagnostics.
 - File change watching and in-process added/stored/removed/deleted notifications.
 - Revision-checked writes and stale-write rejection, with legacy abandoned-proposal recovery.
 - Performance and Durable file-write modes.
 - Eager strict, eager tolerant, and lazy runtime migrations.
 - MessagePack `IDB6` envelopes with exact-match revision writes and backward reads for `IDB2`–`IDB5`.
-- Whole-envelope and selected-field AES-GCM encryption.
-- Active and historical key handling, lazy rotation, and full-store rotation.
+- Frozen per-contract runtime-type allowlists enforced before object construction and serialization.
+- Whole-envelope and selected-field AES-GCM encryption, with context-bound `IDBE` version 3 writes.
+- Active and historical key handling, compare-before-replace rotation on read, and File-provider full-store rotation.
 - Windows Credential Manager key storage.
 - Roslyn diagnostics that protect immutable contract baselines.
-- Pluggable SegmentCore append-only storage with atomic bulk transactions, grouped WAL durability, retained-WAL seek boundaries, full/delta checkpoints, automatic paged primary locators, persisted secondary-index catalogs, bounded streaming/integrity verification, provider migration, online backup/restore, and interruption-safe background compaction.
+- Pluggable SegmentCore append-only storage with atomic bulk transactions, grouped WAL durability, retained-WAL seek boundaries, full/delta checkpoints, automatic paged primary locators, conditional persisted secondary-index catalogs, bounded streaming/integrity verification, provider migration, quota-controlled online backup/restore, and interruption-safe background compaction.
+
+## Preview.9 Security Changes
+
+Preview.9 adds context-bound encrypted writes, a 256 MiB default stored-object limit, default rejection of legacy non-`IDB` typeless payloads, frozen per-contract runtime-type allowlists, deterministic named encryption registration, and safeguards that keep encrypted fields out of persistent search indexes. Encrypted SegmentCore repositories now keep search indexes in memory and purge stale plaintext catalog artifacts.
+
+SegmentCore backup and restore reject observed links and reparse points. Restore accepts only known canonical manifest paths and has configurable manifest, file-count, per-file, aggregate-byte, path-depth, duration, and free-space admission through `SegmentCoreRestoreOptions`; the default reserve is 64 MiB.
+
+Encrypted stores from preview.8 or earlier need a controlled upgrade: retain a verified pre-upgrade backup, enable `AllowContextlessPayloadMigration`, and convert every encrypted payload as `IDBE` v3. The File provider supplies a full-store rotation operation; SegmentCore requires complete record enumeration/materialization followed by checkpoint and integrity verification. Reopen in strict mode and enumerate again before disabling the migration window. Preview.8 cannot read v3 ciphertext. The detailed [preview.9 release notes](documentation/preview9-release-notes.md) include rollback and migration guidance.
 
 ## Mobile And Apple Platforms
 
@@ -179,7 +188,7 @@ These are local diagnostic measurements, not universal rankings. The production-
 
 See [Current Performance Results](documentation/performance-results.md) and [Benchmark Methodology](documentation/production-benchmark-gate.md).
 
-**SegmentCore is now integrated as a pluggable InterfaceDB provider.** It preserves `IRepository<TContract>`, encryption, polymorphism, and the existing exact/range/prefix/suffix/contains query layer while adding atomic `SaveManyAsync`, concurrent WAL group commit, mutation-WAL recovery, dirty-stripe full/delta checkpoints, no-op checkpoint reuse, retained-WAL seek acceleration, automatic paged primary locators, persisted search-index catalogs, parallel reopen, bounded streaming/integrity verification, explicit migration, online backup/restore, automatic maintenance, and bounded copy-forward compaction.
+**SegmentCore is now integrated as a pluggable InterfaceDB provider.** It preserves `IRepository<TContract>`, encryption, polymorphism, and the existing exact/range/prefix/suffix/contains query layer while adding atomic `SaveManyAsync`, concurrent WAL group commit, mutation-WAL recovery, dirty-stripe full/delta checkpoints, no-op checkpoint reuse, retained-WAL seek acceleration, automatic paged primary locators, plaintext-repository search-index catalogs, parallel reopen, bounded streaming/integrity verification, explicit migration, admitted online backup/restore, automatic maintenance, and bounded copy-forward compaction. Encrypted repositories rebuild indexes in memory and remove persistent catalog artifacts.
 
 Storage tuning is formalized through provider-neutral `StoragePolicy` hardware profiles
 (`Portable`, `LowMemory`, `HighThroughput`, `WindowsNvme`, or `Custom`) and complete,
@@ -217,6 +226,7 @@ SegmentCore is not presented as a general SQLite replacement: SQLite has the low
 - [Production Benchmark And Stress Gate](documentation/production-benchmark-gate.md)
 - [SegmentCore Storage Provider](documentation/segment-core-storage-provider.md)
 - [SegmentCore Transactions And Performance](documentation/segment-core-transactions.md)
+- [Preview.9 Release Notes](documentation/preview9-release-notes.md)
 - [Roadmap](documentation/roadmaps.md)
 
 ## Build And Verify
@@ -249,4 +259,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-InterfaceDB and the opt-in SegmentCore provider are versioned `1.0.0-preview.8`, a documentation-only release with the preview.7 runtime implementation. The [package overview](Idb.Libraries/README.md) explains revision-checked writes, optional local notifications, retained editing, maintenance controls and storage fast paths, with examples and defaults. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence and Apple-device runtime qualification remain outstanding. See the [preview.7 release notes](documentation/preview7-release-notes.md) for upgrade requirements and the [preview.8 release notes](documentation/preview8-release-notes.md) for documentation changes.
+InterfaceDB and the opt-in SegmentCore provider are source-prepared as `1.0.0-preview.9`; this repository change does not publish the packages. Preview.9 contains runtime security hardening and an `IDBE` ciphertext-format transition, so it is not a documentation-only successor to preview.8. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.

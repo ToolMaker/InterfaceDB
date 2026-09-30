@@ -14,9 +14,11 @@ internal sealed class CommittedEnvelopeSnapshot<TContract> : ICommittedEnvelopeS
     private readonly IEnvelopeLifecycle<TContract> _lifecycle;
     private readonly string _key;
     private readonly string? _location;
+    private readonly byte[]? _associatedData;
 
     public CommittedEnvelopeSnapshot(byte[] payload, IObjectSerializer<TContract> serializer,
-        IEnvelopeLifecycle<TContract> lifecycle, string key, string? location)
+        IEnvelopeLifecycle<TContract> lifecycle, string key, string? location,
+        byte[]? associatedData = null)
     {
         // Only trusted providers construct this type, transferring their newly owned read buffer.
         _payload = payload;
@@ -24,6 +26,7 @@ internal sealed class CommittedEnvelopeSnapshot<TContract> : ICommittedEnvelopeS
         _lifecycle = lifecycle;
         _key = key;
         _location = location;
+        _associatedData = associatedData;
     }
 
     public int ByteLength => _payload.Length;
@@ -31,7 +34,10 @@ internal sealed class CommittedEnvelopeSnapshot<TContract> : ICommittedEnvelopeS
     public TContract Materialize(bool attachEnvelope = true)
     {
         // Formatters may retain input slices. Never lend the immutable event's backing bytes.
-        var envelope = _serializer.Deserialize(_payload.ToArray());
+        var payload = _payload.ToArray();
+        var envelope = _associatedData is null
+            ? _serializer.Deserialize(payload)
+            : ContextualObjectSerialization.Deserialize(_serializer, payload, _associatedData);
         envelope.EnvelopeCacheKey = _key;
         envelope.Location = _location;
         envelope.State = StorageObjectState.Active;

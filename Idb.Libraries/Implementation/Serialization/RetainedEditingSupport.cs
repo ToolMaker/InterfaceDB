@@ -11,8 +11,12 @@ public sealed class RetainedEditingSupport<T> where T : class, IStoredContract<T
 {
     private readonly IObjectSerializer<T> _serializer;
     private readonly IEnvelopeLifecycle<T> _lifecycle;
-    public RetainedEditingSupport(IObjectSerializer<T> serializer, IEnvelopeLifecycle<T> lifecycle)
-    { _serializer = serializer; _lifecycle = lifecycle; }
+    private readonly Func<string, byte[]>? _contextFactory;
+    public RetainedEditingSupport(
+        IObjectSerializer<T> serializer,
+        IEnvelopeLifecycle<T> lifecycle,
+        Func<string, byte[]>? contextFactory = null)
+    { _serializer = serializer; _lifecycle = lifecycle; _contextFactory = contextFactory; }
 
     public async ValueTask<IRevisionEditSession<T>> BeginAsync(IRetainedPayloadLease lease, string location,
         Func<T, CancellationToken, ValueTask<T>> save, CancellationToken token)
@@ -32,7 +36,9 @@ public sealed class RetainedEditingSupport<T> where T : class, IStoredContract<T
 
     internal T Materialize(byte[] bytes, string key, string location)
     {
-        var envelope = _serializer.Deserialize(bytes);
+        var envelope = _contextFactory is null
+            ? _serializer.Deserialize(bytes)
+            : ContextualObjectSerialization.Deserialize(_serializer, bytes, _contextFactory(key));
         if (envelope.EnvelopeCacheKey != key) throw new RetainedVersionUnavailableException("Retained bytes have a different entity identity.");
         envelope.Location = location;
         return _lifecycle.Unwrap(envelope);
@@ -42,7 +48,10 @@ public sealed class RetainedEditingSupport<T> where T : class, IStoredContract<T
     {
         token.ThrowIfCancellationRequested();
         var envelope = await _lifecycle.WrapAsync(value).ConfigureAwait(false);
-        return Materialize(_serializer.Serialize(envelope), envelope.EnvelopeCacheKey, envelope.Location!);
+        var payload = _contextFactory is null
+            ? _serializer.Serialize(envelope)
+            : ContextualObjectSerialization.Serialize(_serializer, envelope, _contextFactory(envelope.EnvelopeCacheKey));
+        return Materialize(payload, envelope.EnvelopeCacheKey, envelope.Location!);
     }
 
     private sealed class Session(RetainedEditingSupport<T> owner, EditBinding<T> binding, T working,

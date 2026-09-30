@@ -807,6 +807,76 @@ public sealed partial class SegmentCoreProviderTests
     }
 
     [TestMethod]
+    public async Task Repository_EncryptedIndexesRemainMemoryOnlyAndPurgeStaleCatalogArtifacts()
+    {
+        using var root = new ProviderTemporaryDirectory();
+        var policy = StoragePolicy.Default with
+        {
+            ObjectCacheMode = StorageObjectCacheMode.MetadataOnly,
+            HydrateOnInitialize = true,
+            RaiseNotifications = false
+        };
+        var config = new ProviderConfig(root.Path, policy);
+        var options = ProviderOptions();
+        var catalogDirectory = Path.Combine(
+            root.Path,
+            options.DirectoryName,
+            "1.0.0",
+            "search-indexes");
+        Directory.CreateDirectory(catalogDirectory);
+        var staleCatalog = Path.Combine(catalogDirectory, "catalog-STALE.idbsidx");
+        var staleCreating = Path.Combine(
+            catalogDirectory,
+            "catalog-STALE.idbsidx.creating-0123456789abcdef");
+        var unrelated = Path.Combine(catalogDirectory, "keep.txt");
+        await File.WriteAllTextAsync(staleCatalog, "plaintext-index-value");
+        await File.WriteAllTextAsync(staleCreating, "plaintext-index-value");
+        await File.WriteAllTextAsync(unrelated, "unrelated");
+
+        var encryptor = new AesGcmEncryptor(new FixedKeyProvider());
+        await using (var writerProvider = BuildProvider(config, options, encryptor: encryptor))
+        {
+            var repository = writerProvider.GetRequiredService<IRepository<IProviderRecord>>();
+            await repository.InitializeAsync();
+            _ = await repository.SaveManyAsync(CreateRecords(12));
+
+            var matches = new List<IProviderRecord>();
+            await foreach (var record in repository.SearchManyAsync(record => record.Score >= 10))
+            {
+                matches.Add(record);
+            }
+
+            Assert.HasCount(2, matches);
+        }
+
+        Assert.IsFalse(File.Exists(staleCatalog));
+        Assert.IsFalse(File.Exists(staleCreating));
+        Assert.IsTrue(File.Exists(unrelated));
+        Assert.IsFalse(Directory.EnumerateFiles(
+            catalogDirectory,
+            "catalog-*",
+            SearchOption.TopDirectoryOnly).Any());
+
+        await using (var readerProvider = BuildProvider(config, options, encryptor: encryptor))
+        {
+            var repository = readerProvider.GetRequiredService<IRepository<IProviderRecord>>();
+            await repository.InitializeAsync();
+            var matches = new List<IProviderRecord>();
+            await foreach (var record in repository.SearchManyAsync(record => record.Name.StartsWith("Record 1")))
+            {
+                matches.Add(record);
+            }
+
+            Assert.HasCount(3, matches);
+        }
+
+        Assert.IsFalse(Directory.EnumerateFiles(
+            catalogDirectory,
+            "catalog-*",
+            SearchOption.TopDirectoryOnly).Any());
+    }
+
+    [TestMethod]
     [DataRow("repository-maintenance-envelope")]
     [DataRow("maintenance-envelope-repository")]
     [DataRow("envelope-repository-maintenance")]
@@ -1186,7 +1256,8 @@ public sealed partial class SegmentCoreProviderTests
         ProviderConfig config,
         SegmentCoreRepositoryOptions options,
         IEnvelopeStorageIdentityFactory<IProviderRecord>? identityFactory = null,
-        IObjectSerializer<IProviderRecord>? serializer = null)
+        IObjectSerializer<IProviderRecord>? serializer = null,
+        IEncryptor? encryptor = null)
     {
         var services = new ServiceCollection();
         if (serializer is not null)
@@ -1198,7 +1269,8 @@ public sealed partial class SegmentCoreProviderTests
             config,
             options,
             config.StoragePolicy,
-            identityFactory ?? new ProviderIdentityFactory());
+            identityFactory ?? new ProviderIdentityFactory(),
+            encryptor);
         return services.BuildServiceProvider();
     }
 
@@ -1414,6 +1486,13 @@ public sealed partial class SegmentCoreProviderTests
         public byte[] Encrypt(ReadOnlySpan<byte> plain) => plain.ToArray();
 
         public byte[] Decrypt(ReadOnlySpan<byte> cipher) => cipher.ToArray();
+    }
+
+    private sealed class FixedKeyProvider : IKeyProvider
+    {
+        private readonly byte[] _key = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray();
+
+        public ReadOnlyMemory<byte> GetCurrentKey() => _key;
     }
 
     private sealed class CheckpointFailingDurableFileSystem : IDurableFileSystem

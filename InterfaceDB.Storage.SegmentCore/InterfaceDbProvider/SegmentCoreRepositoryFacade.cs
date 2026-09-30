@@ -54,6 +54,8 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
 
     public string SearchIndexCatalogDirectory => _persistentCatalog.SearchIndexCatalogDirectory;
 
+    public bool PersistentSearchIndexCatalogEnabled => _persistentCatalog.PersistentSearchIndexCatalogEnabled;
+
     public StoragePolicy StoragePolicy => _maintenance.StoragePolicy;
 
     public SegmentCoreRepositoryOptions Options => _maintenance.Options;

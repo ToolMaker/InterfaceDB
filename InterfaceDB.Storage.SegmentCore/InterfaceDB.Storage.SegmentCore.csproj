@@ -8,7 +8,7 @@
     <IsPackable>true</IsPackable>
     <AssemblyName>InterfaceDB.Storage.SegmentCore</AssemblyName>
     <PackageId>InterfaceDB.Storage.SegmentCore</PackageId>
-    <Version>1.0.0-preview.8</Version>
+    <Version>1.0.0-preview.9</Version>
     <Authors>ToolMaker</Authors>
     <Description>High-throughput append-only SegmentCore storage provider for InterfaceDB.</Description>
     <PackageTags>interfacedb;storage;object-database;wal;append-only;android;ios;maccatalyst;macos</PackageTags>
@@ -16,7 +16,7 @@
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 8 updates the public NuGet README and feature documentation. Runtime implementation and storage formats are unchanged from preview 7. Explains revisions, notifications, retained editing, cleanup policies, I/O budgets, fast paths, IDB6 upgrades and optional engine format 1.1. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.8/documentation/preview8-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 9 adds context-bound IDBE v3 writes, frozen stored-runtime-type allowlists, and hardened SegmentCore backup/restore against links and unknown manifest paths. Restore now has configurable file, byte, depth, duration and free-space admission through SegmentCoreRestoreOptions. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview9-release-notes.md</PackageReleaseNotes>
     <RootNamespace>Idb.Storage.SegmentCore</RootNamespace>
   </PropertyGroup>
 

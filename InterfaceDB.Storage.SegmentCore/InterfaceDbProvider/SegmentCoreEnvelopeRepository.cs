@@ -13,6 +13,7 @@ using Idb.Libraries.Abstractions.Services.PubSub;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Services.Maintenance;
 using Idb.Libraries.Implementation.Maintenance;
+using Idb.Libraries.Implementation.Encryption;
 using Idb.Libraries.Implementation.Serialization;
 using Idb.Storage.SegmentCore;
 
@@ -106,8 +107,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             options.DirectoryName,
             string.IsNullOrWhiteSpace(contractConfig.ActiveVersion) ? "1.0.0" : contractConfig.ActiveVersion);
         _readerAndWriter = new SegmentCoreReaderAndWriter(this);
-        if (storagePolicy.RetainedVersions is { } retention) { retention.Validate(); _editing = new(serializer, envelopeLifecycle); }
-        _revisions = new(_storeRoot, serializer, envelopeLifecycle, writeConflictStrategy, _editing);
+        if (storagePolicy.RetainedVersions is { } retention)
+        {
+            retention.Validate();
+            _editing = new(serializer, envelopeLifecycle, CreateEncryptionContext);
+        }
+        _revisions = new(
+            _storeRoot,
+            serializer,
+            envelopeLifecycle,
+            writeConflictStrategy,
+            _editing,
+            CreateEncryptionContext);
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
@@ -125,6 +136,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     }
 
     public string SearchIndexCatalogDirectory => Path.Combine(_storeRoot, "search-indexes");
+
+    public bool PersistentSearchIndexCatalogEnabled => _encryptor is EncryptionNone;
 
     public StoragePolicy StoragePolicy => _storagePolicy;
 
@@ -233,11 +246,20 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             var candidate = await _revisions.PrepareAsync(item.Envelope, item.IsNew, current,
                 ct => Store.GetAsync(key, ct), cancellationToken).ConfigureAwait(false);
             if (EnvelopeWriteOutcome.IsNoChange(candidate)) return _revisions.Publish(contractInstance, candidate);
-            item = item with { Envelope = candidate, Payload = _serializer.Serialize(candidate) };
+            item = item with
+            {
+                Envelope = candidate,
+                Payload = SerializePayload(candidate, key)
+            };
             // One durable frame is atomic; explicit batches retain the coordinated transaction path.
             await Store.SaveOwnedAsync(key, item.Payload, transaction: null, cancellationToken).ConfigureAwait(false);
             var saved = _revisions.Publish(contractInstance, item.Envelope);
-            CommittedWriteCapture<TContract>.Remember(item.Envelope, item.Payload, _serializer, _envelopeLifecycle);
+            CommittedWriteCapture<TContract>.Remember(
+                item.Envelope,
+                item.Payload,
+                _serializer,
+                _envelopeLifecycle,
+                CreateEncryptionContext(key));
             CacheEnvelope(item.Envelope, saved);
             ReleaseReservation(item);
             reservationReleased = true;
@@ -288,7 +310,13 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 var current = await _revisions.ReadCommittedRevisionAsync(key, ct => Store.GetAsync(key, ct), cancellationToken).ConfigureAwait(false);
                 var candidate = await _revisions.PrepareAsync(item.Envelope, item.IsNew, current,
                     ct => Store.GetAsync(key, ct), cancellationToken).ConfigureAwait(false);
-                prepared[index] = item with { Envelope = candidate, Payload = EnvelopeWriteOutcome.IsNoChange(candidate) ? [] : _serializer.Serialize(candidate) };
+                prepared[index] = item with
+                {
+                    Envelope = candidate,
+                    Payload = EnvelopeWriteOutcome.IsNoChange(candidate)
+                        ? []
+                        : SerializePayload(candidate, key)
+                };
             }
             if (CountCommitted(prepared) != 0)
             await using (var transaction = await Store.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
@@ -309,7 +337,12 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 var item = prepared[index];
                 var saved = _revisions.Publish(materialized[index], item.Envelope);
                 if (EnvelopeWriteOutcome.IsNoChange(item.Envelope)) { results[index] = saved; ReleaseReservation(item); continue; }
-                CommittedWriteCapture<TContract>.Remember(item.Envelope, item.Payload, _serializer, _envelopeLifecycle);
+                CommittedWriteCapture<TContract>.Remember(
+                    item.Envelope,
+                    item.Payload,
+                    _serializer,
+                    _envelopeLifecycle,
+                    CreateEncryptionContext(item.Envelope.EnvelopeCacheKey));
                 CacheEnvelope(item.Envelope, saved);
                 ReleaseReservation(item);
                 results[index] = saved;
@@ -407,9 +440,16 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         var payload = await Store.GetAsync(identity.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false);
         if (payload is null) return null;
+        ValidateStoredPayload(payload, "Notification snapshot");
         if (payload.Length > maximumBytes)
             throw new InvalidDataException("Notification snapshot exceeds the configured byte limit.");
-        return new CommittedEnvelopeSnapshot<TContract>(payload, _serializer, _envelopeLifecycle, identity.EnvelopeCacheKey, identity.EnvelopeCacheKey);
+        return new CommittedEnvelopeSnapshot<TContract>(
+            payload,
+            _serializer,
+            _envelopeLifecycle,
+            identity.EnvelopeCacheKey,
+            identity.EnvelopeCacheKey,
+            CreateEncryptionContext(identity.EnvelopeCacheKey));
     }
 
     public async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
@@ -431,7 +471,11 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             return null;
         }
 
-        return MaterializeAndCache(physicalStorageKey, payload, cached);
+        return await MaterializeAndCacheAsync(
+            physicalStorageKey,
+            payload,
+            cached,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<IObjectEnvelope<TContract>>> GetPhysicalManyAsync(
@@ -490,7 +534,13 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             foreach (var record in records)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                batch.Set(record.Key, MaterializeAndCache(record.Key, record.Payload, expectedEntries![record.Key]));
+                batch.Set(
+                    record.Key,
+                    await MaterializeAndCacheAsync(
+                        record.Key,
+                        record.Payload,
+                        expectedEntries![record.Key],
+                        cancellationToken).ConfigureAwait(false));
             }
         }
 
@@ -599,7 +649,11 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             }
 
             expectedEntries.TryGetValue(record.Key, out var expected);
-            yield return MaterializeAndCache(record.Key, record.Payload, expected);
+            yield return await MaterializeAndCacheAsync(
+                record.Key,
+                record.Payload,
+                expected,
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -723,7 +777,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         var engine = new SegmentCoreMigrationEngine<TContract>(
             activeVersion,
             _encryptor,
-            _migrations);
+            _migrations,
+            CreateEncryptionContext);
         var failures = new List<SegmentCoreMigrationFailure>();
         var pending = new List<TContract>(options.BatchSize);
         var examined = 0;
@@ -744,6 +799,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
             try
             {
+                ValidateStoredPayload(record.Payload, "Migration source payload");
                 var migrationResult = engine.Migrate(record.Key, sourceVersion, record.Payload);
                 var migratedContract = migrationResult.Contract;
                 var envelope = await _envelopeLifecycle.WrapAsync(migratedContract).ConfigureAwait(false);
@@ -754,7 +810,10 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                     ?? migratedContract.GetType().FullName
                     ?? migratedContract.GetType().Name;
                 envelope.ExtensionMetadata = migrationResult.ExtensionMetadata?.ToArray();
-                var sourceRevision = ((IRevisionObjectSerializer<TContract>)_serializer).ReadRevision(record.Payload);
+                var sourceRevision = ContextualObjectSerialization.ReadRevision(
+                    _serializer,
+                    record.Payload,
+                    CreateEncryptionContext(record.Key));
                 EnvelopeWriteCoordinator<TContract>.SetCondition(envelope, new EnvelopeWriteCondition(0,
                     sourceRevision > 0 ? EnvelopeRevisionAction.Import : EnvelopeRevisionAction.Advance,
                     sourceRevision, ExpectedMissing: true));
@@ -969,6 +1028,10 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     private async Task InitializeCoreAsync()
     {
         Directory.CreateDirectory(_storeRoot);
+        if (!PersistentSearchIndexCatalogEnabled)
+        {
+            PurgePlaintextSearchIndexCatalogs();
+        }
         var store = await SegmentCoreStore.OpenAsync(_storeRoot,
             _storagePolicy.RetainedVersions is null ? _options.StoreOptions : _options.StoreOptions with { RetainedVersions = _storagePolicy.RetainedVersions }).ConfigureAwait(false);
         try
@@ -994,6 +1057,26 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         }
     }
 
+    private void PurgePlaintextSearchIndexCatalogs()
+    {
+        var directory = SearchIndexCatalogDirectory;
+        if (!Directory.Exists(directory))
+        {
+            return;
+        }
+
+        foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+        {
+            var name = Path.GetFileName(path);
+            if (name.StartsWith("catalog-", StringComparison.Ordinal)
+                && (name.EndsWith(".idbsidx", StringComparison.Ordinal)
+                    || name.Contains(".idbsidx.creating-", StringComparison.Ordinal)))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
     private async Task HydrateAfterInitializationAsync(Task initialization)
     {
         await initialization.ConfigureAwait(false);
@@ -1011,16 +1094,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             {
                 MaxDegreeOfParallelism = Math.Clamp(_storagePolicy.MaxConcurrency, 1, 256)
             },
-            (record, cancellationToken) =>
+            async (record, cancellationToken) =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (hydrationCandidates.TryGetValue(record.Key, out var expectedCacheEntry)
                     && IsCurrentCacheEntry(record.Key, expectedCacheEntry))
                 {
-                    MaterializeAndCacheIfUnchanged(record.Key, record.Payload, expectedCacheEntry);
+                    await MaterializeAndCacheIfUnchangedAsync(
+                        record.Key,
+                        record.Payload,
+                        expectedCacheEntry,
+                        cancellationToken).ConfigureAwait(false);
                 }
-
-                return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
         Volatile.Write(ref _hydrated, 1);
     }
@@ -1181,22 +1266,40 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         }
     }
 
-    private IObjectEnvelope<TContract> MaterializeAndCache(
+    private async ValueTask<IObjectEnvelope<TContract>> MaterializeAndCacheAsync(
         string key,
         byte[] payload,
-        IObjectEnvelope<TContract>? expectedCacheEntry)
+        IObjectEnvelope<TContract>? expectedCacheEntry,
+        CancellationToken cancellationToken)
     {
-        var (envelope, instance) = Materialize(key, payload);
+        var (envelope, instance, replacementPayload) = Materialize(key, payload);
+        if (replacementPayload is not null)
+        {
+            await ReplaceEncryptedPayloadIfUnchangedAsync(
+                key,
+                payload,
+                replacementPayload,
+                cancellationToken).ConfigureAwait(false);
+        }
         CacheReadIfUnchanged(key, envelope, instance, expectedCacheEntry);
         return envelope;
     }
 
-    private void MaterializeAndCacheIfUnchanged(
+    private async ValueTask MaterializeAndCacheIfUnchangedAsync(
         string key,
         byte[] payload,
-        IObjectEnvelope<TContract> expectedCacheEntry)
+        IObjectEnvelope<TContract> expectedCacheEntry,
+        CancellationToken cancellationToken)
     {
-        var (envelope, instance) = Materialize(key, payload);
+        var (envelope, instance, replacementPayload) = Materialize(key, payload);
+        if (replacementPayload is not null)
+        {
+            await ReplaceEncryptedPayloadIfUnchangedAsync(
+                key,
+                payload,
+                replacementPayload,
+                cancellationToken).ConfigureAwait(false);
+        }
         CacheReadIfUnchanged(key, envelope, instance, expectedCacheEntry);
     }
 
@@ -1240,11 +1343,16 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         }
     }
 
-    private (IObjectEnvelope<TContract> Envelope, TContract Instance) Materialize(
+    private (IObjectEnvelope<TContract> Envelope, TContract Instance, byte[]? ReplacementPayload) Materialize(
         string key,
         byte[] payload)
     {
-        var envelope = _serializer.Deserialize(payload);
+        ValidateStoredPayload(payload, "Stored payload");
+        var result = ContextualObjectSerialization.DeserializeForRead(
+            _serializer,
+            payload,
+            CreateEncryptionContext(key));
+        var envelope = result.Envelope;
         if (!string.Equals(envelope.EnvelopeCacheKey, key, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
@@ -1258,8 +1366,49 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         envelope.ImplementationTypeName ??= instance.GetType().AssemblyQualifiedName
             ?? instance.GetType().FullName
             ?? instance.GetType().Name;
-        return (envelope, instance);
+        return (envelope, instance, result.ReplacementPayload);
     }
+
+    private byte[] SerializePayload(IObjectEnvelope<TContract> envelope, string physicalKey)
+        => ValidateStoredPayload(
+            ContextualObjectSerialization.Serialize(
+                _serializer,
+                envelope,
+                CreateEncryptionContext(physicalKey)),
+            "Serialized payload");
+
+    private byte[] ValidateStoredPayload(byte[] payload, string description)
+    {
+        if (payload.Length > _storagePolicy.NormalizedMaximumStoredObjectBytes)
+        {
+            throw new InvalidDataException(
+                $"{description} is {payload.Length} bytes, exceeding the configured " +
+                $"{_storagePolicy.NormalizedMaximumStoredObjectBytes}-byte limit.");
+        }
+
+        return payload;
+    }
+
+    private async ValueTask ReplaceEncryptedPayloadIfUnchangedAsync(
+        string key,
+        byte[] expectedPayload,
+        byte[] replacementPayload,
+        CancellationToken cancellationToken)
+    {
+        ValidateStoredPayload(replacementPayload, "Rotated payload");
+        using var writeGuard = await _revisions.AcquireAsync(key, cancellationToken).ConfigureAwait(false);
+        var current = await Store.GetAsync(key, cancellationToken).ConfigureAwait(false);
+        if (current is null || !current.AsSpan().SequenceEqual(expectedPayload))
+        {
+            return;
+        }
+
+        await Store.SaveOwnedAsync(key, replacementPayload, transaction: null, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private byte[] CreateEncryptionContext(string physicalKey)
+        => StorageEncryptionContext.Create(_contractConfig, "segment-core", physicalKey);
 
     private void CacheEnvelopeSkeleton(string physicalKey)
     {

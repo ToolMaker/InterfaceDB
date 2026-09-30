@@ -2,13 +2,13 @@
 
 ## Supported Code
 
-Before the first stable release, security fixes are applied to the current default branch only. After versioned packages exist, this file should list the supported release lines explicitly.
+Before the first stable release, security fixes are applied to the current default branch and then included in the next published preview. Older previews are superseded rather than maintained as parallel security-support lines unless this file explicitly says otherwise.
 
 ## Reporting A Vulnerability
 
 Do not disclose a suspected vulnerability in a public issue, discussion, pull request, benchmark result, or sample data file.
 
-Once the GitHub repository exists, enable GitHub private vulnerability reporting and submit the report through the repository's **Security** tab. Until then, send the maintainer a private report through an agreed private channel.
+Use GitHub private vulnerability reporting through the repository's **Security** tab when that option is available. Otherwise, contact the maintainer through an agreed private channel before sending sensitive details.
 
 Include:
 

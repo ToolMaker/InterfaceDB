@@ -15,6 +15,13 @@ public sealed class AesGcmEncryptorOptions
     public bool AllowUnencryptedPayloads { get; init; }
 
     /// <summary>
+    /// Allows a repository read to import an older encrypted frame that was not authenticated
+    /// against its repository and physical record key. Context-aware readers report that frame
+    /// as requiring re-encryption. Keep this disabled except during a controlled migration.
+    /// </summary>
+    public bool AllowContextlessPayloadMigration { get; init; }
+
+    /// <summary>
     /// Identifies the key used by legacy IDBE version 1 payloads, which did not store a key identifier.
     /// </summary>
     public string? LegacyKeyId { get; init; }

@@ -16,15 +16,18 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
     private readonly string _activeVersion;
     private readonly IEncryptor _encryptor;
+    private readonly Func<string, byte[]>? _encryptionContextFactory;
     private readonly IReadOnlyList<MigrationDescriptor> _descriptors;
 
     public SegmentCoreMigrationEngine(
         string activeVersion,
         IEncryptor encryptor,
-        IEnumerable<IMigration> migrations)
+        IEnumerable<IMigration> migrations,
+        Func<string, byte[]>? encryptionContextFactory = null)
     {
         _activeVersion = activeVersion;
         _encryptor = encryptor;
+        _encryptionContextFactory = encryptionContextFactory;
         _descriptors = migrations
             .Select(static migration => new MigrationDescriptor(
                 migration.SourceVersion,
@@ -45,7 +48,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceVersion);
         ArgumentNullException.ThrowIfNull(storedPayload);
         var chain = BuildChain(sourceVersion);
-        var envelope = ReadEnvelope(_encryptor.Decrypt(storedPayload), physicalKey);
+        var envelope = ReadEnvelope(DecryptStoredPayload(physicalKey, storedPayload), physicalKey);
         if (!string.IsNullOrWhiteSpace(envelope.CacheKey)
             && !string.Equals(envelope.CacheKey, physicalKey, StringComparison.Ordinal))
         {
@@ -104,6 +107,19 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                 new InvalidCastException(
                     $"Migration result does not implement '{typeof(TContract).FullName}'."));
         return (contract, envelope.ExtensionMetadata?.ToArray());
+    }
+
+    private byte[] DecryptStoredPayload(string physicalKey, byte[] storedPayload)
+    {
+        if (_encryptor is not IContextualEncryptor contextual)
+        {
+            return _encryptor.Decrypt(storedPayload);
+        }
+
+        var contextFactory = _encryptionContextFactory
+            ?? throw new InvalidOperationException(
+                "Contextual encryption requires a physical-key context for provider-native migration.");
+        return contextual.Decrypt(storedPayload, contextFactory(physicalKey));
     }
 
     private IReadOnlyList<MigrationDescriptor> BuildChain(string sourceVersion)
