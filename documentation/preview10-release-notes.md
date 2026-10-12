@@ -1,9 +1,9 @@
 # InterfaceDB 1.0.0-preview.10
 
-Prepared 12 October 2026 for the two public MIT packages, `InterfaceDB` and
-`InterfaceDB.Storage.SegmentCore`. Preparation and local package validation do not publish to NuGet.
-The public NuGet feed checked on this date ends at preview.8; the source also contains the preview.9
-security changes. This release includes those changes. Keep both packages on preview.10 together.
+Published 12 October 2026 for the two public MIT packages, [InterfaceDB](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.10)
+and [InterfaceDB.Storage.SegmentCore](https://www.nuget.org/packages/InterfaceDB.Storage.SegmentCore/1.0.0-preview.10).
+The previous published version was preview.8; this release includes the preview.9 source security
+changes as well as the changes below. Keep both packages on preview.10 together.
 
 ## Changes since preview.9 source
 
@@ -54,8 +54,8 @@ The public release workflow publishes only the two database packages.
 Release gates are Release builds with analyzers enabled, core/SegmentCore/analyzer tests,
 the standalone integration harness, materialization self-test, repository smoke, and an exact
 two-package content/dependency boundary check. Local results are recorded in the [release
-validation report](preview10-validation.md). The tag-triggered release workflow repeats its
-gates before publishing. A prepared package is not evidence of a completed CI or NuGet release.
+validation report](preview10-validation.md). The tag-triggered release workflow passed, both
+Windows/Linux CI jobs passed, and a clean consumer verified the published packages from NuGet.org.
 
 The implemented fixes do not establish an absence of all security risk or complete stable-1.0
 qualification. Physical power-cut evidence, representative application/device soak, additional

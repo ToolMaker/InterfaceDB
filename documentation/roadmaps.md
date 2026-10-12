@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The public source is prepared for `1.0.0-preview.10`; preparation does not publish the packages. Its [release notes](preview10-release-notes.md) cover subscription readiness, version/clock APIs, migration fixes and dependency updates, together with the inherited preview.9 security changes, migration, rollback and remaining qualification. Virtualized Linux correctness remains
+The public packages were published as `1.0.0-preview.10` on 12 October 2026, with successful release/CI workflows and clean consumption from NuGet.org; see [release validation](preview10-validation.md). Its [release notes](preview10-release-notes.md) cover subscription readiness, version/clock APIs, migration fixes and dependency updates, together with the inherited preview.9 security changes, migration, rollback and remaining qualification. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:
