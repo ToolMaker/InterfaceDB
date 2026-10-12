@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB</PackageId>
-    <Version>1.0.0-preview.9</Version>
+    <Version>1.0.0-preview.10</Version>
     <Authors>ToolMaker</Authors>
     <Description>Interface-first object repository and embedded object database for .NET 10.</Description>
     <PackageTags>interfacedb;repository;object-database;embedded-database;android;ios;maccatalyst</PackageTags>
@@ -13,12 +13,12 @@
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 9 hardens encrypted storage and bounded input handling. New AES-GCM writes use context-bound IDBE v3; older contextless ciphertext requires an explicit migration window. It adds frozen stored-runtime-type allowlists, protects encrypted values from persistent indexes, bounds stored-object reads, fixes named encryption registration order, and includes hardened SegmentCore restore admission. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview9-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 10 adds subscription readiness barriers, repository running-version reporting and provider-owned revision clocks, updates dependencies, and includes preview 9 security hardening. Upgrades from preview 8 or earlier require the documented encrypted-store migration. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview10-release-notes.md</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MessagePack" Version="3.1.7" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />
+    <PackageReference Include="MessagePack" Version="3.1.11" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
     <PackageReference Include="RadixForge" Version="1.1.0" />
   </ItemGroup>
 

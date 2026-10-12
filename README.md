@@ -162,6 +162,10 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Roslyn diagnostics that protect immutable contract baselines.
 - Pluggable SegmentCore append-only storage with atomic bulk transactions, grouped WAL durability, retained-WAL seek boundaries, full/delta checkpoints, automatic paged primary locators, conditional persisted secondary-index catalogs, bounded streaming/integrity verification, provider migration, quota-controlled online backup/restore, and interruption-safe background compaction.
 
+## Preview.10 Changes
+
+The next public preview adds subscription readiness, running contract-version reporting, provider-owned revision clocks, updated dependencies and native SegmentCore migration fixes. Encrypted properties are restored before conversion, and incorrect canonical source versions are rejected. See the [preview.10 release notes](documentation/preview10-release-notes.md) for API compatibility and upgrades from preview.8 or preview.9.
+
 ## Preview.9 Security Changes
 
 Preview.9 adds context-bound encrypted writes, a 256 MiB default stored-object limit, default rejection of legacy non-`IDB` typeless payloads, frozen per-contract runtime-type allowlists, deterministic named encryption registration, and safeguards that keep encrypted fields out of persistent search indexes. Encrypted SegmentCore repositories now keep search indexes in memory and purge stale plaintext catalog artifacts.
@@ -226,16 +230,17 @@ SegmentCore is not presented as a general SQLite replacement: SQLite has the low
 - [Production Benchmark And Stress Gate](documentation/production-benchmark-gate.md)
 - [SegmentCore Storage Provider](documentation/segment-core-storage-provider.md)
 - [SegmentCore Transactions And Performance](documentation/segment-core-transactions.md)
+- [Preview.10 Release Notes](documentation/preview10-release-notes.md)
 - [Preview.9 Release Notes](documentation/preview9-release-notes.md)
 - [Roadmap](documentation/roadmaps.md)
 
 ## Build And Verify
 
-Prerequisite: .NET 10 SDK.
+Prerequisite: .NET SDK 10.0.401 or a compatible newer feature band selected by `global.json`. The contract analyzers require Roslyn 5.9; older compiler hosts can skip them with `CS9057`. They run during Debug and Release compilation and add no runtime database work.
 
 ```powershell
 dotnet restore InterfaceDB.sln
-dotnet build InterfaceDB.sln -c Release --no-restore
+dotnet build InterfaceDB.sln -c Release --no-restore -warnaserror:CS9057
 dotnet test InterfaceDb.Tests\InterfaceDb.Tests.csproj -c Release --no-build --no-restore
 dotnet test Idb.Analyzers.Tests\Idb.Analyzers.Tests.csproj -c Release --no-build --no-restore
 dotnet test InterfaceDB.Storage.SegmentCore.Tests\InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
@@ -259,4 +264,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-InterfaceDB and the opt-in SegmentCore provider are source-prepared as `1.0.0-preview.9`; this repository change does not publish the packages. Preview.9 contains runtime security hardening and an `IDBE` ciphertext-format transition, so it is not a documentation-only successor to preview.8. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.
+InterfaceDB and the opt-in SegmentCore provider are source-prepared as `1.0.0-preview.10`; preparing source and packages does not publish to NuGet. Preview.10 includes the preview.9 runtime security hardening and `IDBE` ciphertext-format transition, plus the fixes above. The NuGet feed checked on 12 October 2026 ends at preview.8. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.

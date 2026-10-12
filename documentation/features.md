@@ -2,7 +2,7 @@
 
 This document lists the main InterfaceDB capabilities and how they fit together.
 
-The [public package overview](../Idb.Libraries/README.md) explains the current behavior with examples. Preview.9 adds context-bound encrypted writes, default rejection of legacy typeless payloads, stored-object size admission, encrypted-index isolation, deterministic named-encryption registration, and hardened SegmentCore restore. See the [preview.9 release notes](preview9-release-notes.md) for migration and rollback.
+The [public package overview](../Idb.Libraries/README.md) explains the current behavior with examples. Preview.10 adds subscription readiness, repository running-version reporting, provider revision-clock injection and SegmentCore migration corrections; see the [preview.10 release notes](preview10-release-notes.md). It includes preview.9's context-bound encrypted writes, default rejection of legacy typeless payloads, stored-object size admission, encrypted-index isolation, deterministic named-encryption registration, and hardened SegmentCore restore. See the [preview.9 release notes](preview9-release-notes.md) for migration and rollback.
 
 ## Interface-First Persistence
 

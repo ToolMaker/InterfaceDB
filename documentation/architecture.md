@@ -650,7 +650,7 @@ Each generated baseline also contains `.interfacedb-baseline`, an immutable iden
 
 ## Contract Analyzer
 
-`Idb.Analyzers` is a `netstandard2.0` Roslyn analyzer package, allowing the same diagnostics to run in Visual Studio, VS Code, Rider, command-line builds, and CI.
+`Idb.Analyzers` targets `netstandard2.0` and uses Roslyn 5.9. Run it in a compatible compiler host: this repository selects .NET SDK 10.0.401 or a newer compatible feature band in `global.json`. IDEs must supply a compatible Roslyn host too. Older hosts can report `CS9057` and skip diagnostics; CI treats that warning as an error. These contract checks run during both Debug and Release compilation, with no runtime execution in the database.
 
 It compares `[StorageScope]` interfaces with the committed baseline manifests:
 

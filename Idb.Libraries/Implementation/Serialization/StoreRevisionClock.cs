@@ -3,7 +3,7 @@ using System.Buffers.Binary;
 namespace Idb.Libraries.Implementation.Serialization;
 
 /// <summary>Durably reserves timestamp ranges before use, including across reopen/deletion/clock rollback.</summary>
-internal sealed class StoreRevisionClock(string root)
+internal sealed class StoreRevisionClock(string root) : Idb.Libraries.Abstractions.Services.Serialization.IRevisionTimestampGenerator
 {
     private readonly object _gate = new();
     private readonly MonotonicRevisionTimestampGenerator _clock = new();

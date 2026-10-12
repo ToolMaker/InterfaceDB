@@ -29,6 +29,8 @@ public enum RepositorySubscriptionEndReason
 /// <summary>Completion reports detachment, not forced termination of an in-flight callback.</summary>
 public interface IRepositorySubscription : IContractSubscription
 {
+    /// <summary>Await before taking an initial snapshot. Writes admitted before registration have settled.</summary>
+    Task Ready { get; }
     Task<RepositorySubscriptionEndReason> Completion { get; }
     long DeliveredCount { get; }
     long FilteredCount { get; }

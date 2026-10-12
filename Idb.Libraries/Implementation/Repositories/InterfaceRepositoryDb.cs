@@ -47,6 +47,7 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             throw new ArgumentNullException(nameof(contractConfig));
         }
 
+        RunningVersion = contractConfig.ActiveVersion;
         _repositoryType = contractConfig.RepositoryType is ContractRepositoryType.None
             ? ContractRepositoryType.FileSystem
             : contractConfig.RepositoryType;
@@ -83,6 +84,7 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
     }
 
     public ContractRepositoryType RepositoryType => _repositoryType;
+    public string? RunningVersion { get; }
 
     public RetainedVersionCapability RetainedVersions => (_envelopeRepository as IRetainedVersionStore<TContract>)?.RetainedVersions
         ?? new(false, "This provider does not support retained editing.");

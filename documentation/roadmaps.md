@@ -24,7 +24,7 @@ old-package-to-current-source upgrade validation. The repository also contains W
 Dependabot configuration, contribution guidance, security reporting guidance, and a complete
 documentation index.
 
-The public source is prepared for `1.0.0-preview.9`; this repository change does not publish the packages. Its [release notes](preview9-release-notes.md) record the security changes, migration, rollback, and remaining qualification. Virtualized Linux correctness remains
+The public source is prepared for `1.0.0-preview.10`; preparation does not publish the packages. Its [release notes](preview10-release-notes.md) cover subscription readiness, version/clock APIs, migration fixes and dependency updates, together with the inherited preview.9 security changes, migration, rollback and remaining qualification. Virtualized Linux correctness remains
 mandatory, while a 15% throughput lead over SQLite is an advisory optimization target rather than
 a release blocker. The remaining evidence strengthens platform coverage and the future stable
 durability claim:
@@ -211,7 +211,7 @@ The remaining pre-stable qualification work is explicit:
   clean-package, package-boundary, version, test, and OIDC publication gates.
 
 These remaining items gate stable `1.0.0` and unqualified production-security claims. The completed
-preview.9 controls are implemented work rather than open blockers. Preview.9 can proceed with its
+preview.9 controls are implemented work rather than open blockers. Preview.10 retains those controls and can proceed with its
 documented migration and platform boundaries.
 
 Lower-priority security and operations work remains:

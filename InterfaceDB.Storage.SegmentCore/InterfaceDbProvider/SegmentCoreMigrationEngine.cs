@@ -1,5 +1,6 @@
 using Idb.Libraries.Abstractions.Dtos;
 using System.Buffers;
+using System.Reflection;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Migrations;
@@ -13,7 +14,10 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private static readonly MessagePackSerializerOptions SerializerOptions =
-        MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
+        MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance)
+            .WithSecurity(MessagePackSecurity.UntrustedData);
+    private static readonly MessagePackSerializerOptions FieldSerializerOptions =
+        MessagePackSerializerOptions.Standard.WithSecurity(MessagePackSecurity.UntrustedData);
     private readonly string _activeVersion;
     private readonly IEncryptor _encryptor;
     private readonly Func<string, byte[]>? _encryptionContextFactory;
@@ -49,6 +53,15 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         ArgumentNullException.ThrowIfNull(storedPayload);
         var chain = BuildChain(sourceVersion);
         var envelope = ReadEnvelope(DecryptStoredPayload(physicalKey, storedPayload), physicalKey);
+        // Headerless legacy DTOs have no version to check. Canonical envelopes must agree
+        // with the caller before any migration code can transform their contents.
+        if (envelope.HasHeader
+            && (!Version.TryParse(envelope.VersionTag, out var storedVersion)
+                || storedVersion != Version.Parse(sourceVersion)))
+        {
+            throw new InvalidDataException(
+                $"SegmentCore migration source version for key '{physicalKey}' does not match the serialized envelope version.");
+        }
         if (!string.IsNullOrWhiteSpace(envelope.CacheKey)
             && !string.Equals(envelope.CacheKey, physicalKey, StringComparison.Ordinal))
         {
@@ -58,6 +71,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
 
         var payload = envelope.ObjectPayload;
         IMigration? migrated = null;
+        var firstStep = true;
         foreach (var descriptor in chain)
         {
             try
@@ -66,6 +80,11 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                     descriptor.MigrationType,
                     payload,
                     SerializerOptions)!;
+                if (firstStep)
+                {
+                    RestoreEncryptedFields(migrated, envelope.EncryptedFields);
+                    firstStep = false;
+                }
                 if (!migrated.Up())
                 {
                     throw new MigrationExecutionException(
@@ -107,6 +126,51 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                 new InvalidCastException(
                     $"Migration result does not implement '{typeof(TContract).FullName}'."));
         return (contract, envelope.ExtensionMetadata?.ToArray());
+    }
+
+    private void RestoreEncryptedFields(IMigration migration, Dictionary<string, EncryptedFieldValue>? fields)
+    {
+        if (fields is not { Count: > 0 }) return;
+
+        // Use only properties declared by the registered migration type and its interfaces.
+        // Persisted type-name metadata must never select a runtime type for deserialization.
+        var type = migration.GetType();
+        var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .Concat(type.GetInterfaces().SelectMany(static contract => contract.GetProperties()))
+            .Where(static property => property.GetIndexParameters().Length == 0
+                && property.GetMethod is { IsPublic: true }
+                && property.SetMethod is { IsPublic: true })
+            .ToLookup(static property => property.Name, StringComparer.Ordinal);
+        foreach (var field in fields)
+        {
+            var candidates = properties[field.Key].ToArray();
+            if (candidates.Length == 0
+                || candidates.Select(static property => property.PropertyType).Distinct().Count() != 1
+                || candidates.Select(property => ResolveSetter(type, property)).Distinct().Count() != 1)
+            {
+                throw new InvalidDataException(
+                    $"Encrypted source field '{field.Key}' requires an unambiguous writable property on migration '{type.FullName}'.");
+            }
+            if (field.Value?.Ciphertext is not { Length: > 0 } ciphertext)
+                throw new InvalidDataException($"Encrypted source field '{field.Key}' has no ciphertext.");
+
+            // Field encryption is contextless even when the surrounding envelope uses a
+            // physical-key context. Restore once so later steps keep Up() changes and nulls.
+            var plain = _encryptor.Decrypt(ciphertext);
+            var value = MessagePackSerializer.Deserialize(candidates[0].PropertyType, plain, FieldSerializerOptions);
+            candidates[0].SetValue(migration, value);
+        }
+    }
+
+    private static MethodInfo ResolveSetter(Type implementationType, PropertyInfo property)
+    {
+        var setter = property.SetMethod!;
+        if (property.DeclaringType!.IsInterface)
+        {
+            var map = implementationType.GetInterfaceMap(property.DeclaringType);
+            setter = map.TargetMethods[Array.IndexOf(map.InterfaceMethods, setter)];
+        }
+        return setter.GetBaseDefinition();
     }
 
     private byte[] DecryptStoredPayload(string physicalKey, byte[] storedPayload)
@@ -197,7 +261,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
             || payload[2] != (byte)'B'
             || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6'))
         {
-            return new SerializedEnvelope(string.Empty, payload, null);
+            return new SerializedEnvelope(false, null, string.Empty, payload, null, null);
         }
 
         var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6';
@@ -205,7 +269,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
         var hasExtensionMetadata = payload[3] is (byte)'5' or (byte)'6';
         using var stream = new MemoryStream(payload, writable: false);
         stream.Position = payload[3] == (byte)'6' ? 12 : 4;
-        _ = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
+        var versionTag = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
         var cacheKey = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
         _ = MessagePackSerializer.Deserialize<string>(stream, SerializerOptions);
         if (hasCacheFlag)
@@ -213,12 +277,11 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
             _ = MessagePackSerializer.Deserialize<bool>(stream, SerializerOptions);
         }
 
-        if (hasEncryptedFields)
-        {
-            _ = MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(
+        var encryptedFields = hasEncryptedFields
+            ? MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(
                 stream,
-                SerializerOptions);
-        }
+                SerializerOptions)
+            : null;
 
         var extensionMetadata = hasExtensionMetadata
             ? ReadExtensionMetadata(payload, stream, physicalKey)
@@ -226,7 +289,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
 
         var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
         stream.ReadExactly(objectPayload);
-        return new SerializedEnvelope(cacheKey, objectPayload, extensionMetadata);
+        return new SerializedEnvelope(true, versionTag, cacheKey, objectPayload, encryptedFields, extensionMetadata);
     }
 
     private static byte[]? ReadExtensionMetadata(
@@ -249,8 +312,11 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
     }
 
     private sealed record SerializedEnvelope(
+        bool HasHeader,
+        string? VersionTag,
         string CacheKey,
         byte[] ObjectPayload,
+        Dictionary<string, EncryptedFieldValue>? EncryptedFields,
         byte[]? ExtensionMetadata);
 
     private sealed record MigrationDescriptor

@@ -2,6 +2,15 @@
 
 InterfaceDB treats a stored interface version as a persistence contract. Do not edit an already-persisted contract shape in place. Create a new baseline, implement an adjacent migration, and then move the repository's `ActiveVersion` forward.
 
+## Inspect the running baseline
+
+`IRepository<TContract>.RunningVersion` reports the contract baseline selected by the repository.
+The built-in local repository reports its configured `ActiveVersion`; custom implementations may
+return `null` when they do not expose a selection. This value is not the NuGet package version or
+proof that every stored record has been converted: lazy and tolerant migration can retain older
+records. The local repository's configuration remains responsible for activation. The public
+`ContractRepositoryType.Remote` marker is an extension point and does not perform version negotiation.
+
 ## Choose A Runtime Strategy
 
 | Strategy | Behavior | Typical use |
@@ -108,6 +117,20 @@ normal atomic SegmentCore batches, publishes a target checkpoint, and optionally
 verification. Existing physical keys are skipped, making a stopped run resumable. Strict mode is
 the default; `ContinueOnError = true` records per-object failures and continues. Retain the source
 and its encryption keys until application-level verification and backup promotion are complete.
+
+For each record being migrated, a canonical envelope's stored version must parse as a
+`System.Version` equal to `sourceVersion`. Missing, malformed, or different versions are rejected
+before `Up()` executes for that record. Headerless legacy DTO payloads have no embedded version and
+continue to use the explicitly supplied source version. Validation is per record: previously
+committed batches remain if a later record fails, and tolerant mode records the failure and continues.
+
+Property-encrypted values are restored into the first migration DTO before its `Up()` method runs.
+The DTO must expose an unambiguous readable/writable property with each source encrypted field's
+CLR property name and a compatible declared type, including fields being renamed or removed by
+the migration. A MessagePack key alias does not change that CLR field name. Unreadable ciphertext
+or an unmappable field fails the record rather than discarding its value. Later migration steps
+receive the previous step's output; normal target writes encrypt the final values again, preserving
+intentional updates and nulls. Keep source fields in the migration DTO until `Up()` has handled them.
 
 Opaque extension metadata remains preserved and limited to 64 KiB. IDB6 source revisions are preserved by conditional target imports; a legacy zero revision receives a timestamp on its target commit. Revised readers accept IDB2–IDB6; old readers cannot read new IDB6 payloads. Back up the complete root, including `.idb-revision-clock`, and stop old writers before upgrading. See [Envelope revisions](envelope-revisions.md).
 

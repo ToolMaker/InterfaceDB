@@ -4,6 +4,15 @@ Roslyn diagnostics that protect immutable InterfaceDB contract baseline identiti
 
 The package works through the standard .NET analyzer mechanism used by Visual Studio, VS Code C# tooling, Rider, `dotnet build`, and CI.
 
+It requires Roslyn 5.9 or newer. Use .NET SDK 10.0.401 or newer for command-line builds
+and an IDE with a Roslyn 5.9 or newer compiler host for editor diagnostics. Older
+compiler hosts report CS9057 and skip this analyzer; database runtime behavior is
+unaffected. The repository's global.json selects the required SDK.
+
+Checks run during both Debug and Release compilation so a release build cannot silently bypass
+contract-baseline validation. They are compiler tooling and do not execute in the running database.
+The repository's CI treats `CS9057` as an error; update the compiler host instead of disabling analyzers.
+
 Rules:
 
 - `IDB001`: a recorded contract was removed, renamed, or moved.

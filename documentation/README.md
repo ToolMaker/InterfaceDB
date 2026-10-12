@@ -10,7 +10,8 @@ Start with these documents:
 
 Use the focused guides when needed:
 
-- [Public package overview](../Idb.Libraries/README.md): current preview.9 behavior, examples, defaults and upgrade requirements.
+- [Public package overview](../Idb.Libraries/README.md): current preview.10 behavior, examples, defaults and upgrade requirements.
+- [Preview.10 Release Notes](preview10-release-notes.md): subscription readiness, running versions, migration corrections, updated dependencies and combined upgrade guidance.
 - [Preview.9 Release Notes](preview9-release-notes.md): context-bound encryption, runtime-type enrollment, input limits, encrypted-index isolation and hardened SegmentCore restore.
 - [Preview.8 Release Notes](preview8-release-notes.md): expanded NuGet documentation; unchanged preview.7 runtime.
 - [Preview.7 Release Notes](preview7-release-notes.md): IDB6 compatibility, revisions, retained editing, maintenance and qualification.
@@ -40,5 +41,6 @@ Use the focused guides when needed:
 - [Performance Profiling](performance-profiling.md): collecting CPU and allocation evidence.
 - [Product Positioning](product-positioning.md): comparison with ORMs, serializers, embedded databases, and repositories.
 - [Roadmap](roadmaps.md): remaining product work and provider research.
+- [Preparing a NuGet preview](releasing.md): versioning, documentation, package boundaries, validation and publication.
 
 The executable reference application is `InterfaceDb.ConsoleApp`. The broad storage behavior suite is `InterfaceDb.IntegrationTests`.

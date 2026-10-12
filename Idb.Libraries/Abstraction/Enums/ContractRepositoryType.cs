@@ -25,4 +25,7 @@ public enum ContractRepositoryType
     /// </summary>
     AtlasCore,
 
+    /// <summary>Uses an authenticated remote physical storage provider.</summary>
+    Remote,
+
 }

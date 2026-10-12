@@ -2,7 +2,7 @@
 
 Local repository notifications are part of free, MIT-licensed InterfaceDB. They are opt-in,
 in-process observations of writes through one repository owner, not a durable event bus.
-This feature is included in preview.7 and later. Preview.8 expands its public package documentation.
+This feature is included in preview.7 and later. Preview.10 adds the registration `Ready` barrier.
 
 ## Enable and subscribe
 
@@ -38,6 +38,10 @@ using var deleted = notifications.SubscribeDeleted(score =>
     // Last committed values; score.Envelope is null.
     return ValueTask.CompletedTask;
 });
+
+await Task.WhenAll(created.Ready, changed.Ready, deleted.Ready)
+    .WaitAsync(applicationLifetime);
+// Query initial state here; reconcile overlapping events by key/revision.
 ```
 
 Namespaces: `Idb.Libraries.Abstractions.Options`,
@@ -156,9 +160,15 @@ The dispatcher uses the same process CPU, not a remote subscriber's processing r
 
 ## Lifetime, errors and resource bounds
 
-`IRepositorySubscription` is disposable and exposes `IsDisposed`, `Completion`, `DeliveredCount`,
+`IRepositorySubscription` is disposable and exposes `IsDisposed`, `Ready`, `Completion`, `DeliveredCount`,
 `FilteredCount`, `BeginWriteScope()` and `WaitForIdleAsync(token)`. Counts mean successful handler
 returns and predicate rejections respectively; intentionally suppressed own writes count as neither.
+
+Before taking an initial snapshot, register the required subscriptions and await each subscription's
+`Ready` task. Readiness waits for writes admitted before registration to settle; later commits are
+observed by the subscriptions. This closes the gap between subscribing and reading initial state,
+including when other subscribers were already attached. Use cancellation with `Ready.WaitAsync(token)`
+if startup must be bounded. `Ready` does not wait for notification callbacks to finish.
 
 Disposal/cancellation unregisters and discards queued work. An already-started callback may
 finish; it cannot be forcibly terminated. Completion reports detachment, not callback termination.

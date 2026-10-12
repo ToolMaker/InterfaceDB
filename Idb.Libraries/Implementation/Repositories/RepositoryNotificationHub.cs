@@ -22,8 +22,8 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
     private Phase _phase = new(Task.CompletedTask, null);
     private static readonly AsyncLocal<Mutation?> CurrentMutation = new();
 
-    // Only a zero/nonzero subscriber handover waits for preceding writes. Admission accounting
-    // is briefly synchronized; unobserved writes never hold a gate across storage I/O.
+    // Subscription handover waits for preceding writes so Ready + snapshot cannot miss
+    // a mutation admitted before registration. Writers never hold this lock across storage I/O.
     private sealed class Phase(Task ready, NotificationBaselineCache<T>? cache)
     {
         internal readonly Task Ready = ready;
@@ -99,7 +99,8 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
                 throw new InvalidOperationException("Repository subscriber limit reached.");
             if (kind == RepositoryEventKind.Changed) _comparison ??= new(_options);
             subscription = new(kind, handler, compiled, keepAlive, _options, _callbacks, Remove, receiveOwnWrites);
-            if (_subscriptions.Length == 0) _phase = new(_phase.Seal(), new(_options));
+            _phase = new(_phase.Seal(), new(_options));
+            subscription.Ready = _phase.Ready;
             _subscriptions = [.. _subscriptions, subscription];
         }
         subscription.SetLifetime(lifetime);

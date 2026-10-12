@@ -34,6 +34,21 @@ The implementation stages a separate envelope and a shallow CLR object shell. Co
 
 ## Coordination and ownership
 
+### Provider-owned revision clocks
+
+From preview.10, a custom provider can construct `EnvelopeWriteCoordinator<TContract>` with an
+`IRevisionTimestampGenerator` instead of a filesystem root. The interface supplies
+`long Next(long observedRevisionTimestampUtcMicroseconds)`. Existing constructors using the
+file-backed `StoreRevisionClock` remain available.
+
+The provider owns safe allocation: return a value greater than the observed revision, coordinate
+concurrent writers under the same authority, and preserve a durable high-water mark across
+restart and deletion of the last entity. Reserve/persist that mark as part of the provider's
+commit protocol before acknowledging a write. A process-local wall clock alone cannot provide
+those guarantees. Supplying a generator does not add locking or persistence to it automatically.
+
+### Existing provider coordination
+
 | Path | Validation through publication | Readers | Bulk behavior |
 | --- | --- | --- | --- |
 | File | Migration writer lease plus the existing cross-process per-payload sidecar lock spans revision read, staging, atomic replacement/deletion, and cache publication | Open committed payloads with delete sharing; never take the writer guard | Independent commits; partial success is explicit |

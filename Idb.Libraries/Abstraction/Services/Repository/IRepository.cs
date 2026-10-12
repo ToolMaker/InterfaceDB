@@ -16,6 +16,8 @@ public interface IRepository<TContract>
     /// Identifies the repository implementation type (file system, memory, etc.).
     /// </summary>
     ContractRepositoryType RepositoryType { get; }
+    /// <summary>The selected contract version, or null before a managed repository selects a version.</summary>
+    string? RunningVersion => null;
 
     /// <summary>
     /// Performs one-time setup such as directory creation and migration execution.

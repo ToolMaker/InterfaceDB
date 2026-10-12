@@ -6,19 +6,26 @@ Interface-first object repositories and embedded object storage for **.NET 10**,
 
 The core package includes file-per-object storage. [InterfaceDB.Storage.SegmentCore](https://www.nuget.org/packages/InterfaceDB.Storage.SegmentCore) adds the optional append-only provider. Both packages are free and MIT-licensed.
 
-**Preview.9 is a runtime and encrypted-payload format update.** Plaintext envelopes remain `IDB6`; AES-GCM repositories now write context-bound `IDBE` version 3 and require a controlled rewrite of older contextless ciphertext.
+**Preview.10 adds subscription readiness, running-version reporting, provider clock support and dependency updates.** It includes preview.9 security hardening: plaintext envelopes remain `IDB6`; AES-GCM repositories write context-bound `IDBE` version 3 and require a controlled rewrite of older contextless ciphertext.
 
 ## Install and get started
 
 ```shell
-dotnet add package InterfaceDB --version 1.0.0-preview.9
+dotnet add package InterfaceDB --version 1.0.0-preview.10
 # Optional append-only provider:
-dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.9
+dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.10
 ```
 
-Start with the [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/getting-started.md) for contracts, configuration, registration and your first save/query. The snippets below assume an initialized repository and your existing `IPerson` contract with its `Name` property; they are individual operations, not a complete application.
+Start with the [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/getting-started.md) for contracts, configuration, registration and your first save/query. The snippets below assume an initialized repository and your existing `IPerson` contract with its `Name` property; they are individual operations, not a complete application.
 
-## Security hardening in preview.9
+## New in preview.10
+
+- Await `IRepositorySubscription.Ready` before your initial snapshot to cover writes admitted before registration, even when other subscriptions already exist.
+- Inspect `IRepository<T>.RunningVersion` for the selected contract baseline; custom repositories can return `null` when unavailable.
+- Custom providers may supply `IRevisionTimestampGenerator` to `EnvelopeWriteCoordinator<T>`; existing file-backed constructors remain supported.
+- SegmentCore native migration restores encrypted properties before conversion and rejects incorrect canonical source versions. See the [preview.10 release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview10-release-notes.md).
+
+## Security hardening inherited from preview.9
 
 - AES-GCM writes authenticate the provider, repository registration, contract identity and physical record key through `IDBE` v3. A copied ciphertext fails when opened under another authenticated storage context.
 - `IDBE` v1/v2 reads require an explicit `AllowContextlessPayloadMigration` window. Accepted legacy ciphertext is marked for replacement; rewrite and verify the complete store before disabling the option.
@@ -29,7 +36,7 @@ Start with the [getting-started guide](https://github.com/ToolMaker/InterfaceDB/
 - Explicit named encryption registration works in either order relative to repository registration.
 - SegmentCore restore adds `SegmentCoreRestoreOptions` for manifest, file-count, aggregate-byte, per-file, path-depth, duration and free-space admission. Backup and restore reject observed links/reparse points, and restore rejects unknown manifest paths.
 
-See the [preview.9 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview9-release-notes.md) for defaults, migration steps, rollback and remaining qualification.
+See the [preview.9 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview9-release-notes.md) for defaults, migration steps, rollback and remaining qualification.
 
 ## What was added in preview.7
 
@@ -72,7 +79,7 @@ The token advances despite equal clock ticks or wall-clock rollback. It is a loc
 
 Existing-key metadata writes require an explicit `EnvelopeWriteCondition`; the overload without a condition is insert-only. Metadata-only acknowledgement checks revision and expected metadata bytes while preserving the committed entity/revision. Import is an explicit infrastructure operation with a destination precondition.
 
-File bulk operations can report partial success through `IStorageBulkOperationResult`, including `SucceededIndexes` and `CommittedItems`. SegmentCore retains atomic coordinated batches. [Revision, metadata and bulk-write guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/envelope-revisions.md).
+File bulk operations can report partial success through `IStorageBulkOperationResult`, including `SucceededIndexes` and `CommittedItems`. SegmentCore retains atomic coordinated batches. [Revision, metadata and bulk-write guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/envelope-revisions.md).
 
 ## 2. Local repository notifications
 
@@ -101,6 +108,8 @@ using var subscription = notifications.SubscribeChanged(change =>
     Console.WriteLine(string.Join(", ", change.ChangedProperties));
     return ValueTask.CompletedTask;
 }, person => true);
+await subscription.Ready;
+// Take the initial application snapshot after registration is ready.
 ```
 
 - Created carries the new committed entity. Changed carries committed after-values and top-level changed-property names. Deleted carries the last committed values without an attached envelope.
@@ -110,7 +119,7 @@ using var subscription = notifications.SubscribeChanged(change =>
 - Own writes and causal descendants are suppressed by default to reduce feedback loops; explicit opt-in is available.
 - Queues/concurrency are bounded. Overflow or observation/callback failure ends the affected subscription. Inspect `Completion`, requery and resubscribe after a gap; dispose subscriptions with their owning view/service.
 
-Notifications are disabled by default and separate from physical envelope events. They observe writes through one owning repository instance; they are not durable replay, remote delivery or external-filesystem change history. Saving an old event object follows normal revision-conflict rules. [Notification guide and resource limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/repository-notifications.md).
+Notifications are disabled by default and separate from physical envelope events. They observe writes through one owning repository instance; they are not durable replay, remote delivery or external-filesystem change history. Saving an old event object follows normal revision-conflict rules. [Notification guide and resource limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/repository-notifications.md).
 
 ## 3. Retained editing and custom conflict strategies
 
@@ -140,7 +149,7 @@ var committed = await edit.SaveAsync();
 
 Working values, original reads and current reads are isolated. A successful session is single-use and releases its baseline. A rejected edit can still read its original version until disposal/expiry. Renewal is explicit and bounded; repository close or process restart invalidates handles. These are not restart-persistent offline drafts or full database history.
 
-The free `IWriteConflictStrategy<T>` contract supports acceptance, structured rejection, resolved replacement or returning current state without a new write. A strategy requiring original data needs an explicit retained edit. Strict revision equality remains the default; enabling retention does not automatically merge changes. Keep custom decisions bounded and non-reentrant. [Retained editing and custom-strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/retained-editing.md).
+The free `IWriteConflictStrategy<T>` contract supports acceptance, structured rejection, resolved replacement or returning current state without a new write. A strategy requiring original data needs an explicit retained edit. Strict revision equality remains the default; enabling retention does not automatically merge changes. Keep custom decisions bounded and non-reentrant. [Retained editing and custom-strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/retained-editing.md).
 
 ## 4. Compaction policies, budgets and summaries
 
@@ -150,17 +159,17 @@ SegmentCore integrates `ICompactionMaintenance<T>` for advisory estimation, manu
 
 Default cleanup remains `SlicedAppend`. Optional `IndependentOutput` copies selected records into separate immutable files while foreground writes continue on their normal logs. It protects newer writes, active readers and retained editing baselines. Both modes require mutation WAL. Snapshot, checkpoint, publication and retirement pauses remain; some metadata/durability I/O is outside byte-rate limiting.
 
-Physical relocation does not change entity revisions or emit Created/Changed/Deleted. Separate summaries report work, deferral, reclaimed space and failures. Failed file retirement can produce partial cleanup. Existing automatic maintenance continues unless a new schedule is configured. [Maintenance configuration and guarantees](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/compaction-maintenance.md).
+Physical relocation does not change entity revisions or emit Created/Changed/Deleted. Separate summaries report work, deferral, reclaimed space and failures. Failed file retirement can produce partial cleanup. Existing automatic maintenance continues unless a new schedule is configured. [Maintenance configuration and guarantees](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/compaction-maintenance.md).
 
 ## 5. Storage performance improvements
 
 Single-object SegmentCore saves/deletes use the owning stripe's atomic append while retaining configured durability and revision checks. `SaveManyAsync` and explicit transactions retain coordinated commit, including explicit batches of one. Recovery reuses validated stripe scans while ownership remains held. Bulk reads reduce grouping/copy allocations.
 
-Complete-object scans avoid rebuilding unchanged cache metadata, repeated revision observation, repeated immutable type inspection and redundant serializer metadata allocations. Cache publication still protects against concurrent updates/deletes. Measurements remain workload-dependent; these changes do not establish a universal lead over SQLite or remove payload-ownership copies. [Storage fast paths](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/storage-fast-paths.md).
+Complete-object scans avoid rebuilding unchanged cache metadata, repeated revision observation, repeated immutable type inspection and redundant serializer metadata allocations. Cache publication still protects against concurrent updates/deletes. Measurements remain workload-dependent; these changes do not establish a universal lead over SQLite or remove payload-ownership copies. [Storage fast paths](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/storage-fast-paths.md).
 
 ## Upgrade, backup and rollback
 
-**Preview.9 keeps plaintext envelopes at IDB6 but changes AES-GCM writes to context-bound IDBE v3. Preview.8 and earlier cannot read v3 ciphertext.**
+**Preview.10, like preview.9, keeps plaintext envelopes at IDB6 but changes AES-GCM writes to context-bound IDBE v3. Preview.8 and earlier cannot read v3 ciphertext.**
 
 1. Stop old writers and take a complete verified pre-upgrade backup. Retain the older runtime and every referenced key for rollback.
 2. Rebuild applications and custom providers/envelopes/serializers/coordinators for the current APIs.
@@ -185,8 +194,9 @@ Actual acknowledged-write physical power-cut evidence and Apple-device runtime q
 
 ## Documentation and support
 
-- [Preview.9 security and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview9-release-notes.md)
-- [Preview.7 feature notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview7-release-notes.md)
-- [Preview.8 documentation notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/preview8-release-notes.md)
-- [Documentation index](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.9/documentation/README.md)
+- [Preview.10 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview10-release-notes.md)
+- [Preview.9 security and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview9-release-notes.md)
+- [Preview.7 feature notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview7-release-notes.md)
+- [Preview.8 documentation notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/preview8-release-notes.md)
+- [Documentation index](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.10/documentation/README.md)
 - [Report an issue](https://github.com/ToolMaker/InterfaceDB/issues)

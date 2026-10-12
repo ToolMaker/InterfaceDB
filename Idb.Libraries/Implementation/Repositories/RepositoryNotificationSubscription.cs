@@ -67,6 +67,7 @@ internal sealed class RepositoryNotificationSubscription<T> : IRepositorySubscri
 
     internal RepositoryEventKind Kind { get; }
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+    public Task Ready { get; internal set; } = Task.CompletedTask;
     public Task<RepositorySubscriptionEndReason> Completion => _completion.Task;
     public long DeliveredCount => Interlocked.Read(ref _delivered);
     public long FilteredCount => Interlocked.Read(ref _filtered);

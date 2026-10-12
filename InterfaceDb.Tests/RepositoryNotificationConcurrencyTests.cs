@@ -20,6 +20,39 @@ public sealed class RepositoryNotificationConcurrencyTests
             _ => true, default, null, false);
 
     [TestMethod]
+    [DataRow(false, false)] [DataRow(false, true)]
+    [DataRow(true, false)] [DataRow(true, true)]
+    public async Task ReadyWaitsForPreRegistrationWritesBeforeInitialSnapshot(bool segment, bool alreadyObserved)
+    {
+        await using var fixture = new Fixture(segment, enabled: false);
+        var entity = await fixture.Repository.SaveAsync(new Record { Id = "ready", Value = 0 });
+        using var hub = Hub(fixture);
+        using var prior = alreadyObserved ? Changed(hub) : null;
+        var entered = Signal(); var release = Signal();
+        async ValueTask<IRecord> Block(IRecord item, CancellationToken token)
+        { entered.TrySetResult(); await release.Task; return await fixture.Repository.SaveAsync(item, token); }
+        entity.Value = 1;
+        var writing = hub.SaveAsync(entity, Block, default).AsTask();
+        try
+        {
+            await Within(entered.Task);
+            using var subscription = Changed(hub);
+            Assert.IsFalse(subscription.Ready.IsCompleted, "An in-flight unobserved write must precede the initial snapshot.");
+            release.TrySetResult();
+            await Within(subscription.Ready);
+            await Within(writing);
+            Assert.AreEqual(1, (await fixture.Repository.QuerySingleAsync(_ => true)).Value);
+            await subscription.WaitForIdleAsync();
+            Assert.AreEqual(0L, subscription.DeliveredCount, "Initial state is obtained by the snapshot.");
+            entity.Value = 2;
+            await hub.SaveAsync(entity, fixture.Repository.SaveAsync, default);
+            await Within(subscription.WaitForIdleAsync().AsTask());
+            Assert.AreEqual(1L, subscription.DeliveredCount);
+        }
+        finally { release.TrySetResult(); await Within(writing); }
+    }
+
+    [TestMethod]
     [DataRow(false)] [DataRow(true)]
     public async Task EmptyAndObservedDistinctKeysCanOverlap(bool segment)
     {

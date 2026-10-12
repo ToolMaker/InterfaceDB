@@ -22,7 +22,7 @@ jobs:
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Verify tag and package versions
         shell: pwsh
@@ -46,7 +46,7 @@ jobs:
         run: dotnet restore InterfaceDB.sln
 
       - name: Build
-        run: dotnet build InterfaceDB.sln -c Release --no-restore
+        run: dotnet build InterfaceDB.sln -c Release --no-restore -warnaserror:CS9057
 
       - name: Test InterfaceDB
         run: dotnet test InterfaceDb.Tests/InterfaceDb.Tests.csproj -c Release --no-build --no-restore

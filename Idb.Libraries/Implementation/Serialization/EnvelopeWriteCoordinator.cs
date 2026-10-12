@@ -11,7 +11,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class, IStoredContract<TContract>
 {
     private readonly IWriteConflictStrategy<TContract> _strategy;
-    private readonly StoreRevisionClock _clock;
+    private readonly IRevisionTimestampGenerator _clock;
     private readonly ConcurrentDictionary<string, long> _committed = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim[] _gates = Enumerable.Range(0, 256).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private readonly IRevisionObjectSerializer<TContract> _serializer;
@@ -28,8 +28,17 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         IEnvelopeLifecycle<TContract> lifecycle, IWriteConflictStrategy<TContract>? strategy,
         RetainedEditingSupport<TContract>? editing,
         Func<string, byte[]>? contextFactory = null)
+        : this(new StoreRevisionClock(storeRoot), serializer, lifecycle, strategy, editing, contextFactory) { }
+
+    /// <summary>
+    /// Providers supplying a clock must reserve revisions durably under their authoritative
+    /// write guard before publishing an accepted commit. The clock must survive deletion/reopen.
+    /// </summary>
+    public EnvelopeWriteCoordinator(IRevisionTimestampGenerator clock, IObjectSerializer<TContract> serializer,
+        IEnvelopeLifecycle<TContract> lifecycle, IWriteConflictStrategy<TContract>? strategy = null,
+        RetainedEditingSupport<TContract>? editing = null, Func<string, byte[]>? contextFactory = null)
     {
-        _clock = new StoreRevisionClock(storeRoot);
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _serializer = serializer as IRevisionObjectSerializer<TContract>
             ?? throw new NotSupportedException("Envelope writes require an IRevisionObjectSerializer that preserves revision timestamps.");
         _lifecycle = lifecycle;

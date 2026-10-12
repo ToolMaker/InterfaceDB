@@ -4,6 +4,10 @@ This guide shows the smallest useful InterfaceDB setup: define a contract, imple
 
 Install the pre-release package and the standard DI implementation used by these examples:
 
+Use a .NET 10 application. These examples describe preview.10; until that version is published,
+use a project reference or the locally prepared NuGet feed. Pin `--version 1.0.0-preview.10`
+when adopting that release. Source builds also require the compiler version in `global.json`.
+
 ```powershell
 dotnet add package InterfaceDB --prerelease
 dotnet add package Microsoft.Extensions.DependencyInjection
@@ -73,7 +77,8 @@ public sealed class PersonOptions : IDbContractConfigDto<IPerson>
     public string EnvelopeDICacheKey { get; } = "People";
     public string ContractName { get; } = "People";
     public string FileExtension { get; } = ".mpk";
-    public string? DataRoot { get; } = @"C:\Data\People";
+    public string? DataRoot { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "People");
     public string? ActiveVersion { get; } = "1.0.0";
     public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default;
@@ -84,11 +89,22 @@ public sealed class PersonOptions : IDbContractConfigDto<IPerson>
 }
 ```
 
+Place the following namespaces at the top of your application/configuration files as needed:
+
+```csharp
+using Idb.Libraries.Abstractions.Dtos;
+using Idb.Libraries.Abstractions.Enums;
+using Idb.Libraries.Abstractions.Options;
+using Idb.Libraries.Abstractions.Services.Repository;
+using Microsoft.Extensions.DependencyInjection;
+```
+
 Register it:
 
 ```csharp
 using Idb.Libraries.Implementation.Extensions;
 
+var services = new ServiceCollection();
 services.AddRepository<IPerson>(new PersonOptions());
 ```
 
@@ -101,12 +117,15 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 var personTypes = new StoredRuntimeTypeAllowlist<IPerson>(
     typeof(Student),
-    typeof(Employee));
+    typeof(Employee),
+    typeof(SeniorCitizen));
 
 services.AddRepository(
     new PersonOptions(),
     runtimeTypeAllowlist: personTypes);
 ```
+
+Use this registration instead of the preceding one when supplying the explicit allowlist.
 
 Resolve and initialize:
 
@@ -251,5 +270,7 @@ Durable mode protects InterfaceDB's tested process-crash and multi-process proto
 - Add indexes with the [Feature Guide](features.md).
 - Choose a cache mode in [Storage, Indexing, And Performance](storage-indexing-performance.md).
 - Configure encryption with [Security And Encryption](security.md).
+- Register disposable [notifications](repository-notifications.md) and await `Ready` before your initial query.
 - Introduce new contract versions with [Contract Versioning And Migrations](migrations.md).
 - Tune repository behavior with [Configuration](configuration.md).
+- Check [preview.10 upgrade guidance](preview10-release-notes.md) before opening an existing store.
