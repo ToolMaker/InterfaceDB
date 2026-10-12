@@ -24,12 +24,15 @@ InterfaceDB is not:
 - a relational ORM;
 - a SQL query provider;
 - a distributed database;
-- a remote database server;
 - a document collaboration engine;
 - a persistent full-text or vector search engine;
-- a transactional multi-record store.
+- a distributed transaction coordinator.
 
 An ORM maps objects to relational tables. InterfaceDB owns an object repository model directly and currently persists one envelope-backed object per canonical file.
+
+The optional TCP connector hosts one database in a server process and gives remote clients
+the same repository API with disposable change hints. This preview.11 feature has
+no persistent client database or offline synchronization. See [TCP integration](tcp-repository.md).
 
 ## Comparison
 
@@ -41,7 +44,7 @@ An ORM maps objects to relational tables. InterfaceDB owns an object repository 
 | Exact/range/prefix/suffix/contains indexes | In-memory, attribute-driven | Application-owned | Persistent B-tree/SQL indexes; text extensions vary | Database-backed |
 | Per-object inspectable files | Yes | Usually | No | No |
 | External file change reconciliation | Yes | Application-owned | Not object-file based | No |
-| Multi-record transactions | No | Usually no | Yes | Yes |
+| Multi-record transactions | SegmentCore atomic batches | Usually no | Yes | Yes |
 | Joins/aggregation | No | No | Yes | Yes |
 | Encryption | Optional envelope/field AES-GCM | Application-owned | Provider/platform-dependent | Database/provider-dependent |
 | Server/connection string required | No | No | No for embedded SQLite | Depends on provider |

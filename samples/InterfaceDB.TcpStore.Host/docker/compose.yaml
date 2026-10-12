@@ -1,0 +1,40 @@
+name: interfacedb-tcp-local
+
+services:
+  storage:
+    image: interfacedb-tcp-local:dev
+    build:
+      context: ../../../artifacts/tcp-host-linux
+      dockerfile: ../../samples/InterfaceDB.TcpStore.Host/docker/Dockerfile
+    ports:
+      - "127.0.0.1:${IDB_LOCAL_PORT:-7443}:7443"
+    environment:
+      IDB_SERVER_PFX_PASSWORD: "${IDB_SERVER_PFX_PASSWORD:?Prepare local Docker files and supply --env-file artifacts/tcp-local/.env}"
+    volumes:
+      - type: volume
+        source: database
+        target: /var/lib/interfacedb
+      - type: bind
+        source: ../../../artifacts/tcp-local/config
+        target: /run/interfacedb
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../../../artifacts/tcp-local/certificates/server.pfx
+        target: /run/secrets/server.pfx
+        read_only: true
+        bind:
+          create_host_path: false
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+volumes:
+  database:

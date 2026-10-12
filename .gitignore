@@ -13,3 +13,9 @@ TestResults/
 *.trx
 coverage/
 coverage.*
+# Deployment-owned credentials/configuration; commit only the provided *.example.json files.
+samples/**/hostsettings.json
+samples/**/clientsettings.json
+samples/**/*.pfx
+samples/**/*.key
+samples/**/.env

@@ -1,6 +1,6 @@
 param(
     [string] $PackageDirectory = 'artifacts/packages',
-    [string] $Version = '1.0.0-preview.10'
+    [string] $Version = '1.0.0-preview.11'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,10 +8,12 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $expected = @{
     'InterfaceDB' = 'Idb.Libraries.dll'
     'InterfaceDB.Storage.SegmentCore' = 'InterfaceDB.Storage.SegmentCore.dll'
+    'InterfaceDB.Authentication' = 'InterfaceDB.Authentication.dll'
+    'InterfaceDB.Transport' = 'InterfaceDB.Transport.dll'
 }
-$allowedDependencies = @('InterfaceDB', 'MessagePack', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'RadixForge', 'System.IO.Hashing')
+$allowedDependencies = @('InterfaceDB', 'InterfaceDB.Storage.SegmentCore', 'InterfaceDB.Authentication', 'MessagePack', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'Microsoft.IdentityModel.JsonWebTokens', 'RadixForge', 'System.IO.Hashing')
 $packages = @(Get-ChildItem -LiteralPath $PackageDirectory -Filter '*.nupkg' -File)
-if ($packages.Count -ne $expected.Count) { throw "Expected exactly two public packages, found $($packages.Count)." }
+if ($packages.Count -ne $expected.Count) { throw "Expected exactly $($expected.Count) public packages, found $($packages.Count)." }
 $seen = @{}
 foreach ($package in $packages) {
     $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)

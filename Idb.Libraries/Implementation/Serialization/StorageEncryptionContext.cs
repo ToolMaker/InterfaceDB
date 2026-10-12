@@ -47,7 +47,7 @@ public static class ContextualObjectSerialization
         IObjectEnvelope<TContract> envelope,
         ReadOnlySpan<byte> associatedData)
         where TContract : class, IStoredContract<TContract>
-        => serializer is EncryptingObjectSerializer<TContract> encrypting
+        => serializer is IContextualObjectSerializer<TContract> encrypting
             ? encrypting.Serialize(envelope, associatedData)
             : serializer.Serialize(envelope);
 
@@ -56,7 +56,7 @@ public static class ContextualObjectSerialization
         byte[] payload,
         ReadOnlySpan<byte> associatedData)
         where TContract : class, IStoredContract<TContract>
-        => serializer is EncryptingObjectSerializer<TContract> encrypting
+        => serializer is IContextualObjectSerializer<TContract> encrypting
             ? encrypting.Deserialize(payload, associatedData)
             : serializer.Deserialize(payload);
 
@@ -66,7 +66,7 @@ public static class ContextualObjectSerialization
         ReadOnlySpan<byte> associatedData)
         where TContract : class, IStoredContract<TContract>
     {
-        if (serializer is EncryptingObjectSerializer<TContract> encrypting)
+        if (serializer is IContextualObjectSerializer<TContract> encrypting)
         {
             return encrypting.DeserializeForRead(payload, associatedData);
         }
@@ -84,7 +84,7 @@ public static class ContextualObjectSerialization
         ReadOnlyMemory<byte> payload,
         ReadOnlySpan<byte> associatedData)
         where TContract : class, IStoredContract<TContract>
-        => serializer is EncryptingObjectSerializer<TContract> encrypting
+        => serializer is IContextualObjectSerializer<TContract> encrypting
             ? encrypting.ReadRevision(payload, associatedData)
             : ((IRevisionObjectSerializer<TContract>)serializer).ReadRevision(payload);
 }

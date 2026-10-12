@@ -48,6 +48,33 @@ public sealed class CommittedRevisionObservationTests
         Assert.AreEqual<long?>(42, await coordinator.ReadCommittedRevisionAsync("key", UnexpectedRead, CancellationToken.None));
     }
 
+    [TestMethod]
+    public async Task MetadataPreparationDoesNotMutateTheBorrowedCommittedSnapshot()
+    {
+        await using var fixture = new Fixture(true, enabled: false);
+        var metadata = (Idb.Libraries.Abstractions.Services.Repository.IEnvelopeMetadataRepository<IRecord>)fixture.Repository;
+        var saved = await metadata.SaveWithExtensionMetadataAsync(new Record { Id = "metadata", Value = 7 }, null, [1]);
+        var committed = saved.Envelope!;
+        var lifecycle = fixture.Services.GetRequiredService<IEnvelopeLifecycle<IRecord>>();
+        var candidate = await lifecycle.WrapAsync(saved);
+        candidate.ExtensionMetadata = [2];
+        EnvelopeWriteCoordinator<IRecord>.SetCondition(candidate,
+            new(committed.RevisionTimestampUtcMicroseconds, EnvelopeRevisionAction.MetadataOnly, ExpectedExtensionMetadata: [1]));
+        var coordinator = Create(fixture);
+        using var guard = await coordinator.AcquireAsync(committed.EnvelopeCacheKey, CancellationToken.None);
+
+        var prepared = await coordinator.PrepareWithCurrentAsync(candidate, false, committed.RevisionTimestampUtcMicroseconds,
+            _ => ValueTask.FromResult<IRecord?>(saved), CancellationToken.None);
+
+        // No commit follows: abandoning this prepared write must leave the shared snapshot intact.
+        Assert.AreNotSame(committed, prepared);
+        CollectionAssert.AreEqual(new byte[] { 1 }, committed.ExtensionMetadata);
+        CollectionAssert.AreEqual(new byte[] { 2 }, prepared.ExtensionMetadata);
+        Assert.AreSame(committed, saved.Envelope);
+        prepared.ObjectInstance!.Value = 99;
+        Assert.AreEqual(7, saved.Value);
+    }
+
     private static EnvelopeWriteCoordinator<IRecord> Create(Fixture fixture) => new(fixture.Root,
         fixture.Services.GetRequiredService<IObjectSerializer<IRecord>>(),
         fixture.Services.GetRequiredService<IEnvelopeLifecycle<IRecord>>());

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>InterfaceDB.Transport</PackageId>
+    <Version>1.0.0-preview.11</Version>
+    <Authors>ToolMaker</Authors>
+    <Description>TLS TCP host and typed remote repository for InterfaceDB with configurable envelope serialization.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 11 adds optional public TCP and JWT packages, shared configurable envelope serialization, and avoids redundant TCP metadata decoding. Keep all InterfaceDB packages on the same preview. Existing preview 10 envelope formats are unchanged. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.11/documentation/preview11-release-notes.md</PackageReleaseNotes>
+    <RootNamespace>Idb.Transport</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Idb.Libraries/Idb.Libraries.csproj" />
+    <ProjectReference Include="../InterfaceDB.Authentication/InterfaceDB.Authentication.csproj" />
+    <ProjectReference Include="../InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="MessagePack" Version="3.1.11" />
+    <InternalsVisibleTo Include="InterfaceDB.Transport.Tests" />
+    <!-- Existing separately delivered composition adapter and its regression suite. No private source or dependency is packaged. -->
+    <InternalsVisibleTo Include="InterfaceDB.Commercial.Transport" />
+    <InternalsVisibleTo Include="InterfaceDB.Commercial.Transport.Tests" />
+    <None Update="README.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
+</Project>

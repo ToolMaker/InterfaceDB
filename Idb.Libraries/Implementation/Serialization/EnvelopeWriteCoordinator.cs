@@ -122,7 +122,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         _committed.TryAdd(key, revision);
     }
 
-    public async ValueTask<IObjectEnvelope<TContract>> PrepareAsync(IObjectEnvelope<TContract> candidate, bool isInsert,
+    public ValueTask<IObjectEnvelope<TContract>> PrepareAsync(IObjectEnvelope<TContract> candidate, bool isInsert,
         long? current, Func<CancellationToken, ValueTask<byte[]?>> read, CancellationToken token, bool deleting = false)
     {
         var key = candidate.EnvelopeCacheKey;
@@ -135,9 +135,25 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
             envelope.EnvelopeCacheKey = key; envelope.Location = location;
             return _lifecycle.Unwrap(envelope);
         }
+        return PrepareWithCurrentAsync(candidate, isInsert, current, ReadCurrent, token, deleting);
+    }
+
+    /// <summary>
+    /// Uses a provider's already materialized current record instead of decoding its payload again.
+    /// The provider must hold its authoritative write guard and supply key-validated committed state
+    /// matching <paramref name="current"/>. Custom conflict strategies may edit returned objects;
+    /// providers using those strategies must supply isolated copies.
+    /// </summary>
+    public async ValueTask<IObjectEnvelope<TContract>> PrepareWithCurrentAsync(
+        IObjectEnvelope<TContract> candidate, bool isInsert, long? current,
+        Func<CancellationToken, ValueTask<TContract?>> readCurrent, CancellationToken token, bool deleting = false)
+    {
+        ArgumentNullException.ThrowIfNull(readCurrent);
+        var key = candidate.EnvelopeCacheKey;
+        var location = candidate.Location;
         var expected = candidate.RevisionTimestampUtcMicroseconds;
         Conditions.TryGetValue(candidate, out var condition);
-        var context = new EnvelopeWriteConflict<TContract>(key, expected, current, isInsert || condition?.ExpectedMissing == true, candidate, ReadCurrent);
+        var context = new EnvelopeWriteConflict<TContract>(key, expected, current, isInsert || condition?.ExpectedMissing == true, candidate, readCurrent);
         var decision = condition is null && (_strategy is not StrictTimestampMatchStrategy<TContract> || candidate is RuntimeEditEnvelope<TContract>)
             ? await DecideExtendedAsync(context, deleting, token).ConfigureAwait(false)
             : await (condition is null ? _strategy : new StrictTimestampMatchStrategy<TContract>()).DecideAsync(context, token).ConfigureAwait(false);
@@ -146,7 +162,7 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         if (decision.Disposition == EnvelopeWriteDisposition.NoChange)
         {
             if (deleting || isInsert || current is null) throw new WriteConflictException<TContract>(context);
-            var unchanged = await ReadCurrent(token).ConfigureAwait(false)
+            var unchanged = await readCurrent(token).ConfigureAwait(false)
                 ?? throw new WriteConflictException<TContract>(context);
             return new RuntimeEditEnvelope<TContract>(unchanged.Envelope!, noChange: true);
         }
@@ -155,10 +171,13 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         if (condition?.Action == EnvelopeRevisionAction.MetadataOnly)
         {
             if (current is null || deleting || isInsert) throw new InvalidOperationException("Metadata-only writes require an existing entity.");
-            var existing = await ReadCurrent(token).ConfigureAwait(false);
+            var existing = await readCurrent(token).ConfigureAwait(false);
             if (!(existing?.Envelope?.ExtensionMetadata ?? []).AsSpan().SequenceEqual(condition.ExpectedExtensionMetadata ?? []))
                 throw new WriteConflictException<TContract>(context);
-            resolved = existing!.Envelope!;
+            // A materialized provider may lend its committed envelope. Stage metadata separately
+            // so a failed write cannot alter the committed snapshot.
+            resolved = CopyEnvelope(existing!.Envelope!);
+            resolved.ObjectInstance = existing.Envelope!.ObjectInstance;
             resolved.ExtensionMetadata = candidate.ExtensionMetadata?.ToArray();
         }
         if (resolved.EnvelopeCacheKey != key || resolved.Location != location)

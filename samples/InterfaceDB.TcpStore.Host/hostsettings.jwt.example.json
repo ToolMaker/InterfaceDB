@@ -1,0 +1,52 @@
+{
+  "bindAddress": "127.0.0.1",
+  "port": 7443,
+  "storeAlias": "catalogue",
+  "dataDirectory": "./data/catalogue",
+  "serverCertificatePath": "./secrets/server.pfx",
+  "serverCertificatePasswordEnvironmentVariable": "IDB_SERVER_PFX_PASSWORD",
+  "authenticationMode": "JwtBearer",
+  "identityProviderCaCertificatePath": null,
+  "privateCaRevocationMode": "Online",
+  "trustedClientCertificateSha256": [],
+  "requiredTokenScopes": ["interfacedb.storage"],
+  "jwtValidation": {
+    "authorities": [
+      {
+        "id": "example-keycloak",
+        "issuer": "https://identity.example.com/realms/interfacedb",
+        "audiences": ["interfacedb-storage"],
+        "algorithms": ["RS256"],
+        "tokenTypes": ["JWT"],
+        "requiredClaims": ["scope"],
+        "requiredClaimValues": {"typ": "Bearer"},
+        "metadataAddress": "https://identity.example.com/realms/interfacedb/.well-known/openid-configuration",
+        "jwksAddress": "https://identity.example.com/realms/interfacedb/protocol/openid-connect/certs",
+        "clockSkew": "00:00:30"
+      }
+    ],
+    "maximumTokenBytes": 16384,
+    "maximumDocumentBytes": 262144,
+    "maximumSigningKeys": 64,
+    "refreshInterval": "00:15:00",
+    "minimumRefreshInterval": "00:00:30",
+    "maximumConfigurationAge": "01:00:00",
+    "httpTimeout": "00:00:10"
+  },
+  "manifest": {
+    "apiVersion": "InterfaceDB-remote-v1",
+    "storageEngine": "SegmentCore",
+    "storageFormat": "deployment-format-identity",
+    "envelopeFormat": "deployment-envelope-identity",
+    "contractIdentity": "Example.Catalogue",
+    "contractVersion": "1",
+    "contractSchemaHash": "deployment-contract-schema-hash",
+    "implementationManifestHash": "deployment-implementation-manifest-hash",
+    "indexDefinitionHash": "deployment-index-definition-hash",
+    "approvedBuildIdentity": null
+  },
+  "maximumConnections": 16,
+  "maximumEnumerationKeys": 100000,
+  "maximumSubjectKeys": 10000,
+  "maximumSessionLifetime": "00:05:00"
+}

@@ -27,20 +27,21 @@ jobs:
       - name: Verify tag and package versions
         shell: pwsh
         run: |
-          [xml] $interfaceDbProject = Get-Content -LiteralPath 'Idb.Libraries/Idb.Libraries.csproj'
-          [xml] $segmentCoreProject = Get-Content -LiteralPath 'InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj'
-
-          $interfaceDbVersion = [string] $interfaceDbProject.Project.PropertyGroup.Version
-          $segmentCoreVersion = [string] $segmentCoreProject.Project.PropertyGroup.Version
-          $expectedTag = "v$interfaceDbVersion"
-
-          if ($interfaceDbVersion -ne $segmentCoreVersion) {
-            throw "Package versions do not match: InterfaceDB=$interfaceDbVersion, SegmentCore=$segmentCoreVersion."
+          $projects = @('Idb.Libraries/Idb.Libraries.csproj',
+            'InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj',
+            'InterfaceDB.Authentication/InterfaceDB.Authentication.csproj',
+            'InterfaceDB.Transport/InterfaceDB.Transport.csproj')
+          foreach ($project in $projects) {
+            [xml] $xml = Get-Content -LiteralPath $project
+            $version = [string] $xml.Project.PropertyGroup.Version
+            if ($env:GITHUB_REF_NAME -ne "v$version") {
+              throw "Release tag does not match $project version $version."
+            }
           }
 
-          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
-            throw "Release tag '$env:GITHUB_REF_NAME' does not match package version '$expectedTag'."
-          }
+      - name: Verify public source boundary
+        shell: pwsh
+        run: ./Scripts/Test-PublicSourceBoundary.ps1
 
       - name: Restore
         run: dotnet restore InterfaceDB.sln
@@ -57,6 +58,12 @@ jobs:
       - name: Test SegmentCore provider
         run: dotnet test InterfaceDB.Storage.SegmentCore.Tests/InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
 
+      - name: Test TCP
+        run: dotnet test InterfaceDB.Transport.Tests/InterfaceDB.Transport.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Test authentication
+        run: dotnet test InterfaceDB.Authentication.Tests/InterfaceDB.Authentication.Tests.csproj -c Release --no-build --no-restore
+
       - name: Verify benchmark object-materialization contract
         run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test
 
@@ -70,6 +77,8 @@ jobs:
         run: |
           dotnet pack Idb.Libraries/Idb.Libraries.csproj -c Release --no-build --no-restore --output artifacts/packages
           dotnet pack InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore --output artifacts/packages
+          dotnet pack InterfaceDB.Authentication/InterfaceDB.Authentication.csproj -c Release --no-build --no-restore --output artifacts/packages
+          dotnet pack InterfaceDB.Transport/InterfaceDB.Transport.csproj -c Release --no-build --no-restore --output artifacts/packages
 
       - name: Verify public package boundary
         shell: pwsh

@@ -1,5 +1,12 @@
 # InterfaceDB Roadmap
 
+## Preview.11: direct TCP access
+
+The MIT source now includes an online TCP connector, JWT authentication, a runnable host and
+disposable pub/sub subscriptions. Client requests use one remote database; local database
+composition and offline synchronization are outside this connector. MessagePack remains open
+source. See [integration](tcp-repository.md) and [release notes](preview11-release-notes.md).
+
 ## Current Baseline
 
 The file-backed provider currently includes:

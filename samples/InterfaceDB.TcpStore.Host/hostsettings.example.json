@@ -1,0 +1,34 @@
+{
+  "bindAddress": "127.0.0.1",
+  "port": 7443,
+  "storeAlias": "catalogue",
+  "dataDirectory": "./data/catalogue",
+  "serverCertificatePath": "./secrets/server.pfx",
+  "serverCertificatePasswordEnvironmentVariable": "IDB_SERVER_PFX_PASSWORD",
+  "trustedClientCertificateSha256": [
+    "REPLACE_WITH_64_HEXADECIMAL_CHARACTERS_FROM_THE_CLIENT_CERTIFICATE_SHA256"
+  ],
+  "manifest": {
+    "apiVersion": "InterfaceDB-remote-v1",
+    "storageEngine": "SegmentCore",
+    "storageFormat": "deployment-format-identity",
+    "envelopeFormat": "deployment-envelope-identity",
+    "contractIdentity": "Example.Catalogue",
+    "contractVersion": "1",
+    "contractSchemaHash": "deployment-contract-schema-hash",
+    "implementationManifestHash": "deployment-implementation-manifest-hash",
+    "indexDefinitionHash": "deployment-index-definition-hash",
+    "approvedBuildIdentity": null
+  },
+  "maximumConnections": 16,
+  "maximumEnumerationKeys": 100000,
+  "maximumSubjectKeys": 10000,
+  "maximumSessionLifetime": "00:05:00",
+  "limits": {
+    "maximumFrameBytes": 8388608,
+    "maximumPayloadBytes": 4194304,
+    "maximumKeyBytes": 1024,
+    "maximumBatchItems": 64,
+    "maximumPageItems": 128
+  }
+}

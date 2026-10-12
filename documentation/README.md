@@ -10,7 +10,12 @@ Start with these documents:
 
 Use the focused guides when needed:
 
-- [Public package overview](../Idb.Libraries/README.md): current preview.10 behavior, examples, defaults and upgrade requirements.
+- [Online TCP repository](tcp-repository.md): direct remote access and disposable pub/sub, without a local client database; added in preview.11.
+- [TCP hosting](tcp-transport.md): TLS listener, persistent server storage, Docker and operating limits.
+- [JWT authentication](jwt-authentication.md): supplied user tokens, service credentials and Keycloak configuration.
+- [Preview.11 Release Notes](preview11-release-notes.md): public TCP/authentication packages, serializer reuse and upgrade guidance.
+
+- [Public package overview](../Idb.Libraries/README.md): current preview.11 behavior, examples, defaults and upgrade requirements.
 - [Preview.10 Release Notes](preview10-release-notes.md): subscription readiness, running versions, migration corrections, updated dependencies and combined upgrade guidance.
 - [Preview.9 Release Notes](preview9-release-notes.md): context-bound encryption, runtime-type enrollment, input limits, encrypted-index isolation and hardened SegmentCore restore.
 - [Preview.8 Release Notes](preview8-release-notes.md): expanded NuGet documentation; unchanged preview.7 runtime.
@@ -19,6 +24,7 @@ Use the focused guides when needed:
 - [Optional compaction maintenance controls](compaction-maintenance.md): scheduling policies, candidate selection, shared I/O admission and separate maintenance summaries; current integration limits are explicit.
 - [Envelope revisions](envelope-revisions.md): conditional writes, compatibility, metadata import, and storage ownership.
 - [Security And Encryption](security.md): threat boundaries, AES-GCM, encrypted fields, key storage, and rotation.
+- [Serializer registration](serializer-configuration.md): keyed envelope serializers, revision support and authenticated encryption wrappers; preview.11 support.
 - [Configuration](configuration.md): repository options, storage policies, coordination, and multiple registrations.
 - [Repository Notifications](repository-notifications.md): free Created/Changed/Deleted subscriptions, property changes, filters, loop prevention, lifetimes and limits.
 - [Repository Notification Costs](repository-notifications-performance-20260905.md): disabled and subscribed measurements for File and Segment Core.

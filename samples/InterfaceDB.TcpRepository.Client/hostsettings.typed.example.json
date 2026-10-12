@@ -1,0 +1,33 @@
+{
+  "bindAddress": "127.0.0.1",
+  "port": 7444,
+  "storeAlias": "example-profiles",
+  "dataDirectory": "./typed-data",
+  "serverCertificatePath": "./server.pfx",
+  "serverCertificatePasswordEnvironmentVariable": "IDB_SERVER_PFX_PASSWORD",
+  "authenticationMode": "JwtBearer",
+  "isolateBySubject": true,
+  "requiredTokenScopes": ["interfacedb.storage"],
+  "jwtValidation": {
+    "authorities": [{
+      "id": "keycloak",
+      "issuer": "https://identity.example.test/realms/example",
+      "audiences": ["interfacedb-storage"],
+      "tokenTypes": ["JWT"],
+      "requiredClaimValues": {"typ": "Bearer"},
+      "metadataAddress": "https://identity.example.test/realms/example/.well-known/openid-configuration",
+      "jwksAddress": "https://identity.example.test/realms/example/protocol/openid-connect/certs"
+    }]
+  },
+  "manifest": {
+    "apiVersion": "InterfaceDB-remote-v1",
+    "storageEngine": "SegmentCore",
+    "storageFormat": "repository-example-v1",
+    "envelopeFormat": "IDB6-TCP-Repository-v1",
+    "contractIdentity": "ExampleProfile",
+    "contractVersion": "1.0.0",
+    "contractSchemaHash": "example-profile-display-name-counter-v1",
+    "implementationManifestHash": "InterfaceDB.TcpRepository.Client:ExampleProfile:v1",
+    "indexDefinitionHash": "display-name-exact-v1"
+  }
+}

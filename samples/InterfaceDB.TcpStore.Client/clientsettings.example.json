@@ -1,0 +1,30 @@
+{
+  "host": "localhost",
+  "port": 7443,
+  "targetHost": "localhost",
+  "storeAlias": "catalogue",
+  "authenticationMode": "JwtBearer",
+  "serverCaCertificatePath": null,
+  "identityProviderCaCertificatePath": null,
+  "privateCaRevocationMode": "Online",
+  "clientCredentials": {
+    "authority": "https://identity.example.com/realms/interfacedb",
+    "clientId": "interfacedb-service",
+    "clientSecretEnvironmentVariable": "IDB_CLIENT_SECRET",
+    "scope": "interfacedb.storage",
+    "authenticationMethod": "Basic",
+    "requestTimeout": "00:00:15"
+  },
+  "manifest": {
+    "apiVersion": "InterfaceDB-remote-v1",
+    "storageEngine": "SegmentCore",
+    "storageFormat": "deployment-format-identity",
+    "envelopeFormat": "deployment-envelope-identity",
+    "contractIdentity": "Example.Catalogue",
+    "contractVersion": "1",
+    "contractSchemaHash": "deployment-contract-schema-hash",
+    "implementationManifestHash": "deployment-implementation-manifest-hash",
+    "indexDefinitionHash": "deployment-index-definition-hash",
+    "approvedBuildIdentity": null
+  }
+}

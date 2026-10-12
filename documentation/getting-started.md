@@ -4,8 +4,7 @@ This guide shows the smallest useful InterfaceDB setup: define a contract, imple
 
 Install the pre-release package and the standard DI implementation used by these examples:
 
-Use a .NET 10 application. These examples describe preview.10; until that version is published,
-use a project reference or the locally prepared NuGet feed. Pin `--version 1.0.0-preview.10`
+Use a .NET 10 application. These examples describe preview.11. Pin `--version 1.0.0-preview.11`
 when adopting that release. Source builds also require the compiler version in `global.json`.
 
 ```powershell
@@ -273,4 +272,4 @@ Durable mode protects InterfaceDB's tested process-crash and multi-process proto
 - Register disposable [notifications](repository-notifications.md) and await `Ready` before your initial query.
 - Introduce new contract versions with [Contract Versioning And Migrations](migrations.md).
 - Tune repository behavior with [Configuration](configuration.md).
-- Check [preview.10 upgrade guidance](preview10-release-notes.md) before opening an existing store.
+- Check [preview.11 upgrade guidance](preview11-release-notes.md) before opening an existing store.

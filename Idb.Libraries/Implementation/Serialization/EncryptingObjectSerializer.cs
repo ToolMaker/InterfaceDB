@@ -9,13 +9,15 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// Applies encryption after envelope serialization and decryption before deserialization.
 /// </summary>
 public sealed class EncryptingObjectSerializer<TContract> :
-    IRevisionObjectSerializer<TContract>,
-    IRotationAwareObjectSerializer<TContract>
+    IContextualObjectSerializer<TContract>
     where TContract : class, IStoredContract<TContract>
 {
-    private readonly BinaryObjectSerializer<TContract> _serializer;
+    private readonly IRevisionObjectSerializer<TContract> _serializer;
+    private readonly int _maximumPayloadBytes;
+    public IEncryptor Encryptor => _encryptor;
     private readonly IEncryptor _encryptor;
     private readonly bool _encryptionDisabled;
+    private readonly bool _delegateUnencryptedStreams;
 
     public long ReadRevision(ReadOnlyMemory<byte> payload)
     {
@@ -32,9 +34,10 @@ public sealed class EncryptingObjectSerializer<TContract> :
 
     public async ValueTask<long> ReadRevisionAsync(Stream source, CancellationToken cancellationToken = default)
     {
-        if (_encryptionDisabled) return await _serializer.ReadRevisionAsync(source, cancellationToken).ConfigureAwait(false);
+        if (_encryptionDisabled && _delegateUnencryptedStreams)
+            return await _serializer.ReadRevisionAsync(source, cancellationToken).ConfigureAwait(false);
         var payload = await BoundedStoredPayload
-            .ReadStreamAsync(source, _serializer.MaximumPayloadBytes, cancellationToken)
+            .ReadStreamAsync(source, _maximumPayloadBytes, cancellationToken)
             .ConfigureAwait(false);
         return ReadRevision(payload);
     }
@@ -42,7 +45,20 @@ public sealed class EncryptingObjectSerializer<TContract> :
     public EncryptingObjectSerializer(
         BinaryObjectSerializer<TContract> serializer,
         IEncryptor encryptor)
+        : this(serializer, encryptor, serializer?.MaximumPayloadBytes ?? throw new ArgumentNullException(nameof(serializer)))
     {
+        // Preserve the existing streaming/header-only paths when the binary serializer owns its bounds.
+        _delegateUnencryptedStreams = true;
+    }
+
+    /// <summary>Wraps any revision-aware envelope format with the existing authenticated encryption policy.</summary>
+    public EncryptingObjectSerializer(
+        IRevisionObjectSerializer<TContract> serializer,
+        IEncryptor encryptor,
+        int maximumPayloadBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumPayloadBytes);
+        _maximumPayloadBytes = maximumPayloadBytes;
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
         _encryptionDisabled = encryptor is EncryptionNone;
@@ -185,12 +201,12 @@ public sealed class EncryptingObjectSerializer<TContract> :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(destination);
-        if (_encryptionDisabled)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_encryptionDisabled && _delegateUnencryptedStreams)
         {
             await _serializer.SerializeAsync(envalope, destination, cancellationToken).ConfigureAwait(false);
             return;
         }
-
         var payload = Serialize(envalope);
         await destination.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
     }
@@ -200,17 +216,14 @@ public sealed class EncryptingObjectSerializer<TContract> :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
-        if (_encryptionDisabled)
-        {
+        if (_encryptionDisabled && _delegateUnencryptedStreams)
             return await _serializer.DeserializeAsync(source, cancellationToken).ConfigureAwait(false);
-        }
-
         var payload = await BoundedStoredPayload
-            .ReadStreamAsync(source, _serializer.MaximumPayloadBytes, cancellationToken)
+            .ReadStreamAsync(source, _maximumPayloadBytes, cancellationToken)
             .ConfigureAwait(false);
         return Deserialize(payload);
     }
 
     private void ValidateLength(long length)
-        => _ = BoundedStoredPayload.ValidateLength(length, _serializer.MaximumPayloadBytes);
+        => _ = BoundedStoredPayload.ValidateLength(length, _maximumPayloadBytes);
 }

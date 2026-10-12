@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>InterfaceDB.Authentication</PackageId>
+    <Version>1.0.0-preview.11</Version>
+    <Authors>ToolMaker</Authors>
+    <Description>JWT validation and OAuth service token providers for InterfaceDB.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 11 adds optional public TCP and JWT packages, shared configurable envelope serialization, and avoids redundant TCP metadata decoding. Keep all InterfaceDB packages on the same preview. Existing preview 10 envelope formats are unchanged. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.11/documentation/preview11-release-notes.md</PackageReleaseNotes>
+    <RootNamespace>Idb.Authentication</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
+    <None Update="README.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
+</Project>

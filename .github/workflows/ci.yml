@@ -21,6 +21,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify public source boundary
+        shell: pwsh
+        run: ./Scripts/Test-PublicSourceBoundary.ps1
+
       - name: Restore
         run: dotnet restore InterfaceDB.sln
 
@@ -36,6 +40,12 @@ jobs:
       - name: Test SegmentCore provider
         run: dotnet test InterfaceDB.Storage.SegmentCore.Tests\InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
 
+      - name: Test TCP
+        run: dotnet test InterfaceDB.Transport.Tests/InterfaceDB.Transport.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Test authentication
+        run: dotnet test InterfaceDB.Authentication.Tests/InterfaceDB.Authentication.Tests.csproj -c Release --no-build --no-restore
+
       - name: Verify benchmark object-materialization contract
         run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test
 
@@ -44,8 +54,14 @@ jobs:
 
       - name: Pack public packages
         run: |
-          dotnet pack Idb.Libraries\Idb.Libraries.csproj -c Release --no-build --no-restore
-          dotnet pack InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore
+          dotnet pack Idb.Libraries\Idb.Libraries.csproj -c Release --no-build --no-restore --output artifacts/packages
+          dotnet pack InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore --output artifacts/packages
+          dotnet pack InterfaceDB.Authentication/InterfaceDB.Authentication.csproj -c Release --no-build --no-restore --output artifacts/packages
+          dotnet pack InterfaceDB.Transport/InterfaceDB.Transport.csproj -c Release --no-build --no-restore --output artifacts/packages
+
+      - name: Verify public package boundary
+        shell: pwsh
+        run: ./Scripts/Test-PublicPackageBoundary.ps1
 
       - name: Run integration harness
         run: dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationTests
@@ -62,6 +78,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify public source boundary
+        shell: pwsh
+        run: ./Scripts/Test-PublicSourceBoundary.ps1
+
       - name: Restore
         run: dotnet restore InterfaceDB.sln
 
@@ -73,6 +93,12 @@ jobs:
 
       - name: Test SegmentCore provider
         run: dotnet test InterfaceDB.Storage.SegmentCore.Tests/InterfaceDB.Storage.SegmentCore.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Test TCP
+        run: dotnet test InterfaceDB.Transport.Tests/InterfaceDB.Transport.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Test authentication
+        run: dotnet test InterfaceDB.Authentication.Tests/InterfaceDB.Authentication.Tests.csproj -c Release --no-build --no-restore
 
       - name: Verify benchmark object-materialization contract
         run: dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test

@@ -1,0 +1,7 @@
+{
+  "host": "localhost",
+  "port": 7444,
+  "targetHost": "localhost",
+  "storeAlias": "example-profiles",
+  "accessTokenEnvironmentVariable": "IDB_USER_ACCESS_TOKEN"
+}

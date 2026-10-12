@@ -22,7 +22,16 @@ InterfaceDB is not an ORM. An ORM maps objects to a relational model. InterfaceD
 
 InterfaceDB is a strong fit for desktop applications, local-first tools, embedded application data, offline workloads, and systems where object-native persistence and architectural boundaries matter more than relational joins.
 
-It is not currently a replacement for a server database when you need distributed transactions, SQL joins, remote multi-user access, replication, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
+It is not currently a replacement for a server database when you need distributed transactions, SQL joins, replication, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
+
+## Optional online TCP access — preview.11
+
+The MIT `InterfaceDB.Transport` connector uses `IRepository<T>` against one remote database,
+with TLS/JWT access and disposable pub/sub refresh hints. It creates no persistent client database
+and has no offline fallback or queued writes. The server owns its database files.
+`InterfaceDB.Authentication` provides the optional JWT/OIDC services; embedded users need neither package.
+Preview.11 adds these optional packages. See the [release notes](documentation/preview11-release-notes.md) and [validation status](documentation/preview11-validation.md).
+See [online TCP integration](documentation/tcp-repository.md) and [hosting](documentation/tcp-transport.md).
 
 ## The Programming Model
 
@@ -162,9 +171,13 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Roslyn diagnostics that protect immutable contract baselines.
 - Pluggable SegmentCore append-only storage with atomic bulk transactions, grouped WAL durability, retained-WAL seek boundaries, full/delta checkpoints, automatic paged primary locators, conditional persisted secondary-index catalogs, bounded streaming/integrity verification, provider migration, quota-controlled online backup/restore, and interruption-safe background compaction.
 
+## Preview.11 Changes
+
+Preview.11 adds public TCP/authentication packages and shared configurable envelope serialization. TCP metadata updates reuse the current materialized envelope; default storage and wire formats are unchanged. See the [preview.11 upgrade guide](documentation/preview11-release-notes.md).
+
 ## Preview.10 Changes
 
-The next public preview adds subscription readiness, running contract-version reporting, provider-owned revision clocks, updated dependencies and native SegmentCore migration fixes. Encrypted properties are restored before conversion, and incorrect canonical source versions are rejected. See the [preview.10 release notes](documentation/preview10-release-notes.md) for API compatibility and upgrades from preview.8 or preview.9.
+Preview.10 added subscription readiness, running contract-version reporting, provider-owned revision clocks, updated dependencies and native SegmentCore migration fixes. Encrypted properties are restored before conversion, and incorrect canonical source versions are rejected. See the [preview.10 release notes](documentation/preview10-release-notes.md) for API compatibility and upgrades from preview.8 or preview.9.
 
 ## Preview.9 Security Changes
 
