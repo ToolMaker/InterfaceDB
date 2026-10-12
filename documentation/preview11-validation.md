@@ -1,7 +1,21 @@
 # Preview.11 release validation — 12 October 2026
 
-Status: release approved; local release gates passed. GitHub release and public-feed verification pending.
-All four source package projects are now version `1.0.0-preview.11`.
+Status: **NuGet uploads accepted on 12 October 2026; public download verification pending**.
+All four public package projects are version `1.0.0-preview.11`.
+
+## Publication progress
+
+- Release source: commit `7a7cf9d1eebe1c8f01ec18d2f510f7b0b8ee07cb`, tag `v1.0.0-preview.11`.
+- [Windows and Linux CI](https://github.com/ToolMaker/InterfaceDB/actions/runs/38294972092): both jobs passed.
+- [Release workflow](https://github.com/ToolMaker/InterfaceDB/actions/runs/38295607854): verification, packing and publication passed. Its Linux test run had 753 passes, two platform skips and zero failures.
+- NuGet accepted uploads of InterfaceDB, InterfaceDB.Storage.SegmentCore, InterfaceDB.Authentication
+  and InterfaceDB.Transport at 19:11 UTC on 12 October 2026.
+- Public-feed checks after upload have not yet returned preview.11. Public download, downloaded-package
+  boundary checks and a fresh NuGet.org-only consumer remain pending. Successful candidate-package
+  consumption below does not establish that the public feed is ready.
+
+The hosted runs add Windows/Linux correctness to the local checks below. Live Keycloak, Docker,
+physical power-loss and device qualification were not rerun for this release.
 
 ## Approved release candidate
 
@@ -83,8 +97,9 @@ The complete public solution was rebuilt and tested in Release after this follow
 | TCP | 162 passed |
 | Total | **751 passed, 4 skipped, 0 failed** |
 
-The package and clean-consumer checks above predate this follow-up. Candidate packages must be
-rebuilt before publication; this follow-up has not published or updated any NuGet package.
+At this historical preparation stage, the earlier package checks predated the serialization
+follow-up. The approved release candidate above supersedes that rebuild gap. The final release
+workflow rebuilt and uploaded the packages; verification of public-feed downloads remains pending.
 
 See [release preparation](releasing.md), [online integration](tcp-repository.md),
 [hosting](tcp-transport.md) and [authentication](jwt-authentication.md).

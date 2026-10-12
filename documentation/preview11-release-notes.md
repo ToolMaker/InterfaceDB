@@ -1,6 +1,6 @@
 # InterfaceDB 1.0.0-preview.11
 
-Status: **release approved; publication verification pending**. All four public packages are version `1.0.0-preview.11`.
+Status: **NuGet uploads accepted on 12 October 2026; public download verification pending**. All four public packages are version `1.0.0-preview.11`.
 
 ## Serializer abstraction groundwork
 
@@ -31,7 +31,7 @@ No new serialization format or gRPC transport is implemented by these changes.
   consumers must rebuild and update namespace imports; the TCP wire and envelope formats are unchanged.
 
 See [online integration](tcp-repository.md), [hosting](tcp-transport.md) and [JWT setup](jwt-authentication.md).
-Publication is being prepared through the tag-triggered release workflow. This release does not depend on a future gRPC implementation.
+The [tag-triggered release workflow](https://github.com/ToolMaker/InterfaceDB/actions/runs/38295607854) passed and NuGet accepted all four package uploads. Public-feed availability and a clean restore from NuGet.org are still pending; candidate-package consumption already passed. This release does not depend on a future gRPC implementation.
 
 ## Upgrade from preview.10
 
