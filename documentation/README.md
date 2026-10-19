@@ -10,6 +10,8 @@ Start with these documents:
 
 Use the focused guides when needed:
 
+- [Telemetry](telemetry.md): opt-in bounded logs, metrics and traces; current source, not published preview.11.
+
 - [Online TCP repository](tcp-repository.md): direct remote access and disposable pub/sub, without a local client database; added in preview.11.
 - [TCP hosting](tcp-transport.md): TLS listener, persistent server storage, Docker and operating limits.
 - [JWT authentication](jwt-authentication.md): supplied user tokens, service credentials and Keycloak configuration.

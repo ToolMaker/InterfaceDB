@@ -8,6 +8,8 @@ namespace Idb.Libraries.Abstractions.Options;
 /// </summary>
 public sealed record StoragePolicy
 {
+    /// <summary>Borrowed, optional diagnostics supplied at the composition root. Null preserves the disabled fast path.</summary>
+    public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     /// <summary>Null disables historical editing. Finite leases do not survive process/store restart.</summary>
     public RetainedVersionOptions? RetainedVersions { get; init; }
     /// <summary>

@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -15,6 +16,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     private readonly SslStream _stream;
     private readonly SemaphoreSlim _requestGate = new(1, 1);
     private readonly TimeSpan _operationTimeout;
+    private readonly IDatabaseTelemetry? _telemetry;
     private long _correlationId = 1;
     private int _disposed;
     private int _broken;
@@ -25,6 +27,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
         _tcp = tcp;
         _stream = stream;
         _operationTimeout = options.OperationTimeout;
+        _telemetry = options.Telemetry;
         Limits = limits;
         Capabilities = capabilities;
     }
@@ -33,7 +36,8 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     public static async ValueTask<CompatibilityManifest> DiscoverAsync(TcpStoreClientOptions options, CancellationToken token = default)
     {
         await using var discovery = await ConnectCoreAsync(options with
-            { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits }, false, token, true).ConfigureAwait(false);
+            { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits
+                | (options.RequiredCapabilities & TransportValidation.ScopeCapabilities) }, false, token, true).ConfigureAwait(false);
         return discovery.RemoteManifest;
     }
     public TransportLimits Limits { get; }
@@ -42,7 +46,18 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     public static ValueTask<TcpEncodedEnvelopeStore> ConnectAsync(TcpStoreClientOptions options,
         CancellationToken cancellationToken = default) => ConnectCoreAsync(options, false, cancellationToken);
 
-    internal static async ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsync(TcpStoreClientOptions options,
+    internal static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsync(TcpStoreClientOptions options,
+        bool subscription, CancellationToken cancellationToken, bool discovery = false)
+        => options is null ? ValueTask.FromException<TcpEncodedEnvelopeStore>(new ArgumentNullException(nameof(options)))
+            : !DatabaseTelemetryOperation.IsEnabled(options.Telemetry) ? ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery)
+            : ConnectCoreAsyncObserved(options, subscription, cancellationToken, discovery);
+
+    private static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncObserved(TcpStoreClientOptions options,
+        bool subscription, CancellationToken cancellationToken, bool discovery = false)
+        => TransportTelemetry.ObserveAsync(options.Telemetry, DatabaseComponent.TcpClient, DatabaseOperation.Connect,
+                () => ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery), log: true, bytes: 0);
+
+    private static async ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncUnobserved(TcpStoreClientOptions options,
         bool subscription, CancellationToken cancellationToken, bool discovery = false)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -127,7 +142,11 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     public async ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request,
         CancellationToken cancellationToken = default)
     {
+        var telemetry = DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.TcpClient, request is null ? DatabaseOperation.Unknown : TransportTelemetry.Operation(request.Command), log: true);
+        try
+        {
         ThrowIfUnavailable();
+        ArgumentNullException.ThrowIfNull(request);
         TransportValidation.Request(request, Limits);
         if ((Capabilities & request.RequiredCapability) != request.RequiredCapability)
             throw new RemoteStoreException(RemoteErrorCode.UnsupportedCapability, "The negotiated store does not support this operation.");
@@ -175,6 +194,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 or RemoteErrorCode.AuthenticationExpired or RemoteErrorCode.AuthenticationRequired)
                 BreakConnection();
             ThrowRemoteError(reply.Error);
+            telemetry.Complete(frame.Length);
             return reply.Response!;
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -186,6 +206,8 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
         {
             if (acquired) _requestGate.Release();
         }
+        }
+        catch (Exception exception) { TransportTelemetry.Fail(telemetry, exception); throw; }
     }
 
     private static void ValidateResponse(EncodedStoreRequest request, EncodedStoreResponse response)

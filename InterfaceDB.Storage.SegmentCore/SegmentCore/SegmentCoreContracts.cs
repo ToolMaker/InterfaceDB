@@ -17,6 +17,7 @@ public enum SegmentCorePrimaryIndexMode
 
 public sealed record SegmentCoreOptions
 {
+    public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     public Idb.Libraries.Abstractions.Options.RetainedVersionOptions? RetainedVersions { get; init; }
     public StripedObjectLogProbeOptions LogOptions { get; init; } = new()
     {

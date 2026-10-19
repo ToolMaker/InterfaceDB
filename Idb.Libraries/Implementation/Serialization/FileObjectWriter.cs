@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Dtos;
@@ -73,7 +74,21 @@ namespace Idb.Libraries.Implementation.Serialization
         CancellationToken cancellationToken = default)
             => WriteCoreAsync(objectInstance, batchScope: null, cancellationToken);
 
-        private async ValueTask<TContract> WriteCoreAsync(
+        private ValueTask<TContract> WriteCoreAsync(
+            TContract objectInstance,
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
+            CancellationToken cancellationToken)
+            => !DatabaseTelemetryOperation.IsEnabled(_storagePolicy.Telemetry) ? WriteCoreAsyncUnobserved(objectInstance, batchScope, cancellationToken)
+                : WriteCoreAsyncObserved(objectInstance, batchScope, cancellationToken);
+
+        private ValueTask<TContract> WriteCoreAsyncObserved(
+            TContract objectInstance,
+            CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
+            CancellationToken cancellationToken)
+            => DatabaseTelemetryOperation.ObserveAsync(_storagePolicy.Telemetry, DatabaseComponent.File, DatabaseOperation.Save,
+                    () => WriteCoreAsyncUnobserved(objectInstance, batchScope, cancellationToken), log: true, bytes: 0);
+
+        private async ValueTask<TContract> WriteCoreAsyncUnobserved(
             TContract objectInstance,
             CoalescingFileWriteCoordinator<TContract>.WriterBatchScope? batchScope,
             CancellationToken cancellationToken)
@@ -525,7 +540,15 @@ namespace Idb.Libraries.Implementation.Serialization
             }
         }
 
-        public async ValueTask<bool> DeleteAsync(TContract entity, CancellationToken cancellationToken = default)
+        public ValueTask<bool> DeleteAsync(TContract entity, CancellationToken cancellationToken = default)
+            => !DatabaseTelemetryOperation.IsEnabled(_storagePolicy.Telemetry) ? DeleteAsyncUnobserved(entity, cancellationToken)
+                : DeleteAsyncObserved(entity, cancellationToken);
+
+        private ValueTask<bool> DeleteAsyncObserved(TContract entity, CancellationToken cancellationToken = default)
+            => DatabaseTelemetryOperation.ObserveAsync(_storagePolicy.Telemetry, DatabaseComponent.File, DatabaseOperation.Delete,
+                    () => DeleteAsyncUnobserved(entity, cancellationToken), log: true, bytes: 0);
+
+        private async ValueTask<bool> DeleteAsyncUnobserved(TContract entity, CancellationToken cancellationToken = default)
         {
             EnvelopeResolverScope.ThrowIfActive();
             var envelope = entity.Envelope ?? throw new InvalidOperationException("An existing envelope is required.");

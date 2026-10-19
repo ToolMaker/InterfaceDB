@@ -1,3 +1,5 @@
+using Idb.Diagnostics;
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Security;
 using System.Runtime.InteropServices;
@@ -30,6 +32,9 @@ try
             }
         }) ?? throw new ArgumentException("The host configuration is empty.");
     configuration.Validate();
+    await using var telemetry = configuration.TelemetryEnabled
+        ? new DatabaseTelemetry(new() { TcpTraces = configuration.TelemetryTcpTraces,
+            TraceSampleRatio = configuration.TelemetryTraceSampleRatio }, new HostTelemetryLogger()) : null;
     using var identityProviderCa = configuration.IdentityProviderCaCertificatePath is null ? null
         : X509CertificateLoader.LoadCertificateFromFile(Path.GetFullPath(configuration.IdentityProviderCaCertificatePath, configurationDirectory));
     if (identityProviderCa is not null && (!CertificateTrust.IsCurrentlyValid(identityProviderCa)
@@ -68,19 +73,20 @@ try
             legacyStoreDirectory: configuration.LegacyStoreDirectory is { } legacy
                 ? Path.GetFullPath(legacy, configurationDirectory) : null,
             legacyManifest: configuration.Manifest,
-            maximumPartitionKeys: configuration.MaximumSubjectKeys);
+            maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry);
         owner = master; registration = master.Registration;
     }
     else
     {
         var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(
             Path.GetFullPath(configuration.DataDirectory, configurationDirectory), configuration.Limits,
-            configuration.MaximumEnumerationKeys, maximumPartitionKeys: configuration.MaximumSubjectKeys);
+            configuration.MaximumEnumerationKeys, maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry);
         owner = store; registration = new(configuration.StoreAlias, configuration.Manifest, store);
     }
     await using var lifetime = new HostLifetime(owner);
     var host = await TcpStoreHost.StartAsync(new TcpStoreHostOptions
     {
+        Telemetry = telemetry,
         ListenEndPoint = new IPEndPoint(IPAddress.Parse(configuration.BindAddress), configuration.Port),
         ServerCertificate = certificate,
         Stores = [registration],
@@ -105,7 +111,7 @@ try
         },
         AuthorizeClient = (client, alias) => string.Equals(alias, configuration.StoreAlias, StringComparison.Ordinal)
             && IsTrustedClient(client),
-        OnError = error => Console.Error.WriteLine($"Transport connection error: {error.GetType().Name}.")
+        OnError = telemetry is null ? error => Console.Error.WriteLine($"Transport connection error: {error.GetType().Name}.") : null
     });
     lifetime.Host = host;
 
@@ -168,6 +174,9 @@ catch (Exception error)
 
 internal sealed class HostConfiguration
 {
+    public bool TelemetryEnabled { get; init; }
+    public bool TelemetryTcpTraces { get; init; }
+    public double TelemetryTraceSampleRatio { get; init; } = 0.01;
     public string BindAddress { get; init; } = "127.0.0.1";
     public int Port { get; init; } = 7443;
     public required string StoreAlias { get; init; }
@@ -287,5 +296,22 @@ internal sealed class HostLifetime(IAsyncDisposable store) : IAsyncDisposable
     {
         try { if (Host is not null) await Host.DisposeAsync().ConfigureAwait(false); }
         finally { await store.DisposeAsync().ConfigureAwait(false); }
+    }
+}
+
+// Invoked only on DatabaseTelemetry's bounded background dispatcher.
+internal sealed class HostTelemetryLogger : ILogger<DatabaseTelemetry>
+{
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel level) => level >= LogLevel.Warning && level < LogLevel.None;
+    public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        if (IsEnabled(level)) Console.Error.WriteLine(JsonSerializer.Serialize(new
+        {
+            Timestamp = DateTimeOffset.UtcNow, Level = level.ToString(), Event = eventId.Id,
+            Fields = state is IEnumerable<KeyValuePair<string, object?>> fields
+                ? fields.Where(pair => pair.Key != "{OriginalFormat}").ToDictionary(pair => pair.Key, pair => pair.Value) : null
+        }));
     }
 }

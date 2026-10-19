@@ -62,6 +62,9 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         if (Conditions.TryGetValue(source, out var condition)) SetCondition(target, condition);
     }
 
+    internal static bool ExpectsMissing(IObjectEnvelope<TContract> envelope)
+        => Conditions.TryGetValue(envelope, out var condition) && condition.ExpectedMissing;
+
     /// <summary>Embedded providers exclusively own the raw store, including its one-writer-process lease.</summary>
     public async ValueTask<IDisposable> AcquireAsync(string key, CancellationToken token)
     {

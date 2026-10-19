@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Idb.Diagnostics;
 using System.Net.Security;
 using System.Threading.Channels;
 using Idb.Authentication;
@@ -13,12 +14,12 @@ public sealed partial class TcpStoreHost
     /// <summary>Current registered remote listeners; useful for health checks and shutdown verification.</summary>
     public int ActiveSubscriptions => _watches.Count;
 
-    private string Partition(AuthenticatedIdentity? identity) => _options.IsolateBySubject
+    private string Partition(string alias, AuthenticatedIdentity? identity) => _stores[alias].IsolateBySubject
         ? SubjectScopedEncodedStore.GetPrefix(identity!) : string.Empty;
 
     private void PublishChange(string alias, AuthenticatedIdentity? identity)
     {
-        var partition = Partition(identity);
+        var partition = Partition(alias, identity);
         foreach (var watch in _watches.Values)
             if (watch.Alias == alias && watch.Partition == partition) watch.Queue.Writer.TryWrite(0);
     }
@@ -32,7 +33,9 @@ public sealed partial class TcpStoreHost
         using var expiry = identity is null ? null : _options.TimeProvider.CreateTimer(_ => { try { stop.Cancel(); } catch (ObjectDisposedException) { } }, null,
             identity.ExpiresAt - _options.TimeProvider.GetUtcNow() is var remaining && remaining > TimeSpan.Zero
                 ? (remaining < TimeSpan.FromDays(30) ? remaining : TimeSpan.FromDays(30)) : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
-        _watches[id] = new(hello.StoreAlias!, Partition(identity), queue);
+        _watches[id] = new(hello.StoreAlias!, Partition(hello.StoreAlias!, identity), queue);
+        DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Subscriptions, 1);
+        DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Subscribe, log: true).Complete();
         Task<WireMessage?>? close = null;
         try
         {
@@ -76,6 +79,7 @@ public sealed partial class TcpStoreHost
         finally
         {
             _watches.TryRemove(id, out _);
+            DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Subscriptions, -1);
             await stop.CancelAsync().ConfigureAwait(false);
             if (close is not null)
                 try { await close.ConfigureAwait(false); } catch (Exception) { }

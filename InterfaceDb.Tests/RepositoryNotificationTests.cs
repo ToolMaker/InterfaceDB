@@ -18,6 +18,28 @@ namespace InterfaceDb.Tests;
 public sealed partial class RepositoryNotificationTests
 {
     [TestMethod]
+    [DataRow(false)] [DataRow(true)]
+    public async Task ExplicitKeyCreateWithMetadataPublishesCreatedAndStillRejectsDuplicate(bool segment)
+    {
+        await using var fixture = new Fixture(segment);
+        var created = new ConcurrentQueue<IRecord>();
+        using var subscription = fixture.Notifications.SubscribeCreated(entity => { created.Enqueue(entity); return ValueTask.CompletedTask; });
+        var metadata = (IEnvelopeMetadataRepository<IRecord>)fixture.Repository;
+        var saved = await metadata.SaveWithExtensionMetadataAsync(new Record { Id = "explicit", Value = 4 }, "explicit", [1],
+            new EnvelopeWriteCondition(0, ExpectedMissing: true));
+        await Idle(subscription);
+        Assert.AreEqual(1, created.Count);
+        Assert.AreEqual(4, created.Single().Value);
+        Assert.IsFalse(string.IsNullOrEmpty(saved.Envelope!.Location));
+        await Assert.ThrowsExactlyAsync<WriteConflictException<IRecord>>(async () =>
+            await metadata.SaveWithExtensionMetadataAsync(new Record { Id = "explicit", Value = 99 }, "explicit", [2],
+                new EnvelopeWriteCondition(0, ExpectedMissing: true)));
+        await Idle(subscription);
+        Assert.AreEqual(1, created.Count);
+        Assert.AreEqual(4, (await fixture.Repository.QuerySingleAsync(_ => true)).Value);
+    }
+
+    [TestMethod]
     [DataRow(false, StorageObjectCacheMode.MetadataOnly, false)]
     [DataRow(false, StorageObjectCacheMode.WeakObject, true)]
     [DataRow(false, StorageObjectCacheMode.StrongObject, true)]
@@ -582,11 +604,11 @@ public sealed partial class RepositoryNotificationTests
         public Fixture(bool segment, StorageObjectCacheMode cache = StorageObjectCacheMode.StrongObject,
             bool physical = false, RepositoryNotificationOptions? options = null, bool enabled = true,
             bool durable = false, IObjectSerializer<IRecord>? serializer = null, int concurrency = 12,
-            IWriteConflictStrategy<IRecord>? strategy = null, bool useSidecarWriteLocks = true)
+            IWriteConflictStrategy<IRecord>? strategy = null, bool useSidecarWriteLocks = true, Idb.Diagnostics.IDatabaseTelemetry? telemetry = null)
         {
             var policy = StoragePolicy.Default with
             {
-                ObjectCacheMode = cache, RaiseNotifications = physical, WatchStorageChanges = false, MaxConcurrency = concurrency,
+                Telemetry = telemetry, ObjectCacheMode = cache, RaiseNotifications = physical, WatchStorageChanges = false, MaxConcurrency = concurrency,
                 HydrateOnInitialize = false, UseSingleWriteBuffer = true, UseSidecarWriteLocks = useSidecarWriteLocks,
                 DurabilityMode = durable ? StorageDurabilityMode.Durable : StorageDurabilityMode.Performance,
                 RepositoryNotifications = enabled ? options ?? new() : null

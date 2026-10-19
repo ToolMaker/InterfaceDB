@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TelemetryBuild Condition="'$(TelemetryBuild)' == ''">true</TelemetryBuild><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <PropertyGroup Condition="'$(TelemetryBuild)' == 'true'"><DefineConstants>TELEMETRY</DefineConstants></PropertyGroup>
+  <ItemGroup Condition="'$(TelemetryBuild)' == 'true'">
+    <ProjectReference Include="../InterfaceDB.Transport/InterfaceDB.Transport.csproj" />
+    <Compile Include="../StorageBenchmarks.Repository/BenchmarkTelemetry.cs" Link="BenchmarkTelemetry.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TelemetryBuild)' != 'true'">
+    <Reference Include="$(BaselineDirectory)/*.dll" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../InterfaceDB.Transport.Tests/TestCertificates.cs" Link="TestCertificates.cs" /></ItemGroup>
+</Project>

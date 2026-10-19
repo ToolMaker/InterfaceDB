@@ -127,7 +127,8 @@ internal static class MessagePackFrameCodec
         try
         {
             if (!Enum.IsDefined(message.Kind) || !Enum.IsDefined(message.Error) || !Enum.IsDefined(message.AuthenticationMode)
-                || (message.Capabilities & ~(EncodedStoreCapabilities.All | EncodedStoreCapabilities.SubjectIsolation)) != 0
+                || (message.Capabilities & ~(EncodedStoreCapabilities.All | TransportValidation.ScopeCapabilities)) != 0
+                || (message.Capabilities & TransportValidation.ScopeCapabilities) == TransportValidation.ScopeCapabilities
                 || message.CorrelationId < 0 || message.TimeoutMilliseconds < 0)
                 throw Protocol("Invalid transport message fields.");
             CheckString(message.StoreAlias, 128);

@@ -1,4 +1,5 @@
 using Idb.Libraries.Abstractions.Dtos;
+using Idb.Diagnostics;
 using Idb.Libraries.Abstractions.Options;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -54,15 +55,18 @@ internal sealed class RepositoryNotificationSubscription<T> : IRepositorySubscri
     private readonly Guid _id = Guid.NewGuid();
     private readonly bool _receiveOwnWrites;
     private readonly int _maximumCausalDepth;
+    private readonly IDatabaseTelemetry? _telemetry;
 
     internal RepositoryNotificationSubscription(RepositoryEventKind kind, Func<T, IReadOnlyList<string>, ValueTask> handler,
         Func<T, bool>? filter, Func<ValueTask<bool>>? keepAlive, RepositoryNotificationOptions options,
-        SemaphoreSlim concurrency, Action<RepositoryNotificationSubscription<T>> remove, bool receiveOwnWrites)
+        SemaphoreSlim concurrency, Action<RepositoryNotificationSubscription<T>> remove, bool receiveOwnWrites,
+        IDatabaseTelemetry? telemetry = null)
     {
         Kind = kind; _handler = handler; _filter = filter; _keepAlive = keepAlive;
         _capacity = options.QueueCapacity; _byteCapacity = options.MaximumQueuedBytesPerSubscriber;
         _concurrency = concurrency; _remove = remove;
         _receiveOwnWrites = receiveOwnWrites; _maximumCausalDepth = options.MaximumCausalDepth;
+        _telemetry = telemetry;
     }
 
     internal RepositoryEventKind Kind { get; }
@@ -153,16 +157,19 @@ internal sealed class RepositoryNotificationSubscription<T> : IRepositorySubscri
                     if (Kind == RepositoryEventKind.Changed && changes.Count == 0) continue;
                     entity = item.Snapshot.Materialize(attachEnvelope: Kind != RepositoryEventKind.Deleted);
                 }
-                catch { Stop(RepositorySubscriptionEndReason.ObservationFailed); continue; }
+                catch (Exception exception) { Report(exception); Stop(RepositorySubscriptionEndReason.ObservationFailed); continue; }
                 if (filter is not null && !filter(entity)) { Interlocked.Increment(ref _filtered); continue; }
                 if (IsDisposed) continue;
                 await handler!(entity, changes).ConfigureAwait(false);
                 Interlocked.Increment(ref _delivered);
             }
-            catch { Stop(RepositorySubscriptionEndReason.CallbackFailed); }
+            catch (Exception exception) { Report(exception); Stop(RepositorySubscriptionEndReason.CallbackFailed); }
             finally { NotificationWriteContext.ExecutingSubscription.Value = null; _concurrency.Release(); }
         }
     }
+
+    private void Report(Exception exception)
+        => DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(exception);
 
     public ValueTask WaitForIdleAsync(CancellationToken cancellationToken = default)
     {

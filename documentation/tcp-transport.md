@@ -56,6 +56,15 @@ revisions. `IsolateBySubject` partitions keys by validated issuer/subject. Dispo
 and current-state deltas are available. The connector has no persistent client database or offline
 write queue. It does not implement distributed conflict resolution or general request deduplication.
 
+The source update after preview.11 adds `TcpStoreRegistration.AccessMode` per alias:
+`SubjectIsolated` partitions by JWT subject; `Shared` uses an explicitly authorized shared dataset.
+Null retains the host's existing `IsolateBySubject` behavior. Both explicit modes require JWT.
+The host never advertises subject isolation for a shared store. Typed shared clients explicitly
+request `EncodedStoreCapabilities.SharedDataset`; isolated remains their default. See the
+[shared-dataset setup and authorization contract](tcp-repository.md#shared-datasets-source-update-after-preview11).
+Register independent stores for independent memberships. Configuration is fixed at host startup;
+stop/restart the host to change registrations. The stock one-store sample has no dynamic group registry.
+
 ## Authentication
 
 The selected deployment uses `AuthenticationMode = JwtBearer`: **every storage session requires a

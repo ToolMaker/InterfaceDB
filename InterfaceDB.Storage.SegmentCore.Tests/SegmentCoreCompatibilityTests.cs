@@ -196,8 +196,11 @@ public sealed class SegmentCoreCompatibilityTests
         // capability and bounded restore-admission options. Existing methods/interfaces retain
         // their signatures. Engine minor 1 is an explicit IndependentOutput capability upgrade;
         // default stores remain engine 1.0. The restore overload and options record are additive.
+        // Telemetry review, 2026-10-19: only the optional SegmentCoreOptions.Telemetry
+        // property was added. Removing that line reproduces the preceding approved hash.
+        // Existing method signatures, default behavior and on-disk formats are unchanged.
         Assert.AreEqual(
-            "3676B1DB683F581D13F5A61E69982957E5C0851F4540C00A28869C971A0E34A3",
+            "3D70467F895CCBCBEF0A2EAC455FB05047A5F20858B70D75C17E8DA7CC581F14",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

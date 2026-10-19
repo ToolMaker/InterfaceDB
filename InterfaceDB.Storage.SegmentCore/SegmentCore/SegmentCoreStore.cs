@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -202,7 +203,21 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         LastCompactionElapsed = TimeSpan.FromTicks(Volatile.Read(ref _lastCompactionElapsedTicks))
     };
 
-    public static async ValueTask<SegmentCoreStore> OpenAsync(
+    public static ValueTask<SegmentCoreStore> OpenAsync(
+        string rootDirectory,
+        SegmentCoreOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(options?.Telemetry) ? OpenAsyncUnobserved(rootDirectory, options, cancellationToken)
+            : OpenAsyncObserved(rootDirectory, options, cancellationToken);
+
+    private static ValueTask<SegmentCoreStore> OpenAsyncObserved(
+        string rootDirectory,
+        SegmentCoreOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(options?.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Initialize,
+                () => OpenAsyncUnobserved(rootDirectory, options, cancellationToken), log: true, bytes: 0);
+
+    private static async ValueTask<SegmentCoreStore> OpenAsyncUnobserved(
         string rootDirectory,
         SegmentCoreOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -1062,7 +1077,21 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         return ValueTask.FromResult<ISegmentCoreTransaction>(transaction);
     }
 
-    public async ValueTask SaveAsync(
+    public ValueTask SaveAsync(
+        string key,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? SaveAsyncUnobserved(key, payload, cancellationToken)
+            : SaveAsyncObserved(key, payload, cancellationToken);
+
+    private ValueTask SaveAsyncObserved(
+        string key,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Save,
+                () => SaveAsyncUnobserved(key, payload, cancellationToken), log: true, bytes: payload.Length);
+
+    private async ValueTask SaveAsyncUnobserved(
         string key,
         ReadOnlyMemory<byte> payload,
         CancellationToken cancellationToken = default)
@@ -1107,7 +1136,15 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             ? SaveAsync(key, payload, cancellationToken)
             : RequireOwnedTransaction(transaction).SaveOwnedAsync(key, payload, cancellationToken);
 
-    public async ValueTask<bool> DeleteAsync(string key, CancellationToken cancellationToken = default)
+    public ValueTask<bool> DeleteAsync(string key, CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? DeleteAsyncUnobserved(key, cancellationToken)
+            : DeleteAsyncObserved(key, cancellationToken);
+
+    private ValueTask<bool> DeleteAsyncObserved(string key, CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Delete,
+                () => DeleteAsyncUnobserved(key, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<bool> DeleteAsyncUnobserved(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         await EnterMutationAsync(cancellationToken).ConfigureAwait(false);
@@ -1158,7 +1195,15 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             ? DeleteAsync(key, cancellationToken)
             : RequireOwnedTransaction(transaction).DeleteAsync(key, cancellationToken);
 
-    public async ValueTask<byte[]?> GetAsync(string key, CancellationToken cancellationToken = default)
+    public ValueTask<byte[]?> GetAsync(string key, CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? GetAsyncUnobserved(key, cancellationToken)
+            : GetAsyncObserved(key, cancellationToken);
+
+    private ValueTask<byte[]?> GetAsyncObserved(string key, CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Read,
+                () => GetAsyncUnobserved(key, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<byte[]?> GetAsyncUnobserved(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
@@ -1187,7 +1232,19 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
     }
 
     // Results carry logical keys and follow physical read order; missing keys are omitted.
-    internal async ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadManyAsync(
+    internal ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadManyAsync(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? ReadManyAsyncUnobserved(keys, cancellationToken)
+            : ReadManyAsyncObserved(keys, cancellationToken);
+
+    private ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadManyAsyncObserved(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Read,
+                () => ReadManyAsyncUnobserved(keys, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadManyAsyncUnobserved(
         IReadOnlyList<string> keys,
         CancellationToken cancellationToken = default)
     {
@@ -1222,7 +1279,17 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    public async ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadAllAsync(
+    public ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadAllAsync(
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? ReadAllAsyncUnobserved(cancellationToken)
+            : ReadAllAsyncObserved(cancellationToken);
+
+    private ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadAllAsyncObserved(
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Query,
+                () => ReadAllAsyncUnobserved(cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<IReadOnlyList<SegmentCoreRecord>> ReadAllAsyncUnobserved(
         CancellationToken cancellationToken = default)
     {
         await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
@@ -1287,7 +1354,17 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    public async ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsync(
+    public ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsync(
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? VerifyIntegrityAsyncUnobserved(cancellationToken)
+            : VerifyIntegrityAsyncObserved(cancellationToken);
+
+    private ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsyncObserved(
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Verify,
+                () => VerifyIntegrityAsyncUnobserved(cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<SegmentCoreIntegrityResult> VerifyIntegrityAsyncUnobserved(
         CancellationToken cancellationToken = default)
     {
         ThrowIfUnavailable();
@@ -1392,7 +1469,19 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         await CompactAsync(new SegmentCoreCompactionOptions(), cancellationToken).ConfigureAwait(false);
 
-    public async ValueTask<SegmentCoreCompactionResult> CompactAsync(
+    public ValueTask<SegmentCoreCompactionResult> CompactAsync(
+        SegmentCoreCompactionOptions options,
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? CompactAsyncUnobserved(options, cancellationToken)
+            : CompactAsyncObserved(options, cancellationToken);
+
+    private ValueTask<SegmentCoreCompactionResult> CompactAsyncObserved(
+        SegmentCoreCompactionOptions options,
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Compact,
+                () => CompactAsyncUnobserved(options, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<SegmentCoreCompactionResult> CompactAsyncUnobserved(
         SegmentCoreCompactionOptions options,
         CancellationToken cancellationToken = default)
     {
@@ -1675,7 +1764,17 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             ? GetAsync(key, cancellationToken)
             : RequireOwnedTransaction(transaction).GetAsync(key, cancellationToken);
 
-    public async ValueTask<SegmentCoreCheckpointResult> CheckpointAsync(
+    public ValueTask<SegmentCoreCheckpointResult> CheckpointAsync(
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? CheckpointAsyncUnobserved(cancellationToken)
+            : CheckpointAsyncObserved(cancellationToken);
+
+    private ValueTask<SegmentCoreCheckpointResult> CheckpointAsyncObserved(
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Checkpoint,
+                () => CheckpointAsyncUnobserved(cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<SegmentCoreCheckpointResult> CheckpointAsyncUnobserved(
         CancellationToken cancellationToken = default)
     {
         ThrowIfUnavailable();
@@ -1734,7 +1833,21 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    public async ValueTask<SegmentCoreBackupResult> BackupAsync(
+    public ValueTask<SegmentCoreBackupResult> BackupAsync(
+        string destinationDirectory,
+        SegmentCoreBackupOptions? backupOptions = null,
+        CancellationToken cancellationToken = default)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? BackupAsyncUnobserved(destinationDirectory, backupOptions, cancellationToken)
+            : BackupAsyncObserved(destinationDirectory, backupOptions, cancellationToken);
+
+    private ValueTask<SegmentCoreBackupResult> BackupAsyncObserved(
+        string destinationDirectory,
+        SegmentCoreBackupOptions? backupOptions = null,
+        CancellationToken cancellationToken = default)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Backup,
+                () => BackupAsyncUnobserved(destinationDirectory, backupOptions, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask<SegmentCoreBackupResult> BackupAsyncUnobserved(
         string destinationDirectory,
         SegmentCoreBackupOptions? backupOptions = null,
         CancellationToken cancellationToken = default)
@@ -2561,7 +2674,21 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    internal async ValueTask CommitTransactionAsync(
+    internal ValueTask CommitTransactionAsync(
+        Guid publicTransactionId,
+        IReadOnlyList<SegmentCorePendingMutation> mutations,
+        CancellationToken cancellationToken)
+        => !DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? CommitTransactionAsyncUnobserved(publicTransactionId, mutations, cancellationToken)
+            : CommitTransactionAsyncObserved(publicTransactionId, mutations, cancellationToken);
+
+    private ValueTask CommitTransactionAsyncObserved(
+        Guid publicTransactionId,
+        IReadOnlyList<SegmentCorePendingMutation> mutations,
+        CancellationToken cancellationToken)
+        => DatabaseTelemetryOperation.ObserveAsync(_options.Telemetry, DatabaseComponent.SegmentCore, DatabaseOperation.Transaction,
+                () => CommitTransactionAsyncUnobserved(publicTransactionId, mutations, cancellationToken), log: true, bytes: 0);
+
+    private async ValueTask CommitTransactionAsyncUnobserved(
         Guid publicTransactionId,
         IReadOnlyList<SegmentCorePendingMutation> mutations,
         CancellationToken cancellationToken)

@@ -19,6 +19,7 @@
   <ItemGroup>
     <PackageReference Include="MessagePack" Version="3.1.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
     <PackageReference Include="RadixForge" Version="1.1.0" />
   </ItemGroup>
 

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Idb.Diagnostics;
 using Idb.Libraries.Repositories;
 using Idb.Libraries.Abstractions.Dtos;
 
@@ -9,7 +10,7 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
     private readonly ConcurrentDictionary<long, ChangeSubscription> _changeSubscriptions = new();
     private long _nextSubscription;
 
-    /// <summary>Registers an account-scoped push listener. The first hint requests catch-up after registration.</summary>
+    /// <summary>Registers a push listener in the configured data scope. The first hint requests catch-up after registration.</summary>
     public IRepositoryChangeSubscription SubscribeChanges(Func<ValueTask> handler, CancellationToken lifetime = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
@@ -50,8 +51,9 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
                 await using var connection = await TcpEncodedEnvelopeStore.ConnectCoreAsync(_owner._options.Connection with
                 {
                     TokenProvider = _owner._tokens,
+                    Telemetry = _owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
                     RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
-                        | EncodedStoreCapabilities.DurableCommits | EncodedStoreCapabilities.SubjectIsolation
+                        | EncodedStoreCapabilities.DurableCommits | _owner._options.ScopeCapability
                 }, true, _stop.Token).ConfigureAwait(false);
                 _ready.TrySetResult();
                 // Acknowledge-before-snapshot ordering closes the registration/snapshot race.
@@ -67,7 +69,13 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
                 else await receive.ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { _ready.TrySetCanceled(); }
-            catch (Exception exception) { _ready.TrySetException(exception); throw; }
+            catch (Exception exception)
+            {
+                TransportTelemetry.Fail(DatabaseTelemetryScope.Start(
+                    _owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
+                    DatabaseComponent.TcpRepository, DatabaseOperation.Subscribe, log: true), exception);
+                _ready.TrySetException(exception); throw;
+            }
             finally
             {
                 Dispose();

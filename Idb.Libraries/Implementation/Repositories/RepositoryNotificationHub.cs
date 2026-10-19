@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using Idb.Diagnostics;
 using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Options;
@@ -13,6 +14,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
     private readonly ICommittedEnvelopeSnapshotSource<T> _source;
     private readonly RepositoryNotificationOptions _options;
     private readonly Func<CancellationToken, ValueTask> _initialize;
+    private readonly IDatabaseTelemetry? _telemetry;
     private readonly NotificationMutationLocks<T> _mutations = new();
     private readonly SemaphoreSlim _callbacks;
     private readonly object _subscriptionsGate = new();
@@ -72,7 +74,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
     private void Exit(Phase phase) { lock (_subscriptionsGate) phase.Exit(); }
 
     internal RepositoryNotificationHub(IEnvelopeRepository<T> envelopes, RepositoryNotificationOptions options,
-        Func<CancellationToken, ValueTask> initialize)
+        Func<CancellationToken, ValueTask> initialize, IDatabaseTelemetry? telemetry = null)
     {
         _source = envelopes as ICommittedEnvelopeSnapshotSource<T>
             ?? throw new NotSupportedException("This storage provider does not support committed notification snapshots.");
@@ -83,6 +85,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
         if (options.MaximumCausalDepth < 1) throw new ArgumentOutOfRangeException(nameof(options));
         _options = options with { PropertyComparers = new Dictionary<string, IEqualityComparer<object?>>(options.PropertyComparers) };
         _initialize = initialize;
+        _telemetry = telemetry;
         _callbacks = new(options.MaximumConcurrentCallbacks, options.MaximumConcurrentCallbacks);
     }
 
@@ -98,7 +101,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             if (_subscriptions.Length >= _options.MaximumSubscribers)
                 throw new InvalidOperationException("Repository subscriber limit reached.");
             if (kind == RepositoryEventKind.Changed) _comparison ??= new(_options);
-            subscription = new(kind, handler, compiled, keepAlive, _options, _callbacks, Remove, receiveOwnWrites);
+            subscription = new(kind, handler, compiled, keepAlive, _options, _callbacks, Remove, receiveOwnWrites, _telemetry);
             _phase = new(_phase.Seal(), new(_options));
             subscription.Ready = _phase.Ready;
             _subscriptions = [.. _subscriptions, subscription];
@@ -124,7 +127,11 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             : ValueTask.FromResult<ICommittedEnvelopeSnapshot<T>?>(null);
 
     private ValueTask<ICommittedEnvelopeSnapshot<T>?> Before(T entity, NotificationBaselineCache<T> cache, CancellationToken token)
-        => entity.Envelope is { } envelope && cache.Find(envelope.EnvelopeCacheKey) is { } snapshot
+        // Explicit create conditions are checked atomically by the writer. A staged new identity
+        // has no committed baseline (and a File provider has not assigned its locator yet).
+        => entity.Envelope is { } staged && EnvelopeWriteCoordinator<T>.ExpectsMissing(staged)
+            ? ValueTask.FromResult<ICommittedEnvelopeSnapshot<T>?>(null)
+            : entity.Envelope is { } envelope && cache.Find(envelope.EnvelopeCacheKey) is { } snapshot
             ? ValueTask.FromResult<ICommittedEnvelopeSnapshot<T>?>(snapshot) : Capture(entity, token);
 
     internal async ValueTask<T> SaveAsync(T entity, Func<T, CancellationToken, ValueTask<T>> save, CancellationToken token)
@@ -149,10 +156,10 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             using var writeCapture = CommittedWriteCapture<T>.Begin();
             try { saved = await save(entity, token).ConfigureAwait(false); }
             catch (WriteConflictException<T>) { throw; }
-            catch { Fault(subscribers); throw; }
+            catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); throw; }
             released = new(TaskCreationOptions.RunContinuationsAsynchronously);
             try { await PublishSaveAsync(before, saved, cache, subscribers, released.Task).ConfigureAwait(false); }
-            catch { Fault(subscribers); } // Notification preparation cannot roll back a committed save.
+            catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); } // Notification preparation cannot roll back a committed save.
             return saved;
         }
         finally { mutation.Dispose(); lease?.Dispose(); Exit(phase); released?.TrySetResult(); }
@@ -212,18 +219,18 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
                 foreach (var index in partial.SucceededIndexes)
                 {
                     try { await PublishSaveAsync(before[index], partial.CommittedItems.TryGetValue(index, out var committed) ? (T)committed : entities[index], cache, subscribers, released.Task).ConfigureAwait(false); }
-                    catch { Fault(subscribers); break; }
+                    catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); break; }
                 }
                 throw;
             }
             catch (WriteConflictException<T>) { throw; }
-            catch { Fault(subscribers); throw; }
+            catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); throw; }
             try
             {
                 for (var index = 0; index < saved.Count; index++)
                     await PublishSaveAsync(before[index], saved[index], cache, subscribers, released.Task).ConfigureAwait(false);
             }
-            catch { Fault(subscribers); }
+            catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); }
             return saved;
         }
         finally { mutation.Dispose(); lease?.Dispose(); Exit(phase); released?.TrySetResult(); }
@@ -248,7 +255,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             bool deleted;
             try { deleted = await delete(entity, token).ConfigureAwait(false); }
             catch (WriteConflictException<T>) { throw; }
-            catch { Fault(subscribers); throw; }
+            catch (Exception notificationError) { DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(notificationError); Fault(subscribers); throw; }
             if (deleted && before is not null)
             {
                 released = new(TaskCreationOptions.RunContinuationsAsynchronously);

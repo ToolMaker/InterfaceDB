@@ -6,6 +6,8 @@ public enum EncodedStoreCapabilities
     None = 0, Read = 1, Write = 2, Delete = 4, GetMany = 8, AtomicBatch = 16,
     Enumerate = 32, Checkpoint = 64, DurableCommits = 128,
     SubjectIsolation = 256,
+    /// <summary>One dataset shared by identities authorized by the server for its alias. Mutually exclusive with SubjectIsolation.</summary>
+    SharedDataset = 512,
     All = Read | Write | Delete | GetMany | AtomicBatch | Enumerate | Checkpoint | DurableCommits
 }
 

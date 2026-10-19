@@ -65,6 +65,9 @@ public enum RemoteErrorCode
 
 public enum TcpStoreAuthenticationMode { MutualTls, JwtBearer, MutualTlsAndJwtBearer }
 
+/// <summary>Server-owned data scope for one authenticated store alias.</summary>
+public enum TcpStoreAccessMode { SubjectIsolated, Shared }
+
 public class RemoteStoreException : IOException
 {
     public RemoteStoreException(RemoteErrorCode code, string message, Exception? innerException = null)
@@ -81,6 +84,7 @@ public sealed class RemoteCommitOutcomeUnknownException : RemoteStoreException
 
 public sealed record TcpStoreClientOptions
 {
+    public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     public required string Host { get; init; }
     public required int Port { get; init; }
     public required string StoreAlias { get; init; }
@@ -100,10 +104,15 @@ public sealed record TcpStoreClientOptions
 }
 
 /// <summary>The host borrows the store; stop the host before disposing the store.</summary>
-public sealed record TcpStoreRegistration(string Alias, CompatibilityManifest Manifest, IEncodedEnvelopeStore Store);
+public sealed record TcpStoreRegistration(string Alias, CompatibilityManifest Manifest, IEncodedEnvelopeStore Store)
+{
+    /// <summary>Null inherits the host's legacy IsolateBySubject setting. Explicit modes require JWT authorization.</summary>
+    public TcpStoreAccessMode? AccessMode { get; init; }
+}
 
 public sealed record TcpStoreHostOptions
 {
+    public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     public IPEndPoint ListenEndPoint { get; init; } = new(IPAddress.Loopback, 7443);
     public required X509Certificate2 ServerCertificate { get; init; }
     public required IReadOnlyList<TcpStoreRegistration> Stores { get; init; }
@@ -113,7 +122,7 @@ public sealed record TcpStoreHostOptions
     public IAccessTokenValidator? TokenValidator { get; init; }
     /// <summary>Required in JWT modes: authorize the validated identity for this alias and requested capabilities.</summary>
     public Func<AuthenticatedIdentity, string, EncodedStoreCapabilities, bool>? AuthorizeIdentity { get; init; }
-    /// <summary>Route every key and enumeration through a partition derived from the validated JWT issuer and subject.</summary>
+    /// <summary>Default for registrations without AccessMode: partition keys by validated JWT issuer and subject.</summary>
     public bool IsolateBySubject { get; init; }
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
     /// <summary>Optional explicit client trust policy. Null uses platform chain validation.</summary>
@@ -171,10 +180,13 @@ internal static class TransportValidation
 
     internal static void Capabilities(EncodedStoreCapabilities capabilities)
     {
-        if ((capabilities & ~(EncodedStoreCapabilities.All | EncodedStoreCapabilities.SubjectIsolation)) != 0
+        if ((capabilities & ~(EncodedStoreCapabilities.All | ScopeCapabilities)) != 0
+            || (capabilities & ScopeCapabilities) == ScopeCapabilities
             || !capabilities.HasFlag(EncodedStoreCapabilities.DurableCommits))
             throw new ArgumentException("Known capabilities and durable commits are required.");
     }
+
+    internal const EncodedStoreCapabilities ScopeCapabilities = EncodedStoreCapabilities.SubjectIsolation | EncodedStoreCapabilities.SharedDataset;
 
     internal static void Request(EncodedStoreRequest request, TransportLimits limits)
     {

@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Idb.Authentication;
@@ -14,7 +15,7 @@ using Idb.Libraries.Implementation.Serialization;
 namespace Idb.Transport.Repositories;
 
 /// <summary>
-/// An online repository for one signed-in principal. Each API operation obtains an exclusive
+/// An online repository bound to one signed-in principal, with isolated or explicitly shared server data. Each API operation obtains an exclusive
 /// server lease, loads a bounded fresh snapshot, uses the existing InterfaceDB upper layer,
 /// and closes the session. Independent clients serialize operations, never share stale indexes,
 /// and retain exact revision preconditions on entities returned by earlier operations.
@@ -46,7 +47,9 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
         var connection = _options.Connection with
         {
             TokenProvider = _tokens,
-            RequiredCapabilities = EncodedStoreCapabilities.All | EncodedStoreCapabilities.SubjectIsolation
+            Telemetry = _options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry,
+            // Preserve the requested capabilities so a read-only principal can open a typed repository.
+            RequiredCapabilities = _options.Connection.RequiredCapabilities | _options.ScopeCapability
         };
         while (true)
         {
@@ -59,7 +62,19 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
         }
     }
 
-    private async ValueTask<TResult> WithRepositoryAsync<TResult>(
+    private ValueTask<TResult> WithRepositoryAsync<TResult>(
+        Func<InterfaceRepositoryDb<TContract>, ValueTask<TResult>> operation, CancellationToken cancellationToken,
+        Func<TcpEncodedEnvelopeStore, CancellationToken, ValueTask<IEncodedEnvelopeStore>>? prepare = null)
+        => !DatabaseTelemetryOperation.IsEnabled((_options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry)) ? WithRepositoryAsyncUnobserved<TResult>(operation, cancellationToken, prepare)
+            : WithRepositoryAsyncObserved<TResult>(operation, cancellationToken, prepare);
+
+    private ValueTask<TResult> WithRepositoryAsyncObserved<TResult>(
+        Func<InterfaceRepositoryDb<TContract>, ValueTask<TResult>> operation, CancellationToken cancellationToken,
+        Func<TcpEncodedEnvelopeStore, CancellationToken, ValueTask<IEncodedEnvelopeStore>>? prepare = null)
+        => TransportTelemetry.ObserveAsync(_options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry, DatabaseComponent.TcpRepository, DatabaseOperation.Execute,
+                () => WithRepositoryAsyncUnobserved<TResult>(operation, cancellationToken, prepare), log: true, bytes: 0);
+
+    private async ValueTask<TResult> WithRepositoryAsyncUnobserved<TResult>(
         Func<InterfaceRepositoryDb<TContract>, ValueTask<TResult>> operation, CancellationToken cancellationToken,
         Func<TcpEncodedEnvelopeStore, CancellationToken, ValueTask<IEncodedEnvelopeStore>>? prepare = null)
     {
@@ -75,6 +90,7 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
             operationOptions.Validate();
             var policy = _options.StoragePolicy with
             {
+                Telemetry = _options.StoragePolicy.Telemetry ?? _options.Connection.Telemetry,
                 RaiseNotifications = false, WatchStorageChanges = false, HydrateOnInitialize = true,
                 DurabilityMode = StorageDurabilityMode.Durable
             };

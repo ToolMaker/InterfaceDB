@@ -29,6 +29,9 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
             // Keep existing cache identities stable; new formats must not reuse their pending-write namespace.
             if (_options.SerializerEnvelopeFormat != TcpRepositoryOptions<TContract>.EnvelopeFormat)
                 fields = [.. fields, _options.SerializerEnvelopeFormat];
+            // Shared data still has an account-bound cache, separate from that account's isolated data.
+            if (_options.ScopeCapability == EncodedStoreCapabilities.SharedDataset)
+                fields = [.. fields, "shared-dataset-v1"];
             var descriptor = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(fields);
             return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(descriptor));
         }

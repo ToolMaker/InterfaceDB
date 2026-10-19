@@ -31,10 +31,16 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
     public EncodedStoreCapabilities Capabilities => EncodedStoreCapabilities.All;
 
     /// <summary>Opens an exclusively owned store with durable writes; no relaxed durability override is exposed.</summary>
+    // Preserve the original six-parameter method for already compiled consumers.
+    public static ValueTask<SegmentCoreEncodedEnvelopeStore> OpenAsync(
+        string path, TransportLimits? limits, int maximumEnumerationKeys,
+        CancellationToken cancellationToken, int retainedChangeCount, int? maximumPartitionKeys)
+        => OpenAsync(path, limits, maximumEnumerationKeys, cancellationToken, retainedChangeCount, maximumPartitionKeys, telemetry: null);
+
     public static async ValueTask<SegmentCoreEncodedEnvelopeStore> OpenAsync(
         string path, TransportLimits? limits = null, int maximumEnumerationKeys = 100_000,
         CancellationToken cancellationToken = default, int retainedChangeCount = 2048,
-        int? maximumPartitionKeys = null)
+        int? maximumPartitionKeys = null, Idb.Diagnostics.IDatabaseTelemetry? telemetry = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         limits ??= new TransportLimits();
@@ -47,6 +53,7 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
         cancellationToken.ThrowIfCancellationRequested();
         var store = await SegmentCoreStore.OpenAsync(path, new SegmentCoreOptions
         {
+            Telemetry = telemetry,
             LogOptions = new StripedObjectLogProbeOptions
             {
                 DurabilityStrategy = ObjectLogDurabilityStrategy.WriteThrough

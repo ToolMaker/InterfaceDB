@@ -14,6 +14,7 @@ if (!args.Contains("--run") && !args.Contains("--smoke"))
 }
 
 var options = RunOptions.Parse(args);
+await using var telemetry = new BenchmarkTelemetry();
 var parent = options.DataRoot ?? Path.GetTempPath();
 Directory.CreateDirectory(parent);
 var dataRoot = Directory.CreateDirectory(Path.Combine(Path.GetFullPath(parent), $"repository-benchmark-{Guid.NewGuid():N}")).FullName;
@@ -25,7 +26,7 @@ try
         {
             Console.Error.WriteLine($"Validating {engine}/{cache} ({options.Records} complete objects)...");
             var root = Path.Combine(dataRoot, engine.ToString(), cache.ToString());
-            var config = new BenchConfig(root, engine, cache, options);
+            var config = new BenchConfig(root, engine, cache, options, telemetry.Service);
             var expected = Enumerable.Range(0, options.Records).Select(index => BenchRecord.Create(index, options.PayloadBytes)).ToArray();
             await using (var seed = await BenchSession.OpenAsync(config))
             {
@@ -121,9 +122,11 @@ try
             }
         }
 
+    await telemetry.DisposeAsync();
     var report = new
     {
         Label = options.Label,
+        Telemetry = telemetry.Statistics,
         TimingsRecorded = !options.Smoke,
         Runtime = RuntimeInformation.FrameworkDescription,
         OS = RuntimeInformation.OSDescription,

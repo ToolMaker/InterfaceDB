@@ -18,12 +18,65 @@ migration code with the server.
 ## Supported behavior
 
 Each storage API call opens TLS TCP with the signed-in user's JWT. The server validates signature, exact
-issuer, audience, expiry and configured scopes, then derives a partition from the validated
-**issuer plus subject**. Client keys, cursors and claimed parent IDs cannot select another partition.
+issuer, audience, expiry and configured permissions. By default, the typed repository requires a
+partition derived from validated **issuer plus subject**. Client keys, cursors and claimed parent
+IDs cannot select another partition. The explicit shared-dataset option below uses one alias-wide dataset.
 
 Under the host's exclusive subject lease, the client reads a bounded fresh snapshot, rebuilds indexes,
 performs the operation and closes the session. Enumerations buffer results before yielding to
 application code. A second client sees completed changes on its next call.
+
+## Shared datasets (source update after preview.11)
+
+Authenticated members can access one shared server dataset using an explicit registration:
+
+```csharp
+var registration = new TcpStoreRegistration("messages-family-123", manifest, store)
+{
+    AccessMode = TcpStoreAccessMode.Shared
+};
+var hostOptions = configuredJwtHostOptions with
+{
+    Stores = [registration],
+    IsolateBySubject = true, // Default for other registrations without an explicit mode.
+    AuthorizeIdentity = (identity, alias, capabilities) =>
+        serverMembershipPolicy.CanAccess(identity, alias, capabilities)
+};
+var sharedOptions = tcpOptions with
+{
+    Connection = tcpOptions.Connection with
+    {
+        StoreAlias = registration.Alias,
+        RequiredCapabilities = EncodedStoreCapabilities.All | EncodedStoreCapabilities.SharedDataset
+    }
+};
+await using var shared = new TcpRepository<IMyContract>(sharedOptions);
+```
+
+The membership policy is an application-supplied server service using the validated JWT identity.
+Check membership in the requested alias and allowed operations; a valid token alone is insufficient.
+Use separate aliases and store instances for datasets with different memberships. Explicit access
+modes require JWT authentication. `SharedDataset` and `SubjectIsolation` are mutually exclusive;
+the host reports only its actual configured scope. A typed client without the explicit shared flag
+still demands subject isolation and fails against a shared alias. Legacy unscoped registrations
+do not implicitly advertise shared typed access. Discovery also checks an explicitly requested scope.
+
+Shared storage uses one exclusive operation lease across all members of its alias. Every request
+is authorized again; batch permissions include its actual writes/deletes. Subscriptions use no
+write lease, send changes across authorized members of that alias, and recheck authorization before
+each delivery. Revoked listeners are disconnected before sending another hint. Dispose subscriptions
+on logout; recreate them after disconnection and refresh after registration. There is no data polling.
+
+Authorization is at dataset/operation level, not per record or per message author. A typed repository
+requires the complete operation set, so authorized members can change/delete shared records. Enforce
+stronger business rules through a trusted application service when required. Previously downloaded
+data cannot be remotely erased by revoking server access.
+
+Each repository instance and its cache identity remain bound to one account; shared and isolated
+identities differ. Do not reuse an existing physical dataset or local cache across a scope change:
+provide a new alias/store or explicitly migrate its contents and pending writes. Old clients do not
+support this new capability. Rebuild client and host from matching source; it is absent from the
+published preview.11 package. Local cache/offline synchronization remains a separate commercial feature.
 
 Returned entities carry revisions. A later save reloads current state under a new lease and checks
 that exact revision. Two clients updating the same revision produce one success and one

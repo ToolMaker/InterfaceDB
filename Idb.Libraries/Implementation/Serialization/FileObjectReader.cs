@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Buffers;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
@@ -118,7 +119,21 @@ namespace Idb.Libraries.Implementation.Serialization
             catch (DirectoryNotFoundException) { return null; }
         }
 
-        private async ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsync(
+        private ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsync(
+            FileInfo file,
+            string physicalKey,
+            CancellationToken cancellationToken)
+            => !DatabaseTelemetryOperation.IsEnabled(_storagePolicy.Telemetry) ? ReadEnvelopeAsyncUnobserved(file, physicalKey, cancellationToken)
+                : ReadEnvelopeAsyncObserved(file, physicalKey, cancellationToken);
+
+        private ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsyncObserved(
+            FileInfo file,
+            string physicalKey,
+            CancellationToken cancellationToken)
+            => DatabaseTelemetryOperation.ObserveAsync(_storagePolicy.Telemetry, DatabaseComponent.File, DatabaseOperation.Read,
+                    () => ReadEnvelopeAsyncUnobserved(file, physicalKey, cancellationToken), log: true, bytes: 0);
+
+        private async ValueTask<IObjectEnvelope<TContract>> ReadEnvelopeAsyncUnobserved(
             FileInfo file,
             string physicalKey,
             CancellationToken cancellationToken)

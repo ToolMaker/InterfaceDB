@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Buffers.Binary;
 using System.Text.Json;
 using Idb.Libraries.Repositories;
@@ -27,10 +28,17 @@ public sealed class VersionedTcpStore : IAsyncDisposable
     private VersionedTcpStore(FileStream ownership, SegmentCoreEncodedEnvelopeStore store, TcpStoreRegistration registration)
         => (_ownership, _store, Registration) = (ownership, store, registration);
 
+    // Preserve the original method for already compiled consumers.
+    public static ValueTask<VersionedTcpStore> OpenAsync(string root, string alias,
+        IEnumerable<TcpStoreVersion> deployedVersions, TransportLimits? limits, int maximumKeys,
+        CancellationToken token, string? legacyStoreDirectory, CompatibilityManifest? legacyManifest,
+        int? maximumPartitionKeys)
+        => OpenAsync(root, alias, deployedVersions, limits, maximumKeys, token, legacyStoreDirectory, legacyManifest, maximumPartitionKeys, telemetry: null);
+
     public static async ValueTask<VersionedTcpStore> OpenAsync(string root, string alias,
         IEnumerable<TcpStoreVersion> deployedVersions, TransportLimits? limits = null, int maximumKeys = 100_000,
         CancellationToken token = default, string? legacyStoreDirectory = null, CompatibilityManifest? legacyManifest = null,
-        int? maximumPartitionKeys = null)
+        int? maximumPartitionKeys = null, IDatabaseTelemetry? telemetry = null)
     {
         root = Path.GetFullPath(root);
         Directory.CreateDirectory(root);
@@ -64,7 +72,7 @@ public sealed class VersionedTcpStore : IAsyncDisposable
                 var manifest = JsonSerializer.Deserialize<CompatibilityManifest>(await File.ReadAllBytesAsync(Path.Combine(directory, "manifest.json"), token).ConfigureAwait(false));
                 if (manifest != plans[currentIndex].Manifest) throw new InvalidDataException("A deployed version changed its immutable manifest.");
                 current = await SegmentCoreEncodedEnvelopeStore.OpenAsync(Path.Combine(directory, "data"), limits,
-                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys).ConfigureAwait(false);
+                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys, telemetry: telemetry).ConfigureAwait(false);
                 await ValidateExistingStoreAsync(current, plans[currentIndex], limits, token).ConfigureAwait(false);
             }
             if (active is null && legacyStoreDirectory is not null)
@@ -73,7 +81,7 @@ public sealed class VersionedTcpStore : IAsyncDisposable
                 if (currentIndex < 0) throw new ArgumentException("Register the exact legacy manifest before adoption.");
                 if (!Directory.Exists(legacyStoreDirectory)) throw new DirectoryNotFoundException("Legacy store does not exist.");
                 current = await SegmentCoreEncodedEnvelopeStore.OpenAsync(legacyStoreDirectory, limits,
-                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys).ConfigureAwait(false);
+                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys, telemetry: telemetry).ConfigureAwait(false);
                 adopting = true;
             }
             // An empty master can start directly at the newest version.
@@ -85,7 +93,7 @@ public sealed class VersionedTcpStore : IAsyncDisposable
                 directory = Path.Combine(root, generation);
                 Directory.CreateDirectory(directory);
                 var next = await SegmentCoreEncodedEnvelopeStore.OpenAsync(Path.Combine(directory, "data"), limits,
-                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys).ConfigureAwait(false);
+                    maximumKeys, token, maximumPartitionKeys: maximumPartitionKeys, telemetry: telemetry).ConfigureAwait(false);
                 try
                 {
                     if (current is not null)

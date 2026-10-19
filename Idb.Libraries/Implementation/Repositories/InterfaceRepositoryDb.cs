@@ -52,6 +52,8 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             ? ContractRepositoryType.FileSystem
             : contractConfig.RepositoryType;
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        if (Idb.Diagnostics.DatabaseTelemetryOperation.IsEnabled(storagePolicy.Telemetry))
+            _indexManager = new Idb.Diagnostics.TelemetryIndexManager<TContract>(_indexManager, storagePolicy.Telemetry!);
         ArgumentNullException.ThrowIfNull(envelopeLifecycle);
         _envelopeMetadataStager = envelopeLifecycle as IEnvelopeMetadataStager<TContract>
             ?? throw new InvalidOperationException(
@@ -59,7 +61,7 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
         if (storagePolicy.RepositoryNotifications is { } notificationOptions)
         {
-            _notifications = new(envelopeRepository, notificationOptions, _indexManager.InitializeAsync);
+            _notifications = new(envelopeRepository, notificationOptions, _indexManager.InitializeAsync, storagePolicy.Telemetry);
             _observedSave = _indexManager.SaveAsync;
             _observedBatch = _indexManager.SaveManyAsync;
             _observedDelete = _indexManager.DeleteAsync;

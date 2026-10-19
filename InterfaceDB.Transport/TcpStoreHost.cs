@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Idb.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -15,7 +16,11 @@ namespace Idb.Transport;
 public sealed partial class TcpStoreHost : IAsyncDisposable
 {
     private sealed record RegisteredStore(TcpStoreRegistration Registration, SemaphoreSlim SessionGate,
-        ConcurrentDictionary<string, byte> SubjectSessions);
+        ConcurrentDictionary<string, byte> SubjectSessions, EncodedStoreCapabilities Scope)
+    {
+        internal bool IsolateBySubject => Scope == EncodedStoreCapabilities.SubjectIsolation;
+        internal EncodedStoreCapabilities Capabilities => (Registration.Store.Capabilities & ~TransportValidation.ScopeCapabilities) | Scope;
+    }
     private sealed class Connection(TcpClient client)
     {
         internal TcpClient Client { get; } = client;
@@ -46,9 +51,16 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             ArgumentNullException.ThrowIfNull(registration.Store);
             registration.Manifest.Validate();
             TransportValidation.Capabilities(registration.Store.Capabilities);
+            if (registration.AccessMode is { } accessMode && (!Enum.IsDefined(accessMode) || !TransportValidation.RequiresToken(options.AuthenticationMode)))
+                throw new ArgumentException("Explicit data access modes require JWT authentication and a known mode.");
+            var isolate = registration.AccessMode is { } mode ? mode == TcpStoreAccessMode.SubjectIsolated : options.IsolateBySubject;
+            var scope = isolate ? EncodedStoreCapabilities.SubjectIsolation
+                : registration.AccessMode == TcpStoreAccessMode.Shared ? EncodedStoreCapabilities.SharedDataset : EncodedStoreCapabilities.None;
+            if (isolate && options.Limits.MaximumKeyBytes <= SubjectScopedEncodedStore.PrefixBytes)
+                throw new ArgumentException("The host key limit must also accommodate the subject partition prefix.");
             if (_stores.Values.Any(existing => ReferenceEquals(existing.Registration.Store, registration.Store)))
                 throw new ArgumentException("A physical store can be registered under only one alias.");
-            _stores.Add(registration.Alias, new(registration, new(1, 1), new(StringComparer.Ordinal)));
+            _stores.Add(registration.Alias, new(registration, new(1, 1), new(StringComparer.Ordinal), scope));
         }
         if (_stores.Count == 0) throw new ArgumentException("At least one configured store is required.");
         _connectionSlots = new(options.MaximumConnections, options.MaximumConnections);
@@ -88,8 +100,6 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         if (options.MaximumSubscriptions is { } subscriptions && (subscriptions < 0 || subscriptions >= options.MaximumConnections))
             throw new ArgumentOutOfRangeException(nameof(options.MaximumSubscriptions), "Reserve at least one connection for storage operations.");
         options.Limits.Validate();
-        if (options.IsolateBySubject && options.Limits.MaximumKeyBytes <= SubjectScopedEncodedStore.PrefixBytes)
-            throw new ArgumentException("The host key limit must also accommodate the subject partition prefix.");
         TransportValidation.Duration(options.HandshakeTimeout, nameof(options.HandshakeTimeout));
         TransportValidation.Duration(options.IdleTimeout, nameof(options.IdleTimeout));
         TransportValidation.Duration(options.MaximumSessionLifetime, nameof(options.MaximumSessionLifetime));
@@ -126,6 +136,9 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
 
     private async Task RunConnectionAsync(long id, TcpClient client)
     {
+        DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Connections, 1);
+        var handshakeSettled = false;
+        var connectionTelemetry = DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Connect, log: true);
         RegisteredStore? lease = null;
         RegisteredStore? selected = null;
         string? subjectLease = null;
@@ -179,8 +192,6 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 }
                 else if (rejection == RemoteErrorCode.None && hello.AccessToken is not null)
                     rejection = RemoteErrorCode.Unauthorized;
-                if (rejection == RemoteErrorCode.None && _options.IsolateBySubject
-                    && !SubjectScopedEncodedStore.HasSubject(identity!)) rejection = RemoteErrorCode.Unauthorized;
                 if (rejection == RemoteErrorCode.None && requiresCertificate)
                 {
                     using var certificate = new X509Certificate2(stream.RemoteCertificate!);
@@ -189,16 +200,17 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 if (rejection == RemoteErrorCode.None)
                 {
                     if (!_stores.TryGetValue(hello.StoreAlias!, out var candidate)) rejection = RemoteErrorCode.UnknownStore;
+                    else if (candidate.IsolateBySubject && !SubjectScopedEncodedStore.HasSubject(identity!)) rejection = RemoteErrorCode.Unauthorized;
+                    else if ((candidate.Capabilities & hello.Capabilities) != hello.Capabilities)
+                        rejection = RemoteErrorCode.UnsupportedCapability;
                     else if (hello.Kind == WireMessageKind.Discover)
                     {
                         if (hello.Manifest!.ContractIdentity != candidate.Registration.Manifest.ContractIdentity
-                            || hello.Capabilities != (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits))
+                            || (hello.Capabilities & ~TransportValidation.ScopeCapabilities) != (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits))
                             rejection = RemoteErrorCode.IncompatibleManifest;
                         else selected = candidate;
                     }
                     else if (candidate.Registration.Manifest != hello.Manifest) rejection = RemoteErrorCode.IncompatibleManifest;
-                    else if (((candidate.Registration.Store.Capabilities | (_options.IsolateBySubject ? EncodedStoreCapabilities.SubjectIsolation : 0)) & hello.Capabilities) != hello.Capabilities)
-                        rejection = RemoteErrorCode.UnsupportedCapability;
                     else if (hello.Kind == WireMessageKind.Subscribe
                         && (hello.Capabilities & (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate))
                             != (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate))
@@ -208,7 +220,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                         if (!_subscriptionSlots.Wait(0)) rejection = RemoteErrorCode.Busy;
                         else { selected = candidate; subscriptionReserved = true; }
                     }
-                    else if (_options.IsolateBySubject)
+                    else if (candidate.IsolateBySubject)
                     {
                         subjectLease = SubjectScopedEncodedStore.GetPrefix(identity!);
                         if (!candidate.SubjectSessions.TryAdd(subjectLease, 0))
@@ -223,6 +235,9 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 }
                 if (rejection != RemoteErrorCode.None)
                 {
+                    connectionTelemetry.Complete(outcome: DatabaseOutcome.Failure, error: TransportTelemetry.Error(rejection));
+                    connectionTelemetry = default;
+                handshakeSettled = true;
                     await MessagePackFrameCodec.WriteAsync(stream, new()
                     {
                         Kind = WireMessageKind.HelloResult, CorrelationId = hello.CorrelationId, Error = rejection
@@ -230,7 +245,10 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     return;
                 }
                 var hostLimits = _options.Limits;
-                if (_options.IsolateBySubject)
+                connectionTelemetry.Complete();
+                connectionTelemetry = default;
+                handshakeSettled = true;
+                if (selected!.IsolateBySubject)
                     hostLimits = hostLimits with { MaximumKeyBytes = hostLimits.MaximumKeyBytes - SubjectScopedEncodedStore.PrefixBytes };
                 var limits = hostLimits.Intersect(hello.Limits!);
                 if (hello.Kind == WireMessageKind.Discover)
@@ -255,7 +273,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     Manifest = lease!.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
                     AuthenticationMode = _options.AuthenticationMode
                 }, limits, handshake.Token).ConfigureAwait(false);
-                var sessionStore = _options.IsolateBySubject
+                var sessionStore = lease.IsolateBySubject
                     ? new SubjectScopedEncodedStore(lease.Registration.Store, identity!) : lease.Registration.Store;
                 var sessionExpiresAt = _options.TimeProvider.GetUtcNow() + _options.MaximumSessionLifetime;
                 await ServeSessionAsync(stream, sessionStore, limits, hello.Capabilities,
@@ -264,11 +282,14 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or AuthenticationException or OperationCanceledException or SocketException or ObjectDisposedException)
         {
-            if (!_shutdown.IsCancellationRequested && ex is not OperationCanceledException) Report(ex);
+            connectionTelemetry.Fail(ex);
+            if (!_shutdown.IsCancellationRequested && ex is not OperationCanceledException) Report(ex, record: handshakeSettled);
         }
-        catch (Exception ex) { Report(ex); }
+        catch (Exception ex) { connectionTelemetry.Fail(ex); Report(ex, record: handshakeSettled); }
         finally
         {
+            DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Connections, -1);
+            DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Disconnect, log: true).Complete();
             if (lease is not null)
             {
                 if (subjectLease is null) lease.SessionGate.Release();
@@ -328,15 +349,16 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             if (message.Kind != WireMessageKind.Request || message.Request is null || message.TimeoutMilliseconds < 1)
                 throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "A storage request is required.");
             var request = message.Request;
+            var requestTelemetry = DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, TransportTelemetry.Operation(request.Command));
             TransportValidation.Request(request, limits);
             if (identity is not null && identity.ExpiresAt <= _options.TimeProvider.GetUtcNow())
             {
-                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.AuthenticationExpired).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.AuthenticationExpired, telemetry: requestTelemetry).ConfigureAwait(false);
                 return;
             }
             if (sessionExpiresAt <= _options.TimeProvider.GetUtcNow())
             {
-                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded, telemetry: requestTelemetry).ConfigureAwait(false);
                 return;
             }
             if (identity is not null)
@@ -346,24 +368,24 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 catch { authorized = false; }
                 if (!authorized)
                 {
-                    await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.Unauthorized).ConfigureAwait(false);
+                    await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.Unauthorized, telemetry: requestTelemetry).ConfigureAwait(false);
                     continue;
                 }
                 // Authorization is application code and may outlast the token's remaining lifetime.
                 if (identity.ExpiresAt <= _options.TimeProvider.GetUtcNow())
                 {
-                    await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.AuthenticationExpired).ConfigureAwait(false);
+                    await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.AuthenticationExpired, telemetry: requestTelemetry).ConfigureAwait(false);
                     return;
                 }
             }
             if (sessionExpiresAt <= _options.TimeProvider.GetUtcNow())
             {
-                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded, telemetry: requestTelemetry).ConfigureAwait(false);
                 return;
             }
             if ((capabilities & request.RequiredCapability) != request.RequiredCapability)
             {
-                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.UnsupportedCapability).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.UnsupportedCapability, telemetry: requestTelemetry).ConfigureAwait(false);
                 continue;
             }
 
@@ -374,7 +396,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             if (sessionBudget < operationBudget) operationBudget = sessionBudget;
             if (operationBudget <= TimeSpan.Zero)
             {
-                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, null, RemoteErrorCode.DeadlineExceeded, telemetry: requestTelemetry).ConfigureAwait(false);
                 return;
             }
             operation.CancelAfter(operationBudget);
@@ -396,7 +418,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             }
             try
             {
-                await SendReplyAsync(stream, limits, lastId, response, error, request.IsMutation).ConfigureAwait(false);
+                await SendReplyAsync(stream, limits, lastId, response, error, request.IsMutation, telemetry: requestTelemetry).ConfigureAwait(false);
             }
             finally
             {
@@ -405,7 +427,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 if (execution is { IsCompleted: false })
                 {
                     try { await execution.ConfigureAwait(false); }
-                    catch (Exception ex) { Report(ex); }
+                    catch (Exception ex) { Report(ex, record: false); }
                 }
                 // Even an uncertain outcome invalidates observers after storage has settled.
                 if (request.IsMutation && execution is not null) PublishChange(alias, identity);
@@ -415,7 +437,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     }
 
     private async Task SendReplyAsync(SslStream stream, TransportLimits limits, long id,
-        EncodedStoreResponse? response, RemoteErrorCode error, bool mutation = false)
+        EncodedStoreResponse? response, RemoteErrorCode error, bool mutation = false, DatabaseTelemetryScope telemetry = default)
     {
         byte[] frame;
         try
@@ -426,16 +448,23 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         catch (RemoteStoreException ex)
         {
             Report(ex);
+            error = mutation ? RemoteErrorCode.OutcomeUnknown : RemoteErrorCode.LimitExceeded;
             frame = MessagePackFrameCodec.Encode(new() { Kind = WireMessageKind.Response, CorrelationId = id,
-                Error = mutation ? RemoteErrorCode.OutcomeUnknown : RemoteErrorCode.LimitExceeded }, limits);
+                Error = error }, limits);
         }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
         deadline.CancelAfter(_options.MaximumOperationTimeout);
-        await stream.WriteAsync(frame, deadline.Token).ConfigureAwait(false);
+        try
+        {
+            await stream.WriteAsync(frame, deadline.Token).ConfigureAwait(false);
+            telemetry.Complete(frame.Length, error == RemoteErrorCode.None ? DatabaseOutcome.Success : DatabaseOutcome.Failure, TransportTelemetry.Error(error));
+        }
+        catch (Exception exception) { TransportTelemetry.Fail(telemetry, exception); throw; }
     }
 
-    private void Report(Exception exception)
+    private void Report(Exception exception, bool record = true)
     {
+        if (record) TransportTelemetry.Fail(DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Unknown, log: true), exception);
         try { _options.OnError?.Invoke(exception); }
         catch { /* Diagnostics must not change storage or transport outcomes. */ }
     }

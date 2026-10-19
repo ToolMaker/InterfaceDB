@@ -11,6 +11,7 @@ namespace Idb.Transport.Repositories;
 public sealed record TcpRepositoryOptions<TContract> where TContract : class, IStoredContract<TContract>
 {
     public const string EnvelopeFormat = "IDB6-TCP-Repository-v1";
+    /// <summary>Subject isolated by default. Explicitly include SharedDataset in RequiredCapabilities for a server-authorized shared alias.</summary>
     public required TcpStoreClientOptions Connection { get; init; }
     public required IDbContractConfigDto<TContract> Contract { get; init; }
     public required StoredRuntimeTypeAllowlist<TContract> RuntimeTypes { get; init; }
@@ -28,9 +29,13 @@ public sealed record TcpRepositoryOptions<TContract> where TContract : class, IS
     public TimeSpan AdmissionTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan BusyRetryDelay { get; init; } = TimeSpan.FromMilliseconds(50);
 
+    internal EncodedStoreCapabilities ScopeCapability => Connection.RequiredCapabilities.HasFlag(EncodedStoreCapabilities.SharedDataset)
+        ? EncodedStoreCapabilities.SharedDataset : EncodedStoreCapabilities.SubjectIsolation;
+
     internal void Validate()
     {
         ArgumentNullException.ThrowIfNull(Connection);
+        TransportValidation.Capabilities(Connection.RequiredCapabilities);
         ArgumentNullException.ThrowIfNull(Connection.Manifest);
         ArgumentNullException.ThrowIfNull(Connection.Limits);
         Connection.Limits.Validate();

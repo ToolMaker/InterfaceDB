@@ -59,7 +59,7 @@ public sealed class BenchRecord : IBenchRecord
     }
 }
 
-internal sealed class BenchConfig(string root, ContractRepositoryType engine, StorageObjectCacheMode cache, RunOptions options)
+internal sealed class BenchConfig(string root, ContractRepositoryType engine, StorageObjectCacheMode cache, RunOptions options, Idb.Diagnostics.IDatabaseTelemetry? telemetry = null)
     : IDbContractConfigDto<IBenchRecord>
 {
     public string EnvelopeDICacheKey => "repository-benchmark";
@@ -74,6 +74,7 @@ internal sealed class BenchConfig(string root, ContractRepositoryType engine, St
     public StorageObjectCardinality ObjectCardinality => StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; } = StoragePolicy.Default with
     {
+        Telemetry = telemetry,
         DurabilityMode = StorageDurabilityMode.Durable,
         ObjectCacheMode = cache,
         HydrateOnInitialize = false,

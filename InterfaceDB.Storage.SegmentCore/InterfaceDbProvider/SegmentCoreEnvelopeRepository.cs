@@ -1033,7 +1033,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             PurgePlaintextSearchIndexCatalogs();
         }
         var store = await SegmentCoreStore.OpenAsync(_storeRoot,
-            _storagePolicy.RetainedVersions is null ? _options.StoreOptions : _options.StoreOptions with { RetainedVersions = _storagePolicy.RetainedVersions }).ConfigureAwait(false);
+            _options.StoreOptions with { Telemetry = _storagePolicy.Telemetry ?? _options.StoreOptions.Telemetry,
+                RetainedVersions = _storagePolicy.RetainedVersions ?? _options.StoreOptions.RetainedVersions }).ConfigureAwait(false);
         try
         {
             foreach (var key in store.GetKeysSnapshot())
@@ -1144,6 +1145,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             catch (Exception exception)
             {
                 Volatile.Write(ref _lastMaintenanceError, exception);
+                Idb.Diagnostics.DatabaseTelemetryScope.Start(_storagePolicy.Telemetry ?? _options.StoreOptions.Telemetry,
+                    Idb.Diagnostics.DatabaseComponent.SegmentCore, Idb.Diagnostics.DatabaseOperation.Execute, log: true).Fail(exception);
             }
         }
     }
