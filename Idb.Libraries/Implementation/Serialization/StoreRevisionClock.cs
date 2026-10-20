@@ -1,12 +1,14 @@
 using System.Buffers.Binary;
+using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization;
 
 /// <summary>Durably reserves timestamp ranges before use, including across reopen/deletion/clock rollback.</summary>
-internal sealed class StoreRevisionClock(string root) : Idb.Libraries.Abstractions.Services.Serialization.IRevisionTimestampGenerator
+internal sealed class StoreRevisionClock(string root, IFilePublication? publication = null) : IRevisionTimestampGenerator
 {
     private readonly object _gate = new();
     private readonly MonotonicRevisionTimestampGenerator _clock = new();
+    private readonly IFilePublication _publication = publication ?? PlatformFilePublication.Instance;
     private long _next;
     private long _end;
 
@@ -19,35 +21,49 @@ internal sealed class StoreRevisionClock(string root) : Idb.Libraries.Abstractio
             {
                 Directory.CreateDirectory(root);
                 var path = Path.Combine(root, ".idb-revision-clock");
-                FileStream stream;
-                var deadline = Environment.TickCount64 + 30_000;
-                while (true)
+                // The stable lease survives replacement of the clock file and serializes
+                // independent processes. Upgrade every writer before using this protocol.
+                using var lease = AcquireLease(path + ".lock");
+                Span<byte> reservation = stackalloc byte[16];
+                if (File.Exists(path))
                 {
-                    try { stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.WriteThrough); break; }
-                    catch (IOException) when (Environment.TickCount64 < deadline) { Thread.Sleep(5); }
+                    using var current = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    if (current.Length != 16) throw new InvalidDataException("Invalid revision clock; restore the store including its clock.");
+                    current.ReadExactly(reservation);
+                    var floor = BinaryPrimitives.ReadInt64LittleEndian(reservation);
+                    if (floor < 0 || BinaryPrimitives.ReadInt64LittleEndian(reservation[8..]) != ~floor)
+                        throw new InvalidDataException("Corrupt revision clock; restore the store including its clock.");
+                    next = Math.Max(next, checked(floor + 1));
                 }
-                using (stream)
+                var reservedEnd = checked(next + 1_048_575);
+                BinaryPrimitives.WriteInt64LittleEndian(reservation, reservedEnd);
+                BinaryPrimitives.WriteInt64LittleEndian(reservation[8..], ~reservedEnd);
+                var staging = path + ".creating-" + Guid.NewGuid().ToString("N");
+                try
                 {
-                    Span<byte> buffer = stackalloc byte[16];
-                    if (stream.Length != 0)
+                    using (var prepared = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.WriteThrough))
                     {
-                        if (stream.Length != 16) throw new InvalidDataException("Invalid revision clock; restore the store including its clock.");
-                        stream.ReadExactly(buffer);
-                        var floor = BinaryPrimitives.ReadInt64LittleEndian(buffer);
-                        if (floor < 0 || BinaryPrimitives.ReadInt64LittleEndian(buffer[8..]) != ~floor)
-                            throw new InvalidDataException("Corrupt revision clock; restore the store including its clock.");
-                        next = Math.Max(next, checked(floor + 1));
+                        prepared.Write(reservation);
+                        prepared.Flush(true);
                     }
-                    var reservedEnd = checked(next + 1_048_575);
-                    BinaryPrimitives.WriteInt64LittleEndian(buffer, reservedEnd);
-                    BinaryPrimitives.WriteInt64LittleEndian(buffer[8..], ~reservedEnd);
-                    stream.Position = 0;
-                    stream.Write(buffer);
-                    stream.Flush(true);
+                    // No revision from this range is issued before durable publication.
+                    // A torn staging write leaves the last committed clock untouched.
+                    _publication.Replace(staging, path);
                     _end = reservedEnd;
                 }
+                finally { if (File.Exists(staging)) File.Delete(staging); }
             }
             return _next = next;
+        }
+    }
+
+    private static FileStream AcquireLease(string path)
+    {
+        var deadline = Environment.TickCount64 + 30_000;
+        while (true)
+        {
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.None); }
+            catch (IOException) when (Environment.TickCount64 < deadline) { Thread.Sleep(5); }
         }
     }
 }

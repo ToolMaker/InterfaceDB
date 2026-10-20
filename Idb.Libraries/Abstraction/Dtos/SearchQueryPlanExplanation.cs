@@ -13,4 +13,11 @@ public sealed record SearchQueryPlanExplanation(
     bool UsesIndexes,
     int? EstimatedCandidateCount,
     double EstimatedCost,
-    int ResidualPredicateCount);
+    int ResidualPredicateCount)
+{
+    /// <summary>Runtime reason that prevents index use, independently of telemetry.</summary>
+    public string? FallbackReason { get; init; }
+
+    /// <summary>Whether live mutable cached objects are checked alongside index candidates.</summary>
+    public bool RechecksCachedObjects { get; init; }
+}

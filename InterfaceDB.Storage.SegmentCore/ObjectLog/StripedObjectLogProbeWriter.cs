@@ -307,7 +307,8 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(transactionId);
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+            throw new TransactionPreparationAbortedException(new OperationCanceledException(cancellationToken));
         if (mutations.Count == 0)
         {
             return [];
@@ -336,7 +337,12 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
 
         // Drain every admitted record, even after admission fails, before releasing payloads
         // or the transaction preparation gate. Queue capacity continues to count records.
-        return await completion.Task.ConfigureAwait(false);
+        try { return await completion.Task.ConfigureAwait(false); }
+        catch (Exception error) when (!completion.HasStorageFailure && error is OperationCanceledException or ObjectLogBackpressureException)
+        {
+            // Every admitted append has completed and no WAL commit was submitted.
+            throw new TransactionPreparationAbortedException(error);
+        }
     }
 
     private sealed class BatchAppendCompletion
@@ -345,6 +351,8 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
         private readonly TaskCompletionSource<StripedObjectLogRecordAddress[]> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Exception? _failure;
+        private Exception? _storageFailure;
+        public bool HasStorageFailure => Volatile.Read(ref _storageFailure) is not null;
         private int _remaining;
 
         public BatchAppendCompletion(int count)
@@ -367,11 +375,17 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             Complete(count);
         }
 
+        public void FailSubmitted(Exception exception)
+        {
+            Interlocked.CompareExchange(ref _storageFailure, exception, null);
+            Complete(1);
+        }
+
         private void Complete(int count)
         {
             if (Interlocked.Add(ref _remaining, -count) == 0)
             {
-                if (_failure is { } failure)
+                if ((_storageFailure ?? _failure) is { } failure)
                 {
                     _completion.TrySetException(failure);
                 }
@@ -849,7 +863,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
                 }
                 else
                 {
-                    Batch!.FailUnsubmitted(exception, 1);
+                    Batch!.FailSubmitted(exception);
                 }
             }
         }

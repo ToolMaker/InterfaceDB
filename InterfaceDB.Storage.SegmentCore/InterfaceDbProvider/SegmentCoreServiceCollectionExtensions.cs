@@ -100,7 +100,7 @@ public static class SegmentCoreServiceCollectionExtensions
         services.TryAddKeyedSingleton<
             IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(
             databaseKey,
-            (_, _) => new EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract>>());
+            (_, _) => new ObjectEnvelopeDictionary<TContract>());
         services.TryAddKeyedTransient<IObjectEnvelope<TContract>>(
             databaseKey,
             (_, _) => new FileObjectEnvelope<TContract>(effectiveConfig)

@@ -288,7 +288,7 @@ namespace Idb.Libraries.Implementation.Extensions
             services.TryAddKeyedSingleton<
                 IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(
                 databaseKey,
-                (_, _) => new EnvelopeConcurrentDictionary<string, IObjectEnvelope<TContract>>());
+                (_, _) => new ObjectEnvelopeDictionary<TContract>());
             services.TryAddKeyedTransient<IObjectEnvelope<TContract>>(
                 databaseKey,
                 (_, _) => new FileObjectEnvelope<TContract>(contractConfig)
@@ -308,11 +308,13 @@ namespace Idb.Libraries.Implementation.Extensions
                 internalKey,
                 (sp, _) => new SidecarFileWriteLock<TContract>(
                     sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
+            services.TryAddSingleton<IFilePublication>(PlatformFilePublication.Instance);
             services.TryAddKeyedSingleton<IFileWriteCoordinator>(internalKey, (sp, _) =>
                 new CoalescingFileWriteCoordinator<TContract>(
                     sp.GetRequiredKeyedService<IStorageWriteLock>(internalKey),
                     contractConfig,
-                    sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
+                    sp.GetRequiredKeyedService<StoragePolicy>(databaseKey),
+                    sp.GetRequiredService<IFilePublication>()));
             services.TryAddKeyedSingleton<IEncryptionRotationOperation<TContract>>(
                 databaseKey,
                 (sp, key) => new FileSystemEncryptionRotationOperation<TContract>(
@@ -333,7 +335,8 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetRequiredKeyedService<IObjectSerializer<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeLifecycle<TContract>>(key),
                     sp.GetRequiredKeyedService<
-                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key)));
+                        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>>>(key),
+                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
             services.TryAddKeyedTransient<IObjectReader<TContract>>(databaseKey, (sp, key) =>
                 new FileObjectReader<TContract>(
                     sp.GetRequiredKeyedService<IObjectSerializer<TContract>>(key),
@@ -408,7 +411,8 @@ namespace Idb.Libraries.Implementation.Extensions
                     () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
                     sp.GetKeyedService<IMigrationStrategy<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeSource<TContract>>(key),
-                    sp.GetRequiredKeyedService<IEnvelopeStorageChangeHandler<TContract>>(key)));
+                    sp.GetRequiredKeyedService<IEnvelopeStorageChangeHandler<TContract>>(key),
+                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
             services.TryAddKeyedSingleton<FileEnvelopeRepositoryFacade<TContract>>(databaseKey, (sp, key) =>
                 new FileEnvelopeRepositoryFacade<TContract>(
                     sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key)));

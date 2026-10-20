@@ -11,7 +11,7 @@ $expected = @{
     'InterfaceDB.Authentication' = 'InterfaceDB.Authentication.dll'
     'InterfaceDB.Transport' = 'InterfaceDB.Transport.dll'
 }
-$allowedDependencies = @('InterfaceDB', 'InterfaceDB.Storage.SegmentCore', 'InterfaceDB.Authentication', 'MessagePack', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'Microsoft.IdentityModel.JsonWebTokens', 'RadixForge', 'System.IO.Hashing')
+$allowedDependencies = @('InterfaceDB', 'InterfaceDB.Storage.SegmentCore', 'InterfaceDB.Authentication', 'MessagePack', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'Microsoft.Extensions.Logging.Abstractions', 'Microsoft.IdentityModel.JsonWebTokens', 'RadixForge', 'System.IO.Hashing')
 $packages = @(Get-ChildItem -LiteralPath $PackageDirectory -Filter '*.nupkg' -File)
 if ($packages.Count -ne $expected.Count) { throw "Expected exactly $($expected.Count) public packages, found $($packages.Count)." }
 $seen = @{}

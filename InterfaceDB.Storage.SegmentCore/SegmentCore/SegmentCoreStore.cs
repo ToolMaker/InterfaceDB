@@ -1317,40 +1317,22 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
     public async IAsyncEnumerable<SegmentCoreRecord> StreamAllAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        string[] keys;
         await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            KeyValuePair<string, StripedObjectLogRecordAddress>[] snapshot;
-            _indexVisibility.EnterReadLock();
-            try
-            {
-                snapshot = _primaryIndex.ToArray();
-            }
-            finally
-            {
-                _indexVisibility.ExitReadLock();
-            }
+        try { _indexVisibility.EnterReadLock();
+            try { keys = _primaryIndex.Keys.ToArray(); }
+            finally { _indexVisibility.ExitReadLock(); } }
+        finally { Interlocked.Decrement(ref _activeReads); }
 
-            var batchSize = _options.ReadOptions.StreamingBatchRecords;
-            for (var offset = 0; offset < snapshot.Length; offset += batchSize)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var count = Math.Min(batchSize, snapshot.Length - offset);
-                var records = await _reader.ReadManyAsync(
-                    new ArraySegment<KeyValuePair<string, StripedObjectLogRecordAddress>>(
-                        snapshot,
-                        offset,
-                        count),
-                    cancellationToken).ConfigureAwait(false);
-                foreach (var record in records)
-                {
-                    yield return record;
-                }
-            }
-        }
-        finally
+        // Membership is captured at scan start; each batch resolves current locations under
+        // its own reservation. No reservation survives a yield into application code.
+        var batchSize = _options.ReadOptions.StreamingBatchRecords;
+        for (var offset = 0; offset < keys.Length; offset += batchSize)
         {
-            Interlocked.Decrement(ref _activeReads);
+            var records = await ReadManyAsync(
+                new ArraySegment<string>(keys, offset, Math.Min(batchSize, keys.Length - offset)),
+                cancellationToken).ConfigureAwait(false);
+            foreach (var record in records) yield return record;
         }
     }
 
@@ -2807,9 +2789,18 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 var transactionId = _transactionWal!.ReserveTransactionId();
                 storageStarted = true;
-                addresses = await _writer.AppendTransactionBatchAsync(
-                    mutations, transactionId, requiresDurabilityFlush: false,
-                    cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    addresses = await _writer.AppendTransactionBatchAsync(
+                        mutations, transactionId, requiresDurabilityFlush: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (TransactionPreparationAbortedException aborted)
+                {
+                    storageStarted = false;
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(aborted.InnerException!).Throw();
+                    throw;
+                }
                 durableCommit = _transactionWal.AppendCommitAsync(
                     transactionId,
                     mutations,

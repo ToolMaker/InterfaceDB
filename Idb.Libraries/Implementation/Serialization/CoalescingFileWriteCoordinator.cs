@@ -19,6 +19,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     private const string DeleteReadySuffix = ".delete.ready";
     private readonly IStorageWriteLock _storageWriteLock;
     private readonly StoragePolicy _storagePolicy;
+    private readonly IFilePublication _publication;
     private readonly string _storageRoot;
     private readonly StringComparer _pathComparer;
     private int _localMigrationScopeActive;
@@ -71,7 +72,12 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
             await prepareAsync(exists ? payloadPath : null, staging, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (delete && exists) FileRetentionIncarnation.Invalidate(payloadPath);
-            if (delete) File.Delete(payloadPath);
+            if (_storagePolicy.DurabilityMode == Idb.Libraries.Abstractions.Enums.StorageDurabilityMode.Durable)
+            {
+                if (delete) _publication.Delete(payloadPath);
+                else _publication.Replace(staging, payloadPath);
+            }
+            else if (delete) File.Delete(payloadPath);
             else File.Move(staging, payloadPath, overwrite: true);
             afterCommit?.Invoke();
             return exists;
@@ -95,7 +101,12 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
             cancellationToken.ThrowIfCancellationRequested();
             if (shouldCommit?.Invoke() == false) return exists;
             if (delete && exists) FileRetentionIncarnation.Invalidate(payloadPath);
-            if (delete) File.Delete(payloadPath);
+            if (_storagePolicy.DurabilityMode == Idb.Libraries.Abstractions.Enums.StorageDurabilityMode.Durable)
+            {
+                if (delete) _publication.Delete(payloadPath);
+                else _publication.Replace(staging, payloadPath);
+            }
+            else if (delete) File.Delete(payloadPath);
             else File.Move(staging, payloadPath, overwrite: true);
             afterCommit?.Invoke();
             return exists;
@@ -118,7 +129,16 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         IStorageWriteLock storageWriteLock,
         IDbContractConfigDto<TContract> contractConfig,
         StoragePolicy storagePolicy)
+        : this(storageWriteLock, contractConfig, storagePolicy, null)
     {
+    }
+
+    public CoalescingFileWriteCoordinator(
+        IStorageWriteLock storageWriteLock,
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy, IFilePublication? publication)
+    {
+        _publication = publication ?? PlatformFilePublication.Instance;
         _storageWriteLock = storageWriteLock ?? throw new ArgumentNullException(nameof(storageWriteLock));
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
@@ -648,8 +668,14 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         }
     }
 
-    private static void CommitProposal(string proposalPath, string payloadPath)
+    private void CommitProposal(string proposalPath, string payloadPath)
     {
+        if (_storagePolicy.DurabilityMode == Idb.Libraries.Abstractions.Enums.StorageDurabilityMode.Durable)
+        {
+            if (IsDeleteProposal(proposalPath)) { _publication.Delete(payloadPath); TryDelete(proposalPath); }
+            else _publication.Replace(proposalPath, payloadPath);
+            return;
+        }
         if (IsDeleteProposal(proposalPath))
         {
             TryDelete(payloadPath);

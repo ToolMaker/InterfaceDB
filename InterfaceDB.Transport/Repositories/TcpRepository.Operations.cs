@@ -19,9 +19,9 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
         => WithRepositoryAsync(repository => repository.DeleteAsync(entityToDelete, cancellationToken), cancellationToken);
     public ValueTask<bool> ExistsAsync(TContract entityToCheck, CancellationToken cancellationToken = default)
         => WithRepositoryAsync(repository => repository.ExistsAsync(entityToCheck, cancellationToken), cancellationToken);
-    public ValueTask<TContract> QueryAsync(Func<TContract, bool> filterFunction, CancellationToken cancellationToken = default)
+    public ValueTask<TContract?> QueryAsync(Func<TContract, bool> filterFunction, CancellationToken cancellationToken = default)
         => WithRepositoryAsync(repository => repository.QueryAsync(filterFunction, cancellationToken), cancellationToken);
-    public ValueTask<TImplementation> QueryAsync<TImplementation>(Func<TImplementation, bool> filterFunction, CancellationToken cancellationToken = default) where TImplementation : class, TContract
+    public ValueTask<TImplementation?> QueryAsync<TImplementation>(Func<TImplementation, bool> filterFunction, CancellationToken cancellationToken = default) where TImplementation : class, TContract
         => WithRepositoryAsync(repository => repository.QueryAsync(filterFunction, cancellationToken), cancellationToken);
     public IAsyncEnumerable<TContract> QueryManyAsync(Func<TContract, bool> filterFunction, CancellationToken cancellationToken = default)
         => StreamAsync(repository => repository.QueryManyAsync(filterFunction, cancellationToken), cancellationToken);

@@ -166,3 +166,7 @@ This does not cache answers or final cost-based plans. Captured bounds, string-c
 - Expose a public custom index provider contract.
 - Add deterministic persistent/rebuild strategies for very large stores.
 - Add explicitly defined ignore-case, full-text, fuzzy, and vector indexes.
+
+## Current-source correctness safeguards
+
+See [storage correctness fixes](storage-correctness-upgrade.md) for numeric-conversion fallback, index-failure recovery, and cache-aware indexed searches, live-cache checking costs, and effective fallback explanations. These changes follow preview.11 and have not yet been published as a new package.

@@ -15,6 +15,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
+    private readonly StorageObjectCardinality _objectCardinality;
     private readonly IObjectSerializer<TContract> _serializer;
     private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
     private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
@@ -29,8 +30,20 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
         IObjectSerializer<TContract> serializer,
         IEnvelopeLifecycle<TContract> envelopeLifecycle,
         IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes)
+        : this(contractConfig, storagePolicy, serializer, envelopeLifecycle, envelopes, null)
+    {
+    }
+
+    public FileEnvelopeStorageChangeHandler(
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy,
+        IObjectSerializer<TContract> serializer,
+        IEnvelopeLifecycle<TContract> envelopeLifecycle,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+        _objectCardinality = storageIdentityFactory?.ObjectCardinality ?? contractConfig.ObjectCardinality;
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
@@ -150,7 +163,7 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
 
         _envelopes.AddOrUpdate(
             cachedEnvelope.EnvelopeCacheKey,
-            EnvelopeCacheKey.ToLogicalKey(cachedEnvelope.EnvelopeCacheKey),
+            (_objectCardinality == StorageObjectCardinality.Single ? cachedEnvelope.EnvelopeCacheKey : EnvelopeCacheKey.ToLogicalKey(cachedEnvelope.EnvelopeCacheKey)),
             cachedEnvelope);
         return new EnvelopeStorageChangeResult<TContract>(changeType, null, envelope);
     }

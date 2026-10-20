@@ -14,6 +14,89 @@ namespace InterfaceDb.Tests;
 public sealed class SearchIndexBatchOptimizationTests
 {
     [TestMethod]
+    [DataRow(StorageObjectCacheMode.StrongObject)]
+    [DataRow(StorageObjectCacheMode.WeakObject)]
+    [DataRow(StorageObjectCacheMode.MetadataOnly)]
+    public async Task CachedEditsMergeWithIndexCandidatesWithoutAStorageScan(StorageObjectCacheMode mode)
+    {
+        var records = Enumerable.Range(0, 200).Select(i => new DerivedRecord
+            { Id = i.ToString(), Group = i == 1 ? "match" : "other", Label = i == 1 ? "match" : "other" }).ToArray();
+        var repository = new CachedRepository(records);
+        await using var manager = new SearchIndexManager<Record>(repository, StoragePolicy.Default with { ObjectCacheMode = mode });
+        await manager.InitializeAsync();
+        var initialScans = repository.Enumerations;
+        // Both records move across the saved index boundary. A third, uncached result
+        // still comes from the index. Only two objects need cache predicate checks.
+        repository.CachedKeys.UnionWith(["0", "1"]);
+        records[0].Group = records[0].Label = "match";
+        records[1].Group = records[1].Label = "other";
+        await manager.SaveAsync(new DerivedRecord { Id = "remote", Group = "match", Label = "match" });
+        var plan = manager.ExplainSearch(r => r.Group == "match");
+        Assert.IsTrue(plan.UsesIndexes);
+        Assert.IsTrue(plan.RechecksCachedObjects);
+        Assert.IsNull(plan.FallbackReason);
+        CollectionAssert.AreEquivalent(new[] { "0", "remote" },
+            (await Collect(manager.SearchAsync(r => r.Group == "match"))).Select(r => r.Id).ToArray());
+        CollectionAssert.AreEquivalent(new[] { "0", "remote" },
+            (await Collect(manager.SearchAsync<DerivedRecord>(r => r.Label == "match"))).Select(r => r.Id).ToArray());
+        Assert.AreEqual(initialScans, repository.Enumerations);
+        Assert.AreEqual(2, repository.PhysicalReads);
+        Assert.IsTrue(await manager.DeleteAsync(records[0]));
+        CollectionAssert.AreEquivalent(new[] { "remote" },
+            (await Collect(manager.SearchAsync(r => r.Group == "match"))).Select(r => r.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ExplainReportsIndexFailureWithoutTelemetryAndMatchesExecution()
+    {
+        var repository = new MemoryRepository(CreateRecords(100));
+        await using var manager = CreateManager(repository);
+        await manager.InitializeAsync();
+        Assert.IsTrue(manager.ExplainSearch(r => r.Group == "new").UsesIndexes);
+        repository.AfterWrite = record => record.ThrowOnGroupRead = true;
+        var saved = await manager.SaveAsync(new Record { Id = "new", Group = "new" });
+        saved.ThrowOnGroupRead = false;
+        var plan = manager.ExplainSearch(r => r.Group == "new");
+        Assert.IsFalse(plan.UsesIndexes);
+        StringAssert.Contains(plan.FallbackReason!, "Index maintenance failed");
+        var initialScans = repository.Enumerations;
+        Assert.HasCount(1, await Collect(manager.SearchAsync(r => r.Group == "new")));
+        Assert.AreEqual(initialScans + 1, repository.Enumerations);
+    }
+
+    [TestMethod]
+    public async Task CustomProviderWithoutCacheCapabilityExplainsItsSafeFallback()
+    {
+        var repository = new MemoryRepository(CreateRecords(100));
+        await using var manager = new SearchIndexManager<Record>(repository,
+            StoragePolicy.Default with { ObjectCacheMode = StorageObjectCacheMode.StrongObject });
+        await manager.InitializeAsync();
+        var plan = manager.ExplainSearch(r => r.Group == "group");
+        Assert.IsFalse(plan.UsesIndexes);
+        StringAssert.Contains(plan.FallbackReason!, "cache-only enumeration");
+        Assert.HasCount(100, await Collect(manager.SearchAsync(r => r.Group == "group")));
+    }
+
+    [TestMethod]
+    public async Task OneStorageCachedTypeDoesNotDisableIndexesForOtherTypes()
+    {
+        var repository = new CachedRepository(CreateRecords(200));
+        await using var manager = CreateManager(repository);
+        await manager.InitializeAsync();
+        var cached = await manager.SaveAsync(new CachedRecord { Id = "cached", Group = "initial" });
+        repository.CachedKeys.Add("cached");
+        cached.Group = "edited";
+        Assert.IsTrue(manager.ExplainSearch(r => r.Group == "unrelated").UsesIndexes);
+        var scans = repository.Enumerations;
+        Assert.HasCount(1, await Collect(manager.SearchAsync(r => r.Group == "edited")));
+        Assert.IsEmpty(await Collect(manager.SearchAsync(r => r.Group == "unrelated")));
+        Assert.IsTrue(await manager.DeleteAsync(cached));
+        Assert.IsTrue(manager.ExplainSearch(r => r.Group == "unrelated").UsesIndexes);
+        Assert.IsEmpty(await Collect(manager.SearchAsync(r => r.Group == "edited")));
+        Assert.AreEqual(scans, repository.Enumerations);
+    }
+
+    [TestMethod]
     public async Task IndexedFirstResultDoesNotPrefetchABatch()
     {
         var repository = new BatchRepository(CreateRecords(150));
@@ -143,9 +226,11 @@ public sealed class SearchIndexBatchOptimizationTests
 
     private class Record : IStoredContract<Record>
     {
+        private string _group = "";
         public required string Id { get; init; }
         [SearchIndex(SearchIndexMode.Exact)]
-        public required string Group { get; init; }
+        public required string Group { get => ThrowOnGroupRead ? throw new InvalidOperationException("index getter") : _group; set => _group = value; }
+        public bool ThrowOnGroupRead { get; set; }
         public int Number { get; init; }
         public IObjectEnvelope<Record>? Envelope { get; protected set; }
         public void Attach(IObjectEnvelope<Record> envelope) => Envelope = envelope;
@@ -154,7 +239,7 @@ public sealed class SearchIndexBatchOptimizationTests
     private sealed class DerivedRecord : Record
     {
         [SearchIndex(SearchIndexMode.Exact)]
-        public required string Label { get; init; }
+        public required string Label { get; set; }
     }
 
     private sealed class OtherRecord : Record
@@ -162,6 +247,9 @@ public sealed class SearchIndexBatchOptimizationTests
         [SearchIndex(SearchIndexMode.Exact)]
         public required string Label { get; init; }
     }
+
+    [StorageCached]
+    private sealed class CachedRecord : Record { }
 
     private sealed class BatchRepository(IEnumerable<Record> records) : MemoryRepository(records), IBatchedEnvelopeRepository<Record>
     {
@@ -177,10 +265,23 @@ public sealed class SearchIndexBatchOptimizationTests
         }
     }
 
+    private sealed class CachedRepository(IEnumerable<Record> records) : MemoryRepository(records), ICachedEnvelopeSource<Record>
+    {
+        public HashSet<string> CachedKeys { get; } = new();
+        public IEnumerable<KeyValuePair<string, Record>> EnumerateCachedObjects()
+        {
+            foreach (var key in CachedKeys)
+                if (Envelopes.TryGetValue(key, out var envelope) && envelope.ObjectInstance is { } instance)
+                    yield return new(key, instance);
+        }
+    }
+
     private class MemoryRepository : IEnvelopeRepository<Record>
     {
         protected readonly Dictionary<string, IObjectEnvelope<Record>> Envelopes = new(StringComparer.Ordinal);
         public int PhysicalReads { get; private set; }
+        public int Enumerations { get; private set; }
+        public Action<Record>? AfterWrite { get; set; }
         public IReaderAndWriter<Record> ReaderAndWriter => throw new NotSupportedException();
 
         public MemoryRepository(IEnumerable<Record> records)
@@ -226,6 +327,7 @@ public sealed class SearchIndexBatchOptimizationTests
 
         public async IAsyncEnumerable<IObjectEnvelope<Record>> EnumerateAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            Enumerations++;
             foreach (var envelope in Envelopes.Values)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -246,6 +348,7 @@ public sealed class SearchIndexBatchOptimizationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Store(contractInstance);
+            AfterWrite?.Invoke(contractInstance);
             return ValueTask.FromResult(contractInstance);
         }
 

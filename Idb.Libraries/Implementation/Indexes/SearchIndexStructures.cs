@@ -43,6 +43,9 @@ internal sealed class PropertySearchIndex : IDisposable
             : null;
     }
 
+    public bool TryNormalizeValue(object value, out object normalized)
+        => ExactNumericConversion.TryConvert(value, _definition.ValueType, out normalized);
+
     public void Clear()
     {
         _exact.Clear();

@@ -439,7 +439,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 return null;
             }
 
-            var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
+            var logicalKey = envelope.EnvelopeCacheKey;
             var semaphoreKey = FileSystemPathIdentity.Normalize(
                 _identityLockScope + "|" + typeof(TContract).FullName + "|" + logicalKey,
                 _pathComparer);
@@ -511,7 +511,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 return;
             }
 
-            var logicalKey = EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey);
+            var logicalKey = envelope.EnvelopeCacheKey;
             var existingCount = _envelopes.GetGroupCount(logicalKey);
             if (_storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single)
             {
@@ -524,6 +524,8 @@ namespace Idb.Libraries.Implementation.Serialization
             }
 
             var physicalKey = EnvelopeCacheKey.ToPhysicalKey(logicalKey, existingCount);
+            while (_envelopes.ContainsKey(physicalKey) || File.Exists(Path.Combine(Path.GetDirectoryName(envelope.Location)!, physicalKey + Path.GetExtension(envelope.Location))))
+                physicalKey = EnvelopeCacheKey.ToPhysicalKey(logicalKey, checked(++existingCount));
             if (string.Equals(physicalKey, envelope.EnvelopeCacheKey, StringComparison.Ordinal))
             {
                 return;
@@ -626,7 +628,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 StorageObjectCachePolicy.StoreObjectReference(envelope, instance, _storagePolicy);
                 _envelopes.AddOrUpdate(
                     envelope.EnvelopeCacheKey,
-                    EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                    (_storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single ? envelope.EnvelopeCacheKey : EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey)),
                     envelope);
                 return;
             }
@@ -642,6 +644,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 cached.ExtensionMetadata = envelope.ExtensionMetadata?.ToArray();
                 cached.RevisionTimestampUtcMicroseconds = envelope.RevisionTimestampUtcMicroseconds;
                 StorageObjectCachePolicy.StoreObjectReference(cached, envelope.ObjectInstance, _storagePolicy);
+                if (_envelopes is ICachedEnvelopeTracker<TContract> tracker) tracker.RefreshCachedObject(cached);
                 return;
             }
 
@@ -661,7 +664,7 @@ namespace Idb.Libraries.Implementation.Serialization
             StorageObjectCachePolicy.StoreObjectReference(skeleton, envelope.ObjectInstance, _storagePolicy);
             _envelopes.AddOrUpdate(
                 envelope.EnvelopeCacheKey,
-                EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                (_storageIdentityFactory.ObjectCardinality == StorageObjectCardinality.Single ? envelope.EnvelopeCacheKey : EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey)),
                 skeleton);
         }
 

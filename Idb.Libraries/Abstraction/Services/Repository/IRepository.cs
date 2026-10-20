@@ -63,14 +63,14 @@ public interface IRepository<TContract>
     /// <param name="filterFunction">Expression used to locate the entity.</param>
     /// <param name="cancellationToken">Token that propagates cancellation.</param>
     /// <returns>The entity that matches the predicate, or a default value when not found (implementation-specific).</returns>
-    ValueTask<TContract> QueryAsync(
+    ValueTask<TContract?> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Queries the repository for the first entity of the requested implementation/interface type that satisfies the predicate.
     /// </summary>
-    ValueTask<TImplementation> QueryAsync<TImplementation>(
+    ValueTask<TImplementation?> QueryAsync<TImplementation>(
         Func<TImplementation, bool> filterFunction,
         CancellationToken cancellationToken = default)
         where TImplementation : class, TContract;

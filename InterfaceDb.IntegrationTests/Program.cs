@@ -2681,6 +2681,12 @@ static void AssertNoSidecarArtifacts(string root)
         .Where(path =>
         {
             var fileName = Path.GetFileName(path);
+            // The clock's stable, empty lease file must persist across atomic replacements.
+            if (fileName == ".idb-revision-clock.lock")
+            {
+                Assert(new FileInfo(path).Length == 0, "Clock lease must contain no data.");
+                return false;
+            }
             return fileName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)
                 || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase)
                 || fileName.Contains(".pending.", StringComparison.OrdinalIgnoreCase);

@@ -643,7 +643,8 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
         value = NormalizeValue(value);
         if (value is null
             || string.IsNullOrWhiteSpace(path)
-            || !_indexes.TryGetValue(path, out var index))
+            || !_indexes.TryGetValue(path, out var index)
+            || !index.TryNormalizeValue(value, out value))
         {
             return null;
         }
@@ -672,11 +673,14 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
     {
         accessPath = null!;
         if (!TryCreateCombinedRange(left, right, out path, out var query)
-            || !_indexes.TryGetValue(path, out var index))
+            || !_indexes.TryGetValue(path, out var index)
+            || !index.TryNormalizeValue(query.LowerBound!, out var lower)
+            || !index.TryNormalizeValue(query.UpperBound!, out var upper))
         {
             return false;
         }
 
+        query = query with { LowerBound = lower, UpperBound = upper };
         var estimate = index.EstimateRange(query);
         if (!estimate.HasValue)
         {
@@ -882,7 +886,14 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
     private static MemberPath ReadMemberPathCore(Expression expression)
     {
-        expression = StripConvert(expression);
+        // A conversion of an indexed member can change its comparison semantics.
+        // Let the compiled predicate scan when the index cannot represent that expression.
+        while (expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } conversion
+            && conversion.Method is null
+            && ExactNumericConversion.IsOrderPreserving(conversion.Operand.Type, conversion.Type))
+        {
+            expression = conversion.Operand;
+        }
         var parts = new Stack<string>();
         while (expression is MemberExpression member)
         {
@@ -892,7 +903,7 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
                 return new MemberPath(string.Empty);
             }
 
-            expression = StripConvert(member.Expression);
+            expression = member.Expression;
         }
 
         if (expression is not ParameterExpression || parts.Count == 0)
@@ -905,7 +916,7 @@ internal sealed class SearchIndexStore<TContract> : IDisposable
 
     private static bool TryEvaluate(Expression expression, out object? value)
     {
-        expression = StripConvert(expression);
+        // Preserve numeric promotion and checked conversion on captured constants.
         if (expression is ConstantExpression constant)
         {
             value = constant.Value;

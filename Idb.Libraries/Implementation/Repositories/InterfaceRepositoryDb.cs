@@ -172,16 +172,16 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             : _notifications.DeleteAsync(entityToDelete, _observedDelete!, cancellationToken);
     }
 
-    public async ValueTask<TContract> QueryAsync(
+    public async ValueTask<TContract?> QueryAsync(
         Func<TContract, bool> filterFunction,
         CancellationToken cancellationToken = default)
-        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ?? null!;
+        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ;
 
-    public async ValueTask<TImplementation> QueryAsync<TImplementation>(
+    public async ValueTask<TImplementation?> QueryAsync<TImplementation>(
         Func<TImplementation, bool> filterFunction,
         CancellationToken cancellationToken = default)
         where TImplementation : class, TContract
-        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ?? null!;
+        => await QueryFirstAsync(filterFunction, cancellationToken).ConfigureAwait(false) ;
 
     public IAsyncEnumerable<TContract> QueryManyAsync(
         Func<TContract, bool> filterFunction,

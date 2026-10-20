@@ -1,3 +1,4 @@
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
@@ -22,6 +23,21 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
         IMigrationStrategy<TContract>? migrationStrategy = null,
         IEnvelopeStorageChangeSource<TContract>? storageChangeSource = null,
         IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler = null)
+        : this(contractConfig, readerAndWriter, envelopes, fileWriteCoordinator, storagePolicy, envelopeFactory, migrationStrategy, storageChangeSource, storageChangeHandler, null)
+    {
+    }
+
+    public FileEnvelopeRepository(
+        IDbContractConfigDto<TContract> contractConfig,
+        IReaderAndWriter<TContract> readerAndWriter,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IMigrationStrategy<TContract>? migrationStrategy,
+        IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
+        IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
+        IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory)
         : base(
             contractConfig,
             readerAndWriter,
@@ -31,7 +47,8 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
             envelopeFactory,
             migrationStrategy,
             storageChangeSource,
-            storageChangeHandler)
+            storageChangeHandler,
+            storageIdentityFactory)
     {
     }
 }

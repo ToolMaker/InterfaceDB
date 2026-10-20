@@ -199,8 +199,13 @@ public sealed class SegmentCoreCompatibilityTests
         // Telemetry review, 2026-10-19: only the optional SegmentCoreOptions.Telemetry
         // property was added. Removing that line reproduces the preceding approved hash.
         // Existing method signatures, default behavior and on-disk formats are unchanged.
+        // Cache capability review, 2026-10-20: only ICachedEnvelopeSource<TContract>
+        // and EnumerateCachedObjects were added to the adapter. Removing those two
+        // lines reproduces the preceding approved hash; existing signatures/formats stay intact.
+        // Physical lookup review: the optional IPhysicalEnvelopeLookup and ExistsPhysicalAsync
+        // are additive; removing those two lines restores the cache-capability hash above.
         Assert.AreEqual(
-            "3D70467F895CCBCBEF0A2EAC455FB05047A5F20858B70D75C17E8DA7CC581F14",
+            "59447B80F53821D3FBFEEB712A6882A338080487F0DAC25D2663AA4FF951077E",
             hash,
             "The public API changed. Review the API diff and apply the compatibility policy before updating the approved hash.\n"
             + text);

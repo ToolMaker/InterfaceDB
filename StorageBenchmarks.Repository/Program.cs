@@ -7,6 +7,12 @@ using Idb.Libraries.Abstractions.Enums;
 using Idb.Libraries.Abstractions.Services.Repository;
 using Idb.Storage.SegmentCore;
 
+if (args.Contains("--review-baseline"))
+{
+    await ReviewBaseline.RunAsync(args);
+    return;
+}
+
 if (!args.Contains("--run") && !args.Contains("--smoke"))
 {
     Console.WriteLine("Use --smoke for correctness only or --run for timings. Options: --records 2000 --iterations 7 --warmup 2 --batch 128 --payload-bytes 512 --read-concurrency 4 --engines FileSystem,SegmentCore --cache-modes MetadataOnly,WeakObject,StrongObject --label current --output report.json --data-root directory --keep-data");

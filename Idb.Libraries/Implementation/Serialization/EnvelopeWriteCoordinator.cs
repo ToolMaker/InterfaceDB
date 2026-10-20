@@ -12,7 +12,11 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
 {
     private readonly IWriteConflictStrategy<TContract> _strategy;
     private readonly IRevisionTimestampGenerator _clock;
+    private int _observationsRetired;
+    private readonly object _revisionCacheGate = new();
     private readonly ConcurrentDictionary<string, long> _committed = new(StringComparer.Ordinal);
+    private readonly Queue<(string Key, long Stamp)> _missingRevisions = new();
+    private long _missingRevisionSequence;
     private readonly SemaphoreSlim[] _gates = Enumerable.Range(0, 256).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private readonly IRevisionObjectSerializer<TContract> _serializer;
     private readonly IEnvelopeLifecycle<TContract> _lifecycle;
@@ -106,14 +110,42 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         if (_committed.TryGetValue(key, out var revision)) return revision < 0 ? null : revision;
         var payload = await read(token).ConfigureAwait(false);
         var current = payload is null ? (long?)null : ReadStoredRevision(key, payload);
-        _committed[key] = current ?? -1;
+        Committed(key, current);
         return current;
     }
 
-    public void Committed(string key, long? revision) => _committed[key] = revision ?? -1;
+    public void Committed(string key, long? revision)
+    {
+        lock (_revisionCacheGate)
+        {
+            if (revision is { } liveRevision)
+            {
+                // Live revisions scale with current records, as does the provider's primary
+                // metadata. Do not evict an entire working set because it exceeds 4,096 keys.
+                _committed[key] = liveRevision;
+                return;
+            }
+
+            var stamp = -checked(++_missingRevisionSequence);
+            _committed[key] = stamp;
+            _missingRevisions.Enqueue((key, stamp));
+            while (_missingRevisions.Count > 1024)
+            {
+                var retired = _missingRevisions.Dequeue();
+                // A read begun before deletion must not seed a retired missing key.
+                // After the first retirement only guarded, authoritative reads can seed
+                // unknown entries. Current live entries remain valid under the write guard.
+                if (_committed.TryGetValue(retired.Key, out var current) && current == retired.Stamp)
+                {
+                    _observationsRetired = 1;
+                    _committed.TryRemove(retired.Key, out _);
+                }
+            }
+        }
+    }
 
     public void ObserveCommittedPayload(string key, ReadOnlyMemory<byte> payload)
-        => _committed.TryAdd(key, ReadStoredRevision(key, payload));
+        => ObserveCommittedRevision(key, ReadStoredRevision(key, payload));
 
     /// <summary>
     /// Seeds an unknown revision from an already materialized, key-validated committed envelope.
@@ -122,7 +154,10 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
     public void ObserveCommittedRevision(string key, long revision)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(revision);
-        _committed.TryAdd(key, revision);
+        lock (_revisionCacheGate)
+        {
+            if (_observationsRetired == 0) _committed.TryAdd(key, revision);
+        }
     }
 
     public ValueTask<IObjectEnvelope<TContract>> PrepareAsync(IObjectEnvelope<TContract> candidate, bool isInsert,

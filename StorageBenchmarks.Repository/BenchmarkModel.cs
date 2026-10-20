@@ -103,9 +103,10 @@ internal sealed class BenchSession(ServiceProvider provider, IRepository<IBenchR
 {
     private int _disposed;
     public IRepository<IBenchRecord> Repository { get; } = repository;
-    public static async Task<BenchSession> OpenAsync(BenchConfig config)
+    public static async Task<BenchSession> OpenAsync(BenchConfig config, IObjectSerializer<IBenchRecord>? serializer = null)
     {
         var services = new ServiceCollection();
+        if (serializer is not null) services.AddKeyedSingleton(config.EnvelopeDICacheKey, serializer);
         var identity = new BenchIdentity(config);
         switch (config.RepositoryType)
         {

@@ -13,6 +13,8 @@ namespace Idb.Storage.SegmentCore;
 /// </summary>
 internal sealed class SegmentCoreRepositoryFacade<TContract> :
     IEnvelopeRepository<TContract>,
+    IPhysicalEnvelopeLookup,
+    ICachedEnvelopeSource<TContract>,
     IBatchedEnvelopeRepository<TContract>,
     ICommittedEnvelopeSnapshotSource<TContract>,
     IRetainedVersionStore<TContract>,
@@ -71,6 +73,12 @@ internal sealed class SegmentCoreRepositoryFacade<TContract> :
 
     public ValueTask<CompactionRunResult> RunCompactionAsync(bool manual = false, CancellationToken cancellationToken = default) =>
         ((ICompactionMaintenance<TContract>)_repository).RunCompactionAsync(manual, cancellationToken);
+
+    public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
+        => ((ICachedEnvelopeSource<TContract>)_repository).EnumerateCachedObjects();
+
+    public ValueTask<bool> ExistsPhysicalAsync(string physicalKey, CancellationToken cancellationToken = default)
+        => ((IPhysicalEnvelopeLookup)_repository).ExistsPhysicalAsync(physicalKey, cancellationToken);
 
     public bool Exists(string storageKey) => _repository.Exists(storageKey);
 

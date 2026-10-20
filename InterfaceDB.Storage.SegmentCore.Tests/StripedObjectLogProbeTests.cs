@@ -391,7 +391,8 @@ public sealed class StripedObjectLogProbeTests
         }
 
         await active;
-        await Assert.ThrowsExactlyAsync<ObjectLogBackpressureException>(() => batch);
+        var aborted = await Assert.ThrowsExactlyAsync<TransactionPreparationAbortedException>(() => batch);
+        Assert.IsInstanceOfType<ObjectLogBackpressureException>(aborted.InnerException);
         Assert.AreEqual(0, writer.Statistics.CurrentOutstandingWrites);
         var recovered = StripedObjectLogRecovery.Recover(root.Path);
         Assert.IsTrue(recovered.TransactionRecords.Any(static record => record.Record.Key == "accepted"));
@@ -433,7 +434,8 @@ public sealed class StripedObjectLogProbeTests
         }
 
         await active;
-        await Assert.ThrowsAsync<OperationCanceledException>(() => batch);
+        var aborted = await Assert.ThrowsExactlyAsync<TransactionPreparationAbortedException>(() => batch);
+        Assert.IsInstanceOfType<OperationCanceledException>(aborted.InnerException);
         Assert.AreEqual(0, writer.Statistics.CurrentOutstandingWrites);
         var recovered = StripedObjectLogRecovery.Recover(root.Path);
         Assert.IsTrue(recovered.TransactionRecords.Any(static record => record.Record.Key == "accepted"));

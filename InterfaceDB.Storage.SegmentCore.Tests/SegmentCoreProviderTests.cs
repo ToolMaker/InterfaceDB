@@ -702,7 +702,7 @@ public sealed partial class SegmentCoreProviderTests
         await reader.InitializeAsync();
 
         Assert.AreEqual(0, serializer.DeserializeCount);
-        Assert.IsTrue(reader.Exists("record"));
+        Assert.IsTrue(reader.Exists("record-000000"));
         Assert.AreEqual(0, serializer.DeserializeCount);
 
         var count = 0;

@@ -22,7 +22,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
     }
 
-    public ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default)
+    public async ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default)
     {
         if (objToCheck is null)
         {
@@ -30,8 +30,10 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
         }
 
         var envelope = objToCheck.Envelope;
-        return new ValueTask<bool>(
-            envelope is not null && _envelopeRepository.Exists(envelope.EnvelopeCacheKey));
+        if (envelope is null) return false;
+        return _envelopeRepository is IPhysicalEnvelopeLookup lookup
+            ? await lookup.ExistsPhysicalAsync(envelope.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false)
+            : await _envelopeRepository.GetPhysicalAsync(envelope.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false) is not null;
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)

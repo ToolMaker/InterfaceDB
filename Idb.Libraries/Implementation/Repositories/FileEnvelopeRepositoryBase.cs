@@ -1,3 +1,4 @@
+using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using Idb.Libraries.Abstractions.Dtos;
@@ -18,6 +19,8 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// </summary>
 public abstract class FileEnvelopeRepositoryBase<TContract> :
     IEnvelopeRepository<TContract>,
+    IPhysicalEnvelopeLookup,
+    ICachedEnvelopeSource<TContract>,
     ICommittedEnvelopeSnapshotSource<TContract>,
     IRetainedVersionStore<TContract>,
     IBatchedEnvelopeRepository<TContract>,
@@ -26,7 +29,11 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
+    public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
+        => CachedEnvelopeEnumeration.Enumerate(_envelopes);
+
     private readonly IDbContractConfigDto<TContract> _contractConfig;
+    private readonly StorageObjectCardinality _objectCardinality;
     private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
     private readonly string _dataRoot;
     private readonly IMigrationStrategy<TContract>? _migrationStrategy;
@@ -61,8 +68,24 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         IMigrationStrategy<TContract>? migrationStrategy = null,
         IEnvelopeStorageChangeSource<TContract>? storageChangeSource = null,
         IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler = null)
+        : this(contractConfig, readerAndWriter, envelopes, fileWriteCoordinator, storagePolicy, envelopeFactory, migrationStrategy, storageChangeSource, storageChangeHandler, null)
+    {
+    }
+
+    protected FileEnvelopeRepositoryBase(
+        IDbContractConfigDto<TContract> contractConfig,
+        IReaderAndWriter<TContract> readerAndWriter,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IMigrationStrategy<TContract>? migrationStrategy,
+        IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
+        IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
+        IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
+        _objectCardinality = storageIdentityFactory?.ObjectCardinality ?? contractConfig.ObjectCardinality;
         _migrationStrategy = migrationStrategy;
         _storageChangeSource = storageChangeSource;
         _storageChangeHandler = storageChangeHandler;
@@ -103,6 +126,14 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         return reader.CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
     }
 
+    public async ValueTask<bool> ExistsPhysicalAsync(string physicalKey, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(physicalKey);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return _envelopes.ContainsKey(physicalKey);
+    }
+
     public bool Exists(string storageKey)
     {
         if (string.IsNullOrWhiteSpace(storageKey))
@@ -110,8 +141,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        var logicalKey = EnvelopeCacheKey.ToLogicalKey(storageKey);
-        return _envelopes.GetGroupCount(logicalKey) > 0;
+        return TryGet(storageKey, out _);
     }
 
     public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
@@ -121,8 +151,11 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        var logicalKey = EnvelopeCacheKey.ToLogicalKey(storageKey);
-        return _envelopes.TryGetGroup(logicalKey, out envelopes);
+        if (_envelopes.TryGetGroup(storageKey, out envelopes)) return true;
+        if (_envelopes.ContainsKey(storageKey))
+            return _envelopes.TryGetGroup(_objectCardinality == StorageObjectCardinality.Single
+                ? storageKey : EnvelopeCacheKey.ToLogicalKey(storageKey), out envelopes);
+        return false;
     }
 
     public async ValueTask<TContract> WriteAsync(
@@ -605,6 +638,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                 envelope.RevisionTimestampUtcMicroseconds = hydrated.Envelope?.RevisionTimestampUtcMicroseconds ?? 0;
                 envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
                 StorageObjectCachePolicy.StoreObjectReference(envelope, hydrated, _storagePolicy);
+                if (_envelopes is ICachedEnvelopeTracker<TContract> tracker) tracker.RefreshCachedObject(envelope);
                 currentEnvelope = envelope;
             }
         }
@@ -714,7 +748,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
                     {
                         _envelopes.AddOrUpdate(
                             migrated.Envelope.EnvelopeCacheKey,
-                            EnvelopeCacheKey.ToLogicalKey(migrated.Envelope.EnvelopeCacheKey),
+                            _objectCardinality == StorageObjectCardinality.Single
+                                ? migrated.Envelope.EnvelopeCacheKey
+                                : EnvelopeCacheKey.ToLogicalKey(migrated.Envelope.EnvelopeCacheKey),
                             migrated.Envelope);
                     }
                 }
@@ -798,7 +834,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
             _envelopes.AddOrUpdate(
                 envelope.EnvelopeCacheKey,
-                EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey),
+                (_objectCardinality == StorageObjectCardinality.Single ? envelope.EnvelopeCacheKey : EnvelopeCacheKey.ToLogicalKey(envelope.EnvelopeCacheKey)),
                 envelope);
             yield return envelope;
         }

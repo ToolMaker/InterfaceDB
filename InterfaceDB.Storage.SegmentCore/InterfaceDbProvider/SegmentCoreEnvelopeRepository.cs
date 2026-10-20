@@ -25,6 +25,8 @@ namespace Idb.Storage.SegmentCore;
 /// </summary>
 public sealed class SegmentCoreEnvelopeRepository<TContract> :
     IEnvelopeRepository<TContract>,
+    IPhysicalEnvelopeLookup,
+    ICachedEnvelopeSource<TContract>,
     ICommittedEnvelopeSnapshotSource<TContract>,
     IRetainedVersionStore<TContract>,
     IBatchedEnvelopeRepository<TContract>,
@@ -35,6 +37,9 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     IAsyncDisposable
     where TContract : class, IStoredContract<TContract>
 {
+    public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
+        => CachedEnvelopeEnumeration.Enumerate(_envelopes);
+
     private const int CacheMutationGateCount = 64;
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StoragePolicy _storagePolicy;
@@ -164,18 +169,29 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         }
     }
 
+    public async ValueTask<bool> ExistsPhysicalAsync(string physicalKey, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(physicalKey);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return _envelopes.ContainsKey(physicalKey);
+    }
+
     public bool Exists(string storageKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         EnsureInitializedSynchronously();
-        return _envelopes.GetGroupCount(ToLogicalKey(storageKey)) > 0;
+        return TryGet(storageKey, out _);
     }
 
     public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         EnsureInitializedSynchronously();
-        return _envelopes.TryGetGroup(ToLogicalKey(storageKey), out envelopes);
+        if (_envelopes.TryGetGroup(storageKey, out envelopes)) return true;
+        if (_envelopes.ContainsKey(storageKey))
+            return _envelopes.TryGetGroup(ToLogicalKey(storageKey), out envelopes);
+        return false;
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -419,7 +435,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
-        if (!_envelopes.TryGetGroup(ToLogicalKey(storageKey), out var group))
+        if (!TryGet(storageKey, out var group))
         {
             yield break;
         }
@@ -663,7 +679,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (envelope.ObjectInstance is TImplementation)
+            if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var instance)
+                && instance is TImplementation)
             {
                 yield return envelope;
             }
@@ -1212,7 +1229,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         IObjectEnvelope<TContract> envelope,
         CancellationToken cancellationToken)
     {
-        var logicalKey = ToLogicalKey(envelope.EnvelopeCacheKey);
+        var logicalKey = envelope.EnvelopeCacheKey;
         if (_identityFactory.ObjectCardinality == StorageObjectCardinality.Multiple)
         {
             if (!_suffixAllocators.TryGetValue(logicalKey, out var allocator))
@@ -1532,7 +1549,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
     private void ObservePhysicalKey(string physicalKey)
     {
-        if (!TrySplitPhysicalKey(physicalKey, out var logicalKey, out var suffix))
+        if (_identityFactory.ObjectCardinality != StorageObjectCardinality.Multiple
+            || !TrySplitPhysicalKey(physicalKey, out var logicalKey, out var suffix))
         {
             return;
         }
@@ -1570,38 +1588,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         utcTicks == 0 ? null : new DateTimeOffset(utcTicks, TimeSpan.Zero);
 
     private static string ToPhysicalKey(string logicalKey, int index) =>
-        logicalKey + "-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        EnvelopeCacheKey.ToPhysicalKey(logicalKey, index);
 
-    private static string ToLogicalKey(string physicalKey)
+    private string ToLogicalKey(string physicalKey)
     {
-        return TrySplitPhysicalKey(physicalKey, out var logicalKey, out _)
+        return _identityFactory.ObjectCardinality == StorageObjectCardinality.Multiple
+            && TrySplitPhysicalKey(physicalKey, out var logicalKey, out _)
             ? logicalKey
             : physicalKey;
     }
 
-    private static bool TrySplitPhysicalKey(
-        string physicalKey,
-        out string logicalKey,
-        out int suffix)
-    {
-        var separator = physicalKey.LastIndexOf('-');
-        if (separator > 0
-            && separator < physicalKey.Length - 1
-            && int.TryParse(
-                physicalKey.AsSpan(separator + 1),
-                System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out suffix)
-            && suffix >= 0)
-        {
-            logicalKey = physicalKey[..separator];
-            return true;
-        }
-
-        logicalKey = physicalKey;
-        suffix = -1;
-        return false;
-    }
+    private static bool TrySplitPhysicalKey(string physicalKey, out string logicalKey, out int suffix)
+        => EnvelopeCacheKey.TrySplitPhysicalKey(physicalKey, out logicalKey, out suffix);
 
     private static bool IsPathWithin(string candidatePath, string parentPath)
     {

@@ -1,3 +1,5 @@
+using Idb.Diagnostics;
+using Idb.Libraries.Abstractions.Enums;
 using System.Linq.Expressions;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
@@ -21,7 +23,12 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 {
     private readonly IEnvelopeRepository<TContract> _envelopeRepository;
     private readonly SearchQueryPlannerOptions _plannerOptions;
-    private readonly bool _writesPublishStoredNotifications;
+    private readonly StoragePolicy _storagePolicy;
+    private int _indexesUsable = 1;
+    private string? _indexFallbackReason;
+    private int _mutableValuesExposed;
+    private readonly Queue<(string Key, long Order)> _deletedMutationOrders = new();
+    private long _discardedMutationOrder;
     private readonly SearchIndexStore<TContract> _searchIndexes;
     private readonly ConcurrentDictionary<Type, IRuntimeSearchIndexStore> _runtimeSearchIndexes = new();
     private readonly ConcurrentDictionary<string, Type> _runtimeTypesByPhysicalKey = new(StringComparer.Ordinal);
@@ -47,12 +54,13 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     {
         _envelopeRepository = envelopeRepository ?? throw new ArgumentNullException(nameof(envelopeRepository));
         var resolvedStoragePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
-        _writesPublishStoredNotifications = resolvedStoragePolicy.RaiseNotifications;
+        _storagePolicy = resolvedStoragePolicy;
+        _mutableValuesExposed = resolvedStoragePolicy.ObjectCacheMode == StorageObjectCacheMode.MetadataOnly ? 0 : 1;
         _plannerOptions = SearchQueryPlannerOptions.For(resolvedStoragePolicy.ObjectCacheMode);
         _searchIndexes = new SearchIndexStore<TContract>(_plannerOptions);
     }
 
-    public ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default)
+    public async ValueTask<bool> ExistsAsync(TContract objToCheck, CancellationToken cancellationToken = default)
     {
         if (objToCheck is null)
         {
@@ -60,8 +68,10 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         }
 
         var envelope = objToCheck.Envelope;
-        return new ValueTask<bool>(
-            envelope is not null && _envelopeRepository.Exists(envelope.EnvelopeCacheKey));
+        if (envelope is null) return false;
+        return _envelopeRepository is IPhysicalEnvelopeLookup lookup
+            ? await lookup.ExistsPhysicalAsync(envelope.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false)
+            : await _envelopeRepository.GetPhysicalAsync(envelope.EnvelopeCacheKey, cancellationToken).ConfigureAwait(false) is not null;
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -191,7 +201,18 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     public SearchQueryPlanExplanation ExplainSearch(Expression<Func<TContract, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        return _searchIndexes.ExplainPlan(predicate);
+        if (IndexFallbackReason is { } reason)
+            return new SearchQueryPlanExplanation($"FullScan: {reason}", false, null,
+                double.PositiveInfinity, 1) { FallbackReason = reason };
+
+        var explanation = _searchIndexes.ExplainPlan(predicate);
+        return explanation.UsesIndexes && _envelopeRepository is ICachedEnvelopeSource<TContract>
+            ? explanation with
+            {
+                PlanText = explanation.PlanText + "\nRecheck live cached objects without loading storage.",
+                RechecksCachedObjects = true
+            }
+            : explanation;
     }
 
     public IAsyncEnumerable<TContract> QueryByStorageKeyAsync(
@@ -234,6 +255,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
                 continue;
             }
 
+            ObserveCacheMode(entity);
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
         }
@@ -258,6 +280,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
                 continue;
             }
 
+            ObserveCacheMode(implementation);
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(implementation, envelope);
             yield return implementation;
         }
@@ -268,7 +291,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var compiled = GetCompiledPredicate(predicate);
-        var keys = _searchIndexes.TryEvaluate(predicate);
+        var keys = CanUseIndexes ? _searchIndexes.TryEvaluate(predicate) : null;
         if (keys is null)
         {
             await foreach (var entity in QueryInternalAsync(compiled, cancellationToken).ConfigureAwait(false))
@@ -279,22 +302,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             yield break;
         }
 
-        await foreach (var envelope in EnvelopeBatchEnumeration
-            .ReadAsync(_envelopeRepository, keys, cancellationToken).ConfigureAwait(false))
-        {
-            TContract? entity = null;
-            if (envelope is not null)
-            {
-                StorageObjectCachePolicy.TryGetObjectInstance(envelope, out entity);
-            }
-            if (entity is null || !compiled(entity))
-            {
-                continue;
-            }
-
-            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
+        await foreach (var entity in ReadSearchCandidatesAsync(keys, compiled, cancellationToken).ConfigureAwait(false))
             yield return entity;
-        }
     }
 
     private async IAsyncEnumerable<TImplementation> QueryExpressionInternalAsync<TImplementation>(
@@ -315,7 +324,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
 
         var compiled = GetCompiledPredicate(predicate);
         var searchIndexes = GetRuntimeSearchIndexStore(typeof(TImplementation));
-        var keys = searchIndexes.TryEvaluate(predicate);
+        var keys = CanUseIndexes ? searchIndexes.TryEvaluate(predicate) : null;
         if (keys is null)
         {
             await foreach (var entity in QueryInternalAsync(compiled, cancellationToken).ConfigureAwait(false))
@@ -326,6 +335,37 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             yield break;
         }
 
+        await foreach (var entity in ReadSearchCandidatesAsync(keys, compiled, cancellationToken).ConfigureAwait(false))
+            yield return entity;
+    }
+
+    private async IAsyncEnumerable<TImplementation> ReadSearchCandidatesAsync<TImplementation>(
+        HashSet<string> keys,
+        Func<TImplementation, bool> predicate,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+        where TImplementation : class, TContract
+    {
+        // Indexes describe saved values. Shared cached objects can have unsaved edits
+        // that both enter and leave the indexed result. Inspect only live cache objects,
+        // and pin matches so a weak reference cannot disappear before they are returned.
+        var cachedMatches = new Dictionary<string, TImplementation>(StringComparer.Ordinal);
+        if (_envelopeRepository is ICachedEnvelopeSource<TContract> cachedSource)
+        {
+            foreach (var entry in cachedSource.EnumerateCachedObjects())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                keys.Remove(entry.Key);
+                if (entry.Value is TImplementation instance && predicate(instance))
+                    cachedMatches[entry.Key] = instance;
+            }
+        }
+
+        foreach (var instance in cachedMatches.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return instance;
+        }
+
         await foreach (var envelope in EnvelopeBatchEnumeration
             .ReadAsync(_envelopeRepository, keys, cancellationToken).ConfigureAwait(false))
         {
@@ -334,11 +374,12 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 StorageObjectCachePolicy.TryGetObjectInstance(envelope, out entity);
             }
-            if (entity is not TImplementation implementation || !compiled(implementation))
+            if (entity is not TImplementation implementation || !predicate(implementation))
             {
                 continue;
             }
 
+            ObserveCacheMode(implementation);
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(implementation, envelope);
             yield return implementation;
         }
@@ -354,6 +395,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 throw new InvalidOperationException("Envelope does not contain an object instance.");
             }
+            ObserveCacheMode(entity);
             StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
             yield return entity;
         }
@@ -363,12 +405,9 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         TContract entity,
         CancellationToken cancellationToken)
     {
+        ValidateIndexValues(entity);
         var saved = await _envelopeRepository.WriteAsync(entity, cancellationToken).ConfigureAwait(false);
-        if (!_writesPublishStoredNotifications)
-        {
-            UpdateIndex(saved);
-        }
-
+        UpdateIndex(saved);
         return saved;
     }
 
@@ -378,45 +417,38 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     {
         IReadOnlyList<TContract> saved;
         var materialized = entities as IReadOnlyList<TContract> ?? entities.ToArray();
+        foreach (var entity in materialized) ValidateIndexValues(entity);
         try { saved = await _envelopeRepository.WriteManyAsync(materialized, cancellationToken).ConfigureAwait(false); }
-        catch (Exception exception) when (exception is Idb.Libraries.Abstractions.Exceptions.IStorageBulkOperationResult)
+        catch (Exception exception) when (exception is Idb.Libraries.Abstractions.Exceptions.IStorageBulkOperationResult partial)
         {
-            var partial = (Idb.Libraries.Abstractions.Exceptions.IStorageBulkOperationResult)exception;
-            if (!_writesPublishStoredNotifications)
+            try
             {
-                try
+                foreach (var index in partial.SucceededIndexes)
                 {
-                    foreach (var index in partial.SucceededIndexes)
+                    if (partial.CommittedItems.TryGetValue(index, out var committed))
                     {
-                        if (partial.CommittedItems.TryGetValue(index, out var committed))
-                        {
-                            UpdateIndex((TContract)committed);
-                            continue;
-                        }
-                        var entity = materialized[index];
-                        if (entity.Envelope is { } envelope
-                            && _envelopeRepository is ICommittedEnvelopeSnapshotSource<TContract> snapshots)
-                        {
-                            var snapshot = await snapshots.CaptureCommittedAsync(envelope, int.MaxValue, CancellationToken.None).ConfigureAwait(false)
-                                ?? throw new InvalidDataException("A successful batch write could not be read for index refresh.");
-                            UpdateIndex(snapshot.Materialize());
-                        }
-                        else UpdateIndex(entity);
+                        UpdateIndex((TContract)committed);
+                        continue;
                     }
+                    var entity = materialized[index];
+                    if (entity.Envelope is { } envelope
+                        && _envelopeRepository is ICommittedEnvelopeSnapshotSource<TContract> snapshots)
+                    {
+                        var snapshot = await snapshots.CaptureCommittedAsync(envelope, int.MaxValue, CancellationToken.None).ConfigureAwait(false)
+                            ?? throw new InvalidDataException("A successful batch write could not be read for index refresh.");
+                        UpdateIndex(snapshot.Materialize());
+                    }
+                    else UpdateIndex(entity);
                 }
-                catch (Exception refreshFailure)
-                { exception.Data["InterfaceDB.IndexRefreshFailure"] = refreshFailure; }
+            }
+            catch (Exception refreshFailure)
+            {
+                InvalidateIndexes(refreshFailure);
+                exception.Data["InterfaceDB.IndexRefreshFailure"] = refreshFailure;
             }
             throw;
         }
-        if (!_writesPublishStoredNotifications)
-        {
-            foreach (var entity in saved)
-            {
-                UpdateIndex(entity);
-            }
-        }
-
+        foreach (var entity in saved) UpdateIndex(entity);
         return saved;
     }
 
@@ -477,6 +509,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 QueueOrApplyUpsert(envelope.EnvelopeCacheKey, entity);
             }
+            else DisableIndexes("A stored notification did not contain an object for index maintenance.");
 
             return ValueTask.CompletedTask;
         });
@@ -502,7 +535,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         lock (_indexMutationGate)
         {
             var order = EnvelopeCommitOrder.Get(entity.Envelope);
-            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior > order) return;
+            if (order > 0 && order <= _discardedMutationOrder) { DisableIndexes("A mutation predates the retained index ordering history."); return; }
+            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior >= order) return;
             if (order > 0) _lastMutationOrder[physicalKey] = order;
             if (Volatile.Read(ref _disposed) != 0)
             {
@@ -523,11 +557,24 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     {
         lock (_indexMutationGate)
         {
-            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior > order) return;
+            if (order > 0 && order <= _discardedMutationOrder) { DisableIndexes("A mutation predates the retained index ordering history."); return; }
+            if (order > 0 && _lastMutationOrder.TryGetValue(physicalKey, out var prior) && prior >= order) return;
             if (order > 0) _lastMutationOrder[physicalKey] = order;
             if (Volatile.Read(ref _disposed) != 0)
             {
                 return;
+            }
+
+            if (order > 0)
+            {
+                _deletedMutationOrders.Enqueue((physicalKey, order));
+                while (_deletedMutationOrders.Count > 1024)
+                {
+                    var retired = _deletedMutationOrders.Dequeue();
+                    _discardedMutationOrder = Math.Max(_discardedMutationOrder, retired.Order);
+                    if (_lastMutationOrder.TryGetValue(retired.Key, out var current) && current == retired.Order)
+                        _lastMutationOrder.Remove(retired.Key);
+                }
             }
 
             if (_bufferIndexMutations != 0)
@@ -572,7 +619,48 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         Volatile.Write(ref _persistentCatalogDirty, 1);
     }
 
+    private string? IndexFallbackReason => Volatile.Read(ref _indexesUsable) == 0
+        ? Volatile.Read(ref _indexFallbackReason) ?? "Index maintenance failed; reopen to rebuild indexes."
+        : Volatile.Read(ref _mutableValuesExposed) != 0 && _envelopeRepository is not ICachedEnvelopeSource<TContract>
+            ? "The provider exposes mutable cached objects but does not support cache-only enumeration."
+            : null;
+
+    private bool CanUseIndexes => IndexFallbackReason is null;
+
+    private void DisableIndexes(string reason)
+    {
+        Interlocked.CompareExchange(ref _indexFallbackReason, reason, null);
+        Volatile.Write(ref _indexesUsable, 0);
+    }
+
+    private void ObserveCacheMode(TContract entity)
+    {
+        if (StorageObjectCachePolicy.ResolveObjectCacheMode(entity, _storagePolicy) != StorageObjectCacheMode.MetadataOnly)
+            Volatile.Write(ref _mutableValuesExposed, 1);
+    }
+
+    private void ValidateIndexValues(TContract entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ObserveCacheMode(entity);
+        foreach (var definition in SearchIndexDiscovery.Discover(typeof(TContract))) _ = definition.Getter(entity);
+        foreach (var definition in SearchIndexDiscovery.Discover(entity.GetType())) _ = definition.Getter(entity);
+    }
+
     private void UpdateIndexes(string physicalKey, TContract entity)
+    {
+        ObserveCacheMode(entity);
+        try { UpdateIndexesCore(physicalKey, entity); }
+        catch (Exception error) { InvalidateIndexes(error); }
+    }
+
+    private void InvalidateIndexes(Exception error)
+    {
+        DisableIndexes("Index maintenance failed; reopen to rebuild indexes.");
+        DatabaseTelemetryScope.Start(_storagePolicy.Telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(error);
+    }
+
+    private void UpdateIndexesCore(string physicalKey, TContract entity)
     {
         _searchIndexes.Upsert(physicalKey, entity);
         var runtimeType = entity.GetType();
@@ -696,6 +784,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         CancellationToken cancellationToken,
         SearchIndexStorageIdentity? expectedStorageIdentity = null)
     {
+        if (Volatile.Read(ref _indexesUsable) == 0) return;
         var repository = _persistentCatalogRepository;
         var path = _persistentCatalogPath;
         if (repository is null || path is null)
@@ -810,6 +899,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         lock (_indexMutationGate)
         {
             _pendingIndexMutations.Clear();
+            _lastMutationOrder.Clear();
+            _deletedMutationOrders.Clear();
             _searchIndexes.Dispose();
             foreach (var runtimeIndex in _runtimeSearchIndexes.Values)
             {

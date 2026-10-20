@@ -1,8 +1,98 @@
 # Current Performance Results
 
-## Latest Preview.6 Snapshot — 5 September 2026
+## Storage-review follow-up — 20 October 2026
 
-See [Preview.6 Performance Snapshot](performance-preview6-20260905.md) for the latest complete-object
+This is an unreleased source comparison, not a new NuGet release. The baseline already
+contains the original storage-correctness fixes and the cache-aware query, numeric
+promotion and explanation corrections. The comparison isolates the subsequent
+live-revision tracking and exact-existence changes; it does not compare with the
+original, incorrect implementation.
+
+### Method
+
+- .NET SDK 10.0.401 / runtime 10.0.12, Windows 10.0.19045, AMD Ryzen 9 3950X
+  (16 cores / 32 logical processors), Samsung SSD 980 PRO 1 TB NVMe.
+- Complete SegmentCore repository operations with three configured indexes,
+  512-byte payloads, durable mutation WAL and explicit flush. Maintenance,
+  notifications, file watching and telemetry disabled. No competing test or build
+  runs were scheduled during measurements; ordinary workstation activity is not
+  fully controlled.
+- Three separate processes per build at 2,000, 10,000 and 50,000 stored records:
+  18 processes, alternating build and store-size order. Search has five warmups
+  and 30 measured calls per case. Existence has 16 warmups and 2,000 measured calls.
+- Individual updates change an indexed field. After 64 warmups, each process saves
+  2,000, 10,000 or 10,000 evenly spaced records respectively. The 50,000-record case
+  therefore samples its working set rather than updating every record.
+- StrongObject and pinned WeakObject retain all seeded objects. Collected WeakObject
+  reopens the repository and forces GC before each query, outside timing. A
+  materialization assertion rejects samples whose results are still cached. Its
+  fresh repository scope also differs from the warm query lifecycle of the other
+  cases; do not attribute every timing difference solely to cache mode.
+- Every result consumes all domain fields and payload bytes. Writes and final
+  full-store counts/checksums after durable reopen are checked. Allocations use
+  process-wide counters; runtime/background activity can contribute.
+- Tables use medians across the three runs. P50/p95 are medians of the within-run
+  percentiles, not confidence bounds or a production latency guarantee.
+
+The repeatable commands are in
+[the repository benchmark guide](../StorageBenchmarks.Repository/README.md#storage-review-baseline).
+Raw reports include all samples, options, timestamps and assembly fingerprints; the
+summary script rejects mismatched harnesses, options and unpaired process runs.
+
+### Individual updates (MetadataOnly)
+
+| Stored records | Baseline mean ms/save | Current mean ms/save | Current p50 / p95 ms | Baseline / current bytes allocated per save |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 | 3.134 | 3.177 | 3.061 / 3.209 | 5,966 / 5,937 |
+| 10,000 | 3.223 | 3.184 | 3.087 / 3.234 | 7,827 / 5,911 |
+| 50,000 | 3.142 | 3.182 | 3.091 / 3.241 | 8,089 / 6,194 |
+
+Across all three runs, measured revision reads fell from 29808 to zero at 10k records, and from 29961 to zero at 50k. Both builds already performed zero revision reads at 2k. Update latency was essentially unchanged; allocation and redundant-read improvements are the stronger evidence. Current revision metadata retains live records plus at most 1,024 missing entries, so retained memory can exceed the previous 4,096-entry cap.
+
+### Exact existence (MetadataOnly)
+
+| Stored records | Baseline mean microseconds | Current mean microseconds | Baseline / current allocated bytes |
+| --- | ---: | ---: | ---: |
+| 2,000 | 40.37 | 0.60 | 2,776 / 0 |
+| 10,000 | 17.95 | 0.72 | 2,776 / 0 |
+| 50,000 | 24.83 | 0.62 | 2,777 / 0 |
+
+Current existence checks performed zero deserializations. The fully cached StrongObject case at 10k increased from 0.30 to 0.41 microseconds per call, with zero allocation in both builds. That direction occurred in all three 10k runs, but not consistently at the other sizes. Individual sub-microsecond timings are sensitive to measurement overhead; this is recorded as a small tradeoff, not used to justify changing write or integrity safeguards.
+
+### Current search results at 50,000 records
+
+| Cache/lifecycle | Point p50 / p95 ms | Ten-record range p50 / p95 ms | Point / range allocated bytes |
+| --- | ---: | ---: | ---: |
+| MetadataOnly, warm scope | 0.044 / 0.054 | 0.262 / 0.371 | 6,722 / 42,694 |
+| StrongObject, all objects retained | 13.243 / 14.588 | 13.852 / 14.823 | 3,632 / 8,201 |
+| WeakObject, all objects pinned | 21.994 / 26.589 | 22.607 / 24.234 | 3,817 / 8,273 |
+| WeakObject, new scope and GC per query | 0.345 / 0.423 | 0.715 / 0.840 | 13,039 / 64,497 |
+
+One current MetadataOnly range sample took **23.994 ms**, compared with below 0.5 ms for the other current samples in that case. Its cause was not attributed; it did not recur in the other two process runs. Median/p95 summaries must not be read as maximum-latency guarantees.
+
+### Assembly provenance
+
+The baseline is a retained pre-follow-up build, not a released package. All 18 processes used the same benchmark executable. SHA-256 identifiers:
+
+| Assembly | Baseline | Current |
+| --- | --- | --- |
+| StorageBenchmarks.Repository | `F989BFF076FDD1FE9A3496757DD9D998DE808C7684A3DF145BB374D621BBD321` | `F989BFF076FDD1FE9A3496757DD9D998DE808C7684A3DF145BB374D621BBD321` |
+| Idb.Libraries | `3A6480B21BB39EB4532987822A1D1C9B5D06AFE2B91530F46C09D1D7F6D6923C` | `E9903825E19C3BB4DB15B86F9CB922C63D6B3973AED08FC18FA2CF6446D2706C` |
+| InterfaceDB.Storage.SegmentCore | `632669C733B063D631BEFD0BACD5B6A10E3D23EE9091F09F0D20EC9E330DFC8A` | `85889C0E23D11F67ADFB9D012D822381ED157B34928EBA24356DCFC3E6487D83` |
+
+The external review used a different contract and unusually small segment files.
+Its reported 35% update slowdown cannot be established or dismissed by translating
+these absolute timings. The controlled comparison measures the two follow-up
+changes described above.
+
+Fully populated mutable caches still require in-memory checks proportional to
+their size in the current query implementation. Indexed candidate selection does
+not remove that cost. First-result short-circuiting is a possible later optimization;
+it must preserve unsaved cached edits and must not weaken correctness checks.
+
+## Preview.6 Snapshot — 5 September 2026
+
+See [Preview.6 Performance Snapshot](performance-preview6-20260905.md) for the earlier complete-object
 SegmentCore/SQLite grid, full File/SegmentCore repository measurements, before/after comparisons and
 explicit regressions. The sections below retain their original evidence dates and cache boundaries.
 

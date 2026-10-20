@@ -73,6 +73,9 @@ jobs:
       - name: Verify complete-repository smoke matrix
         run: dotnet run -c Release --project StorageBenchmarks.Repository -- --smoke --records 200 --batch 32 --output artifacts/repository-smoke.json
 
+      - name: Verify storage-review benchmark correctness
+        run: dotnet run -c Release --no-build --project StorageBenchmarks.Repository -- --review-baseline --smoke --records 32 --engines SegmentCore --output artifacts/review-smoke.json
+
       - name: Pack public packages
         run: |
           dotnet pack Idb.Libraries/Idb.Libraries.csproj -c Release --no-build --no-restore --output artifacts/packages

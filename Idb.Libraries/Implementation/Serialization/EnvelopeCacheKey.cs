@@ -19,20 +19,21 @@ internal static class EnvelopeCacheKey
             return physicalKey;
         }
 
-        var separator = physicalKey.LastIndexOf('-');
-        if (separator <= 0 || separator == physicalKey.Length - 1)
-        {
-            return physicalKey;
-        }
+        return TrySplitPhysicalKey(physicalKey, out var logicalKey, out _) ? logicalKey : physicalKey;
+    }
 
-        var suffix = physicalKey.AsSpan(separator + 1);
-        return int.TryParse(
-            suffix,
-            System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var number)
-            && number >= 0
-            ? physicalKey[..separator]
-            : physicalKey;
+    public static bool TrySplitPhysicalKey(string physicalKey, out string logicalKey, out int suffix)
+    {
+        var separator = physicalKey.LastIndexOf('-');
+        if (separator > 0 && separator < physicalKey.Length - 1
+            && int.TryParse(physicalKey.AsSpan(separator + 1), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out suffix) && suffix >= 0)
+        {
+            logicalKey = physicalKey[..separator];
+            return true;
+        }
+        logicalKey = physicalKey;
+        suffix = -1;
+        return false;
     }
 }
