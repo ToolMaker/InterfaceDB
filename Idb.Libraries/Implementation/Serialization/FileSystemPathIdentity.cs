@@ -53,10 +53,17 @@ internal static class FileSystemPathIdentity
         string? probePath = null;
         try
         {
-            Directory.CreateDirectory(root);
+            // Capability discovery must not create a storage directory before the
+            // configured publication barrier. A missing directory inherits its parent.
+            var probeRoot = root;
+            while (!Directory.Exists(probeRoot))
+            {
+                probeRoot = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(probeRoot));
+                if (probeRoot is null) return PlatformDefaultComparer();
+            }
             var probeName = ".idb-path-case-probe-a-" + Guid.NewGuid().ToString("N");
-            probePath = Path.Combine(root, probeName);
-            var alternatePath = Path.Combine(root, probeName.ToUpperInvariant());
+            probePath = Path.Combine(probeRoot, probeName);
+            var alternatePath = Path.Combine(probeRoot, probeName.ToUpperInvariant());
             using (new FileStream(
                        probePath,
                        FileMode.CreateNew,

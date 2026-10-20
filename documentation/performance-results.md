@@ -1,5 +1,21 @@
 # Current Performance Results
 
+## Latest review follow-up — 20 October 2026
+
+See [the review follow-up](review-followup-20261020.md) for the subsequent
+regression-tested safety fixes, their measured cost, and the controlled
+ExplicitFlush/WriteThrough comparison. Its before build is the current build
+from the earlier SQL matrix below.
+
+## Full repository SQL comparison — 20 October 2026
+
+See [the new SQL comparison](performance-sql-20261020.md) for repeated FileSystem
+and SegmentCore repository measurements against SQLite direct, SQLite/Dapper and
+local SQL Server. It includes the controlled before/current results, unchanged
+and slower cases, explicit ordinal string queries, and a rerun of the historical
+storage-core batch workload. The earlier review baseline below remains a separate
+fixture; its absolute timings are not interchangeable with this SQL comparison.
+
 ## Storage-review follow-up — 20 October 2026
 
 This is an unreleased source comparison, not a new NuGet release. The baseline already

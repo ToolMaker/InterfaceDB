@@ -9,6 +9,38 @@ public sealed class PlatformFilePublication : IFilePublication
 {
     public static PlatformFilePublication Instance { get; } = new();
 
+    public void EnsureDirectory(string directoryPath)
+    {
+        var directory = Path.GetFullPath(directoryPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            FilePublicationDirectories.EnsureDirectory(this, directory);
+            return;
+        }
+
+        if (Directory.Exists(directory)) return;
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(directory))
+            ?? throw new IOException("The storage volume must already exist.");
+        EnsureDirectory(parent);
+        var staged = Path.Combine(parent, ".idb-directory-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(staged);
+        try
+        {
+            // Windows has no generally usable directory fsync. Publish each newly
+            // created directory with the same write-through rename used for payloads.
+            MoveWindows(staged, directory, replace: false);
+        }
+        catch (IOException error) when (error.InnerException is Win32Exception { NativeErrorCode: 80 or 183 }
+                                      && Directory.Exists(directory))
+        {
+            // Another creator won the destination; the owned staging directory stays empty.
+        }
+        finally
+        {
+            if (Directory.Exists(staged)) Directory.Delete(staged); // Owned, empty staging directory only.
+        }
+    }
+
     public void Replace(string stagedPath, string destinationPath)
     {
         if (OperatingSystem.IsWindows()) MoveWindows(stagedPath, destinationPath, replace: true);

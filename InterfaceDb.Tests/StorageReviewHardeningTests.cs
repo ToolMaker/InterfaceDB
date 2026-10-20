@@ -114,6 +114,7 @@ public sealed class StorageReviewHardeningTests
 
     private sealed class InterruptedPublication : IFilePublication
     {
+        public void EnsureDirectory(string directoryPath) => PlatformFilePublication.Instance.EnsureDirectory(directoryPath);
         public void Replace(string stagedPath, string destinationPath)
         {
             File.WriteAllBytes(stagedPath, [1, 2, 3]);

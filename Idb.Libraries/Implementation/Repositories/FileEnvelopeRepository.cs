@@ -38,6 +38,23 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
         IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
         IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
         IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory)
+        : this(contractConfig, readerAndWriter, envelopes, fileWriteCoordinator, storagePolicy, envelopeFactory,
+            migrationStrategy, storageChangeSource, storageChangeHandler, storageIdentityFactory, null)
+    {
+    }
+
+    public FileEnvelopeRepository(
+        IDbContractConfigDto<TContract> contractConfig,
+        IReaderAndWriter<TContract> readerAndWriter,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IMigrationStrategy<TContract>? migrationStrategy,
+        IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
+        IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
+        IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory,
+        IFilePublication? publication)
         : base(
             contractConfig,
             readerAndWriter,
@@ -48,7 +65,8 @@ public sealed class FileEnvelopeRepository<TContract> : FileEnvelopeRepositoryBa
             migrationStrategy,
             storageChangeSource,
             storageChangeHandler,
-            storageIdentityFactory)
+            storageIdentityFactory,
+            publication)
     {
     }
 }

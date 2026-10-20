@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using Idb.Libraries.Abstractions.Services;
 using Idb.Libraries.Abstractions.Services.Cache;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -83,6 +84,23 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
         IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
         IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory)
+        : this(contractConfig, readerAndWriter, envelopes, fileWriteCoordinator, storagePolicy, envelopeFactory,
+            migrationStrategy, storageChangeSource, storageChangeHandler, storageIdentityFactory, null)
+    {
+    }
+
+    protected FileEnvelopeRepositoryBase(
+        IDbContractConfigDto<TContract> contractConfig,
+        IReaderAndWriter<TContract> readerAndWriter,
+        IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> envelopes,
+        IFileWriteCoordinator fileWriteCoordinator,
+        StoragePolicy storagePolicy,
+        Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IMigrationStrategy<TContract>? migrationStrategy,
+        IEnvelopeStorageChangeSource<TContract>? storageChangeSource,
+        IEnvelopeStorageChangeHandler<TContract>? storageChangeHandler,
+        IEnvelopeStorageIdentityFactory<TContract>? storageIdentityFactory,
+        IFilePublication? publication)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _objectCardinality = storageIdentityFactory?.ObjectCardinality ?? contractConfig.ObjectCardinality;
@@ -101,11 +119,14 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         }
 
         _dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
-        Directory.CreateDirectory(_dataRoot);
+        var directoryPublication = publication ?? PlatformFilePublication.Instance;
+        if (storagePolicy.DurabilityMode == StorageDurabilityMode.Durable) directoryPublication.EnsureDirectory(_dataRoot);
+        else Directory.CreateDirectory(_dataRoot);
 
         var activeVersion = _contractConfig.ActiveVersion ?? "1.0.0";
         var activeVersionRoot = Path.Combine(_dataRoot, activeVersion);
-        Directory.CreateDirectory(activeVersionRoot);
+        if (storagePolicy.DurabilityMode == StorageDurabilityMode.Durable) directoryPublication.EnsureDirectory(activeVersionRoot);
+        else Directory.CreateDirectory(activeVersionRoot);
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
@@ -1151,9 +1172,10 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
                 await subscription.Handler(payload).ConfigureAwait(false);
             }
-            catch
+            catch (Exception error)
             {
                 subscription.Dispose();
+                DatabaseTelemetryScope.Start(_storagePolicy.Telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(error);
             }
         }
     }

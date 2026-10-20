@@ -7,13 +7,16 @@ using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Indexes;
 using Microsoft.Extensions.DependencyInjection;
 
-internal sealed class InterfaceDbGateStore : IProductionGateStore
+internal sealed class InterfaceDbGateStore : IProductionGateStore, IExistenceGateStore, IOrdinalStringGateStore
 {
     private readonly string _dataRoot;
     private readonly StorageObjectCacheMode _cacheMode;
     private readonly StorageDurabilityMode _durabilityMode;
     private readonly bool _useSearchIndexes;
     private readonly bool _useSidecarWriteLocks;
+    private readonly Action<IServiceCollection, ProductionGateContractOptions>? _register;
+    private readonly string? _engineName;
+    private readonly ContractRepositoryType _repositoryType;
     private ServiceProvider? _provider;
     private IRepository<IProductionGateRecord>? _repository;
 
@@ -22,21 +25,27 @@ internal sealed class InterfaceDbGateStore : IProductionGateStore
         StorageObjectCacheMode cacheMode,
         StorageDurabilityMode durabilityMode,
         bool useSearchIndexes = true,
-        bool useSidecarWriteLocks = true)
+        bool useSidecarWriteLocks = true,
+        Action<IServiceCollection, ProductionGateContractOptions>? register = null,
+        string? engineName = null,
+        ContractRepositoryType repositoryType = ContractRepositoryType.FileSystem)
     {
         _dataRoot = dataRoot;
         _cacheMode = cacheMode;
         _durabilityMode = durabilityMode;
         _useSearchIndexes = useSearchIndexes;
         _useSidecarWriteLocks = useSidecarWriteLocks;
+        _register = register;
+        _engineName = engineName;
+        _repositoryType = repositoryType;
     }
 
-    public string EngineName => (_useSearchIndexes, _useSidecarWriteLocks) switch
+    public string EngineName => _engineName ?? ((_useSearchIndexes, _useSidecarWriteLocks) switch
     {
         (false, _) => "InterfaceDB no search indexes",
         (_, false) => "InterfaceDB no sidecar locks",
         _ => "InterfaceDB"
-    };
+    });
     public string CacheModeName => _cacheMode.ToString();
     public string DurabilityModeName => _durabilityMode.ToString();
 
@@ -52,11 +61,11 @@ internal sealed class InterfaceDbGateStore : IProductionGateStore
             _dataRoot,
             _cacheMode,
             _durabilityMode,
-            _useSidecarWriteLocks);
+            _useSidecarWriteLocks) { RepositoryType = _repositoryType };
         var services = new ServiceCollection();
-        services.AddRepository<IProductionGateRecord>(
-            options,
-            storageIdentityFactory: new ProductionGateIdentityFactory(options));
+        if (_register is not null) _register(services, options);
+        else services.AddRepository<IProductionGateRecord>(
+                options, storageIdentityFactory: new ProductionGateIdentityFactory(options));
         if (!_useSearchIndexes)
         {
             services.AddKeyedSingleton<IIndexManager<IProductionGateRecord>>(
@@ -118,6 +127,46 @@ internal sealed class InterfaceDbGateStore : IProductionGateStore
     public async ValueTask InsertAsync(GateRecord record, CancellationToken cancellationToken = default)
     {
         await Repository.SaveAsync(ToStorageRecord(record), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<Func<ValueTask<bool>>> PrepareExistenceProbeAsync(string id)
+    {
+        var entity = await Repository.SearchFirstAsync(record => record.Id == id).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Existence probe requires an existing record.");
+        return () => Repository.ExistsAsync(entity);
+    }
+
+    public async ValueTask<GateQueryResult> QueryOrdinalAsync(GateQueryKind kind)
+    {
+        var results = kind switch
+        {
+            GateQueryKind.Prefix => Repository.SearchManyAsync(record =>
+                record.Name.StartsWith("customer-00000", StringComparison.Ordinal)),
+            GateQueryKind.Suffix => Repository.SearchManyAsync(record =>
+                record.Name.EndsWith("special-tail", StringComparison.Ordinal)),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind))
+        };
+        var materialized = new List<IProductionGateRecord>();
+        await foreach (var record in results.ConfigureAwait(false)) materialized.Add(record);
+        var checksum = materialized.Sum(MaterializedChecksum);
+        GC.KeepAlive(materialized);
+        return new(materialized.Count, checksum);
+    }
+
+    public Dictionary<string, string> ExplainStringQueries()
+    {
+        var manager = _provider!.GetRequiredKeyedService<IIndexManager<IProductionGateRecord>>("ProductionGate");
+        var prefix = manager.ExplainSearch(record => record.Name.StartsWith("customer-00000", StringComparison.Ordinal));
+        var suffix = manager.ExplainSearch(record => record.Name.EndsWith("special-tail", StringComparison.Ordinal));
+        if (!prefix.UsesIndexes || !suffix.UsesIndexes)
+            throw new InvalidOperationException("The ordinal string control must use the configured indexes.");
+        return new()
+        {
+            ["prefix-default"] = manager.ExplainSearch(record => record.Name.StartsWith("customer-00000")).PlanText,
+            ["prefix-ordinal"] = prefix.PlanText,
+            ["suffix-default"] = manager.ExplainSearch(record => record.Name.EndsWith("special-tail")).PlanText,
+            ["suffix-ordinal"] = suffix.PlanText
+        };
     }
 
     public async ValueTask<bool> UpdateAsync(GateRecord record, CancellationToken cancellationToken = default)

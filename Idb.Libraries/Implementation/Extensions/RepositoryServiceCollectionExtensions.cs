@@ -326,7 +326,8 @@ namespace Idb.Libraries.Implementation.Extensions
                 databaseKey,
                 (sp, _) => new FileEnvelopeStorageChangeSource<TContract>(
                     contractConfig,
-                    sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
+                    sp.GetRequiredKeyedService<StoragePolicy>(databaseKey),
+                    sp.GetRequiredService<IFilePublication>()));
             services.TryAddKeyedSingleton<IEnvelopeStorageChangeHandler<TContract>>(
                 databaseKey,
                 (sp, key) => new FileEnvelopeStorageChangeHandler<TContract>(
@@ -412,7 +413,8 @@ namespace Idb.Libraries.Implementation.Extensions
                     sp.GetKeyedService<IMigrationStrategy<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeSource<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageChangeHandler<TContract>>(key),
-                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key)));
+                    sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key),
+                    sp.GetRequiredService<IFilePublication>()));
             services.TryAddKeyedSingleton<FileEnvelopeRepositoryFacade<TContract>>(databaseKey, (sp, key) =>
                 new FileEnvelopeRepositoryFacade<TContract>(
                     sp.GetRequiredKeyedService<IEnvelopeRepository<TContract>>(key)));

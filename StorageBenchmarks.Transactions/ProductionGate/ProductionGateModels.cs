@@ -369,6 +369,24 @@ internal interface IProductionGateStore : IAsyncDisposable
     GateStorageStats GetStorageStats();
 }
 
+internal interface IExistenceGateStore
+{
+    // Resolve any object/envelope identity outside timing. The returned probe checks
+    // key membership only and remains usable after deletion of that exact record.
+    ValueTask<Func<ValueTask<bool>>> PrepareExistenceProbeAsync(string id);
+}
+
+internal interface IQueryPlanGateStore
+{
+    ValueTask<Dictionary<string, string[]>> ExplainQueriesAsync(string exactId);
+}
+
+internal interface IOrdinalStringGateStore
+{
+    ValueTask<GateQueryResult> QueryOrdinalAsync(GateQueryKind kind);
+    Dictionary<string, string> ExplainStringQueries();
+}
+
 [StorageScope(VersionTag = "1.0.0")]
 [SearchIndex]
 internal interface IProductionGateRecord : IStoredContract<IProductionGateRecord>
@@ -453,7 +471,7 @@ internal sealed class ProductionGateContractOptions : IDbContractConfigDto<IProd
     public string? MigrationsPath { get; } = null;
     public string? DataRoot { get; }
     public string? ActiveVersion { get; } = "1.0.0";
-    public ContractRepositoryType RepositoryType { get; } = ContractRepositoryType.FileSystem;
+    public ContractRepositoryType RepositoryType { get; init; } = ContractRepositoryType.FileSystem;
     public StorageObjectCardinality ObjectCardinality { get; } = StorageObjectCardinality.Multiple;
     public StoragePolicy? StoragePolicy { get; }
 }

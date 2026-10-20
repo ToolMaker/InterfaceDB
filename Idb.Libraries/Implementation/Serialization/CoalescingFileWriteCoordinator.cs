@@ -22,6 +22,8 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     private readonly IFilePublication _publication;
     private readonly string _storageRoot;
     private readonly StringComparer _pathComparer;
+    private readonly HashSet<string> _durableDirectories = new(StringComparer.Ordinal);
+    private readonly object _directoryGate = new();
     private int _localMigrationScopeActive;
 
     private void RejectRawMutationInRevisionStore()
@@ -62,7 +64,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     {
         if (!_storagePolicy.UseSidecarWriteLocks)
             throw new NotSupportedException("Revision enforcement requires File sidecar write locks in every durability mode.");
-        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        EnsureStorageDirectory(Path.GetDirectoryName(payloadPath)!);
         await using var guard = await _storageWriteLock.AcquireAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         CommitReadyFilesUnderLock(payloadPath);
         var exists = File.Exists(payloadPath);
@@ -90,7 +92,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     {
         if (!_storagePolicy.UseSidecarWriteLocks)
             throw new NotSupportedException("Revision enforcement requires File sidecar write locks in every durability mode.");
-        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        EnsureStorageDirectory(Path.GetDirectoryName(payloadPath)!);
         await using var guard = await _storageWriteLock.AcquireAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         CommitReadyFilesUnderLock(payloadPath);
         var exists = File.Exists(payloadPath);
@@ -143,7 +145,24 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
             ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
+        EnsureStorageDirectory(_storageRoot);
         _pathComparer = FileSystemPathIdentity.ResolveComparer(_storageRoot);
+    }
+
+    private void EnsureStorageDirectory(string path)
+    {
+        if (_storagePolicy.DurabilityMode != Idb.Libraries.Abstractions.Enums.StorageDurabilityMode.Durable)
+        {
+            Directory.CreateDirectory(path);
+            return;
+        }
+        lock (_directoryGate)
+        {
+            if (_durableDirectories.Contains(path) && Directory.Exists(path)) return;
+            _publication.EnsureDirectory(path);
+            // A failed barrier must be retried, including when it already created the path.
+            _durableDirectories.Add(path);
+        }
     }
 
     public async ValueTask<IAsyncDisposable> AcquireMigrationScopeAsync(

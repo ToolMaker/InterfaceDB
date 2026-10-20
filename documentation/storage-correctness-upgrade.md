@@ -16,6 +16,20 @@ contains the repeatable commands and result-validation rules.
 - Built-in providers expose `ICachedEnvelopeSource<TContract>` and DI registers `ObjectEnvelopeDictionary<TContract>`, which maintains a cache-only directory, prunes expired weak entries, and tracks in-place hydration. Custom providers can implement the same capability without depending on provider classes. A provider that exposes mutable objects without this capability retains the safe scan fallback, with the reason visible in `ExplainSearch`. Custom metadata dictionaries without a cache directory remain compatible, but enumerate metadata to locate live objects.
 - `ExplainSearch.RechecksCachedObjects` identifies index plans that also inspect the cache. Its estimated candidate count/cost describe the saved index plan; mutable cache contents can change those estimates. Explanations describe state at the time of the call, not a transactional promise about a later search.
 - `QueryAsync` now declares its possible null return. Prefer `QueryFirstAsync` when writing new code.
+- Custom explicit implementations of the generic `IRepository<TContract>.QueryAsync<TImplementation>`
+  must return `ValueTask<TImplementation?>` and include `where TImplementation : class`
+  so the compiler interprets the nullable type parameter correctly. This does not require a data migration.
+- A lost stored/deleted index-maintenance subscription now disables index plans and
+  reports the reason in `ExplainSearch`; reopen to rebuild and register fresh subscriptions.
+  File and SegmentCore callback failures use the configured telemetry failure/logging
+  path. A failed legacy subscriber remains detached; other subscribers continue,
+  and a completed commit is not reported as a failed write.
+
+`Idb.Analyzers` diagnostic `IDB005` warns when a supported inline search uses
+`StartsWith` or `EndsWith` with a known non-ordinal comparison on a directly indexed
+string member. This is a compile-time warning, not a change to query semantics.
+Use ordinal comparison only when it matches the application's intended meaning;
+see the [analyzer guide](../Idb.Analyzers/README.md) for its scope.
 
 ## Storage keys
 
@@ -47,6 +61,25 @@ Revision tracking retains current live-record revisions plus at most 1,024 missi
 ## Durable publication and the revision clock
 
 The File provider's Durable mode publishes replacements and deletions through `IFilePublication`. Default DI supplies `PlatformFilePublication`; applications can register an implementation before repository registration when their environment requires another publication strategy. The implementation uses directory `fsync` on supported POSIX systems and write-through rename on Windows. Windows deletion first renames the payload to an ignored tombstone; a crash can leave the tombstone for later cleanup. Filesystem and device flush guarantees still apply; these tests do not constitute physical power-cut qualification.
+
+`IFilePublication.EnsureDirectory` establishes the directory path before durable
+publication. The default interface and POSIX platform implementations create
+missing directories one level at a time, flushing each new directory and its
+containing directory. They stop at the nearest existing containing directory;
+already provisioned paths do not cause ancestors to be opened or flushed.
+A failed flush remains pending on that publication instance and must succeed
+before it acknowledges that directory or a descendant on a retry.
+The Windows platform implementation publishes new directories with write-through
+renames. On all platforms, existing, externally provisioned directories are
+assumed to have been persisted by their owner. The File composition root uses the injected publication
+service for its root/version directories and watcher startup. Resolving the watcher
+early no longer creates a storage root as a side effect of probing path case
+sensitivity. Commit coordinators retain successful
+directory initialization per instance; a failed barrier is retried before payload
+preparation. The revision clock also establishes its directory before issuing a
+reserved revision. Custom publication implementations should override this method
+if directory barriers differ on their platform. The existing constructors remain
+available.
 
 Clock reservations are fully written and flushed to a staging file, then atomically published before any revision from the range is issued. The committed `.idb-revision-clock` retains the existing 16-byte format. Corruption or truncation of that committed record still fails closed. Incomplete `.idb-revision-clock.creating-*` files are ignored; they can be removed while the store is offline.
 

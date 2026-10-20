@@ -26,6 +26,11 @@ using PersonStorage = IdbDemoStorage.Storage.Person.v1_0_0;
 
 try
 {
+    if (args.Contains("--sql-comparison"))
+    {
+        await RepositorySqlComparison.RunAsync(args);
+        return;
+    }
     if (args.Any(argument => string.Equals(argument, "--segment-core-hash-routing", StringComparison.OrdinalIgnoreCase)))
     {
         SegmentCoreHashRoutingBenchmarkRunner.RunAsync(args).GetAwaiter().GetResult();

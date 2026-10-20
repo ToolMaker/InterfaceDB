@@ -484,14 +484,16 @@ public sealed class SegmentCoreStoreTests
     }
 
     [TestMethod]
-    public async Task CommitJournalFlushFailure_FaultsScopeAndRequiresReopenForOutcome()
+    [DataRow(1)]
+    [DataRow(4)]
+    public async Task CommitJournalFlushFailure_FaultsScopeAndRequiresReopenForOutcome(int stripes)
     {
         using var root = new TemporaryDirectory();
         var fileSystem = new FailingDurableFileSystem();
-        var options = Options(stripes: 1, segmentBytes: 1024 * 1024) with
+        var options = Options(stripes: stripes, segmentBytes: 1024 * 1024) with
         {
             DurableFileSystem = fileSystem,
-            LogOptions = Options(stripes: 1, segmentBytes: 1024 * 1024).LogOptions with
+            LogOptions = Options(stripes: stripes, segmentBytes: 1024 * 1024).LogOptions with
             {
                 DurabilityStrategy = ObjectLogDurabilityStrategy.ExplicitFlush
             }
@@ -501,10 +503,12 @@ public sealed class SegmentCoreStoreTests
             await using var transaction = await store.BeginTransactionAsync();
             await transaction.SaveAsync("uncertain-a", Payload(1, 128));
             await transaction.SaveAsync("uncertain-b", Payload(2, 128));
-            fileSystem.FailOnFileFlush = fileSystem.FileFlushCount + 2;
+            fileSystem.FailNextCommitJournalFlush();
 
-            _ = await Assert.ThrowsExactlyAsync<IOException>(
+            var failure = await Assert.ThrowsExactlyAsync<IOException>(
                 () => transaction.CommitAsync().AsTask());
+            Assert.AreEqual("Injected commit-journal durability failure.", failure.Message);
+            Assert.AreEqual(1, fileSystem.CommitJournalFlushFailures);
             Assert.AreEqual(SegmentCoreTransactionState.Faulted, transaction.State);
             _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
                 () => store.GetAsync("uncertain-a").AsTask());
@@ -2121,8 +2125,13 @@ public sealed class SegmentCoreStoreTests
         private readonly ManualResetEventSlim _fileFlushRelease = new(initialState: true);
         private int _blockCheckpointPublication;
         private int _blockFileFlushes;
+        private int _failNextCommitJournalFlush;
+        private int _commitJournalFlushFailures;
 
         public int FileFlushCount => Volatile.Read(ref _fileFlushCount);
+        public int CommitJournalFlushFailures => Volatile.Read(ref _commitJournalFlushFailures);
+
+        public void FailNextCommitJournalFlush() => Volatile.Write(ref _failNextCommitJournalFlush, 1);
 
         public int? FailOnFileFlush { get; set; }
 
@@ -2164,6 +2173,20 @@ public sealed class SegmentCoreStoreTests
 
         public void FlushFile(SafeFileHandle handle)
         {
+            if (Volatile.Read(ref _failNextCommitJournalFlush) != 0)
+            {
+                // The journal and log handles are readable. Match the journal's on-disk
+                // signature so background log flushes cannot consume this injection.
+                Span<byte> signature = stackalloc byte[8];
+                if (RandomAccess.Read(handle, signature, 0) == signature.Length
+                    && signature.SequenceEqual("IDBTXN01"u8)
+                    && Interlocked.Exchange(ref _failNextCommitJournalFlush, 0) != 0)
+                {
+                    Interlocked.Increment(ref _commitJournalFlushFailures);
+                    throw new IOException("Injected commit-journal durability failure.");
+                }
+            }
+
             var count = Interlocked.Increment(ref _fileFlushCount);
             if (count == FailOnFileFlush)
             {

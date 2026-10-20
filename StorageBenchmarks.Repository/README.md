@@ -2,6 +2,9 @@
 
 This standalone, non-packable executable measures the complete FileSystem and SegmentCore repository, index, envelope and storage path. It intentionally has no SQLite control.
 
+For the full repository comparison with SQLite and SQL Server, see the separate
+[SQL comparison runner](../StorageBenchmarks.Transactions/ProductionGate/SQL_COMPARISON.md).
+
 ```powershell
 dotnet run -c Release --project StorageBenchmarks.Repository -- --smoke --records 200 --batch 32
 dotnet run -c Release --project StorageBenchmarks.Repository -- --run --records 2000 --iterations 7 --warmup 2 --batch 128 --payload-bytes 512 --output artifacts/repository-current.json

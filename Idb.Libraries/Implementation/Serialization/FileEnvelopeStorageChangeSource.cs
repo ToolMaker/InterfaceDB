@@ -17,6 +17,7 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> :
 {
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StoragePolicy _storagePolicy;
+    private readonly IFilePublication _publication;
     private readonly StringComparer _pathComparer;
     private readonly ConcurrentDictionary<string, PendingReconciliation> _debounces;
     private readonly ConcurrentDictionary<string, PayloadStamp> _snapshot;
@@ -37,9 +38,18 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> :
     public FileEnvelopeStorageChangeSource(
         IDbContractConfigDto<TContract> contractConfig,
         StoragePolicy storagePolicy)
+        : this(contractConfig, storagePolicy, null)
+    {
+    }
+
+    public FileEnvelopeStorageChangeSource(
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy,
+        IFilePublication? publication)
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        _publication = publication ?? PlatformFilePublication.Instance;
         _pathComparer = FileSystemPathIdentity.ResolveComparer(contractConfig.DataRoot);
         _debounces = new ConcurrentDictionary<string, PendingReconciliation>(_pathComparer);
         _snapshot = new ConcurrentDictionary<string, PayloadStamp>(_pathComparer);
@@ -96,7 +106,9 @@ public sealed class FileEnvelopeStorageChangeSource<TContract> :
             }
 
             var dataRoot = Path.GetFullPath(_contractConfig.DataRoot!);
-            Directory.CreateDirectory(dataRoot);
+            if (_storagePolicy.DurabilityMode == Idb.Libraries.Abstractions.Enums.StorageDurabilityMode.Durable)
+                _publication.EnsureDirectory(dataRoot);
+            else Directory.CreateDirectory(dataRoot);
             CaptureSnapshot(dataRoot);
 
             // FileSystemWatcher is unsupported on iOS. IsIOS also returns true for

@@ -11,6 +11,7 @@ internal sealed class StoreRevisionClock(string root, IFilePublication? publicat
     private readonly IFilePublication _publication = publication ?? PlatformFilePublication.Instance;
     private long _next;
     private long _end;
+    private bool _directoryReady;
 
     public long Next(long observed)
     {
@@ -19,7 +20,11 @@ internal sealed class StoreRevisionClock(string root, IFilePublication? publicat
             var next = Math.Max(checked(_next + 1), _clock.Next(observed));
             if (next > _end)
             {
-                Directory.CreateDirectory(root);
+                if (!_directoryReady)
+                {
+                    _publication.EnsureDirectory(root);
+                    _directoryReady = true;
+                }
                 var path = Path.Combine(root, ".idb-revision-clock");
                 // The stable lease survives replacement of the clock file and serializes
                 // independent processes. Upgrade every writer before using this protocol.

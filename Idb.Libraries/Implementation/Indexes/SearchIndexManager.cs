@@ -619,11 +619,19 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         Volatile.Write(ref _persistentCatalogDirty, 1);
     }
 
-    private string? IndexFallbackReason => Volatile.Read(ref _indexesUsable) == 0
+    private string? IndexFallbackReason
+    {
+        get
+        {
+            if (_storedSubscription?.IsDisposed == true || _deletedSubscription?.IsDisposed == true)
+                DisableIndexes("An index maintenance subscription ended; reopen to rebuild indexes.");
+            return Volatile.Read(ref _indexesUsable) == 0
         ? Volatile.Read(ref _indexFallbackReason) ?? "Index maintenance failed; reopen to rebuild indexes."
         : Volatile.Read(ref _mutableValuesExposed) != 0 && _envelopeRepository is not ICachedEnvelopeSource<TContract>
             ? "The provider exposes mutable cached objects but does not support cache-only enumeration."
             : null;
+        }
+    }
 
     private bool CanUseIndexes => IndexFallbackReason is null;
 

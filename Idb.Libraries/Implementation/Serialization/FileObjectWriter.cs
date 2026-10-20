@@ -126,6 +126,9 @@ namespace Idb.Libraries.Implementation.Serialization
                     ownsWriteSemaphore = true;
                 }
 
+                if (string.IsNullOrWhiteSpace(envelope.Location))
+                    throw new InvalidOperationException("Envelope location must be initialized before writing.");
+
                 if (isNewStorageObject)
                 {
                     ResolveNewStorageIdentity(envelope);
@@ -142,7 +145,8 @@ namespace Idb.Libraries.Implementation.Serialization
                     throw new InvalidStorageEnvelopeException("The file provider locator is outside the configured storage root.", envelope.EnvelopeCacheKey, path);
 
                 var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrWhiteSpace(dir) && _ensuredDirs.TryAdd(dir, 0))
+                if (_storagePolicy.DurabilityMode != StorageDurabilityMode.Durable
+                    && !string.IsNullOrWhiteSpace(dir) && _ensuredDirs.TryAdd(dir, 0))
                 {
                     Directory.CreateDirectory(dir);
                 }

@@ -1,3 +1,4 @@
+using Idb.Diagnostics;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -51,7 +52,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
     private readonly IEncryptor _encryptor;
     private readonly IReadOnlyList<IMigration> _migrations;
-    private readonly ContractPubSubHub<TContract> _pubSub = new();
+    private readonly ContractPubSubHub<TContract> _pubSub;
     private readonly ConcurrentDictionary<string, byte> _reservedKeys = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SuffixAllocator> _suffixAllocators = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _identityGate = new(1, 1);
@@ -93,6 +94,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         _contractConfig = contractConfig ?? throw new ArgumentNullException(nameof(contractConfig));
         _storagePolicy = storagePolicy ?? throw new ArgumentNullException(nameof(storagePolicy));
+        _pubSub = new(storagePolicy.Telemetry);
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _options.Validate();
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
@@ -1720,7 +1722,7 @@ internal enum ContractEvent
     Deleted
 }
 
-internal sealed class ContractPubSubHub<TContract>
+internal sealed class ContractPubSubHub<TContract>(IDatabaseTelemetry? telemetry)
     where TContract : class, IStoredContract<TContract>
 {
     private readonly ConcurrentDictionary<ContractEvent, ConcurrentDictionary<Guid, Subscription>> _subscriptions = new();
@@ -1761,9 +1763,10 @@ internal sealed class ContractPubSubHub<TContract>
 
                 await subscription.Handler(payload).ConfigureAwait(false);
             }
-            catch
+            catch (Exception error)
             {
                 subscription.Dispose();
+                DatabaseTelemetryScope.Start(telemetry, DatabaseComponent.Repository, DatabaseOperation.Publish, log: true).Fail(error);
             }
         }
     }

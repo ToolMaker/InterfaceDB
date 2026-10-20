@@ -5,13 +5,14 @@ using Microsoft.Data.Sqlite;
 using System.Collections.Concurrent;
 using System.Data;
 
-internal sealed class SqliteGateStore : IProductionGateStore
+internal sealed class SqliteGateStore : IProductionGateStore, IExistenceGateStore, IQueryPlanGateStore
 {
     private readonly string _databasePath;
     private readonly string _connectionString;
     private readonly StorageDurabilityMode _durabilityMode;
     private readonly SqliteClientKind _clientKind;
     private readonly bool _createSecondaryIndexes;
+    private readonly bool _indexedRangeAndPrefix;
     private readonly ConcurrentBag<SqliteConnection> _pool = [];
     private int _disposed;
 
@@ -19,12 +20,14 @@ internal sealed class SqliteGateStore : IProductionGateStore
         string databasePath,
         StorageDurabilityMode durabilityMode,
         SqliteClientKind clientKind,
-        bool createSecondaryIndexes = true)
+        bool createSecondaryIndexes = true,
+        bool indexedRangeAndPrefix = false)
     {
         _databasePath = databasePath;
         _durabilityMode = durabilityMode;
         _clientKind = clientKind;
         _createSecondaryIndexes = createSecondaryIndexes;
+        _indexedRangeAndPrefix = indexedRangeAndPrefix;
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
@@ -68,6 +71,11 @@ internal sealed class SqliteGateStore : IProductionGateStore
                     CREATE INDEX IF NOT EXISTS IX_Records_Name ON Records(Name);
                     """;
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (_indexedRangeAndPrefix)
+                {
+                    command.CommandText = "CREATE INDEX IF NOT EXISTS IX_Records_Age ON Records(Age)";
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         finally
@@ -141,16 +149,7 @@ internal sealed class SqliteGateStore : IProductionGateStore
         var connection = await RentAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var sql = kind switch
-            {
-                GateQueryKind.Exact => SelectSql + " WHERE Id = @value",
-                GateQueryKind.Range => SelectSql + " WHERE Age >= 75",
-                GateQueryKind.Prefix => SelectSql + " WHERE Name LIKE 'customer-00000%'",
-                GateQueryKind.Suffix => SelectSql + " WHERE Name LIKE '%special-tail'",
-                GateQueryKind.Contains => SelectSql + " WHERE instr(Content, 'rare-needle') > 0",
-                GateQueryKind.BroadConjunction => SelectSql + " WHERE Role = 'student' AND Age >= 40",
-                _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
-            };
+            var sql = QuerySql(kind);
 
             if (_clientKind == SqliteClientKind.Dapper)
             {
@@ -192,6 +191,58 @@ internal sealed class SqliteGateStore : IProductionGateStore
             record,
             cancellationToken).ConfigureAwait(false);
         return changed == 1;
+    }
+
+    public ValueTask<Func<ValueTask<bool>>> PrepareExistenceProbeAsync(string id) =>
+        ValueTask.FromResult<Func<ValueTask<bool>>>(() => ExistsAsync(id));
+
+    private async ValueTask<bool> ExistsAsync(string id)
+    {
+        var connection = await RentAsync(default).ConfigureAwait(false);
+        try
+        {
+            if (_clientKind == SqliteClientKind.Dapper)
+                return await connection.ExecuteScalarAsync<long>(
+                    "SELECT EXISTS(SELECT 1 FROM Records WHERE Id = @id)", new { id }).ConfigureAwait(false) == 1;
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT EXISTS(SELECT 1 FROM Records WHERE Id = @id)";
+            command.Parameters.AddWithValue("@id", id);
+            return Convert.ToInt64(await command.ExecuteScalarAsync().ConfigureAwait(false)) == 1;
+        }
+        finally { Return(connection); }
+    }
+
+    private string QuerySql(GateQueryKind kind) => kind switch
+    {
+        GateQueryKind.Exact => SelectSql + " WHERE Id = @value",
+        GateQueryKind.Range => SelectSql + " WHERE Age >= 75",
+        GateQueryKind.Prefix => SelectSql + (_indexedRangeAndPrefix
+            ? " WHERE Name GLOB 'customer-00000*'" : " WHERE Name LIKE 'customer-00000%'"),
+        GateQueryKind.Suffix => SelectSql + " WHERE Name LIKE '%special-tail'",
+        GateQueryKind.Contains => SelectSql + " WHERE instr(Content, 'rare-needle') > 0",
+        GateQueryKind.BroadConjunction => SelectSql + " WHERE Role = 'student' AND Age >= 40",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
+    };
+
+    public async ValueTask<Dictionary<string, string[]>> ExplainQueriesAsync(string exactId)
+    {
+        var connection = await RentAsync(default).ConfigureAwait(false);
+        try
+        {
+            var plans = new Dictionary<string, string[]>();
+            foreach (var kind in Enum.GetValues<GateQueryKind>())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = "EXPLAIN QUERY PLAN " + QuerySql(kind);
+                if (kind == GateQueryKind.Exact) command.Parameters.AddWithValue("@value", exactId);
+                await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                var lines = new List<string>();
+                while (await reader.ReadAsync().ConfigureAwait(false)) lines.Add(reader.GetString(3));
+                plans.Add(kind.ToString(), lines.ToArray());
+            }
+            return plans;
+        }
+        finally { Return(connection); }
     }
 
     public async ValueTask<bool> DeleteAsync(string id, CancellationToken cancellationToken = default)
@@ -497,23 +548,35 @@ internal sealed class SqliteGateStore : IProductionGateStore
     }
 }
 
-internal sealed class SqlServerGateStore : IProductionGateStore
+internal sealed class SqlServerGateStore : IProductionGateStore, IExistenceGateStore
 {
     private readonly string _connectionString;
     private readonly string _tableName = "InterfaceDbProductionGate_" + Guid.NewGuid().ToString("N");
     private readonly bool _dropOnDispose;
+    private readonly bool _indexAge;
     private int _initialized;
 
-    public SqlServerGateStore(string connectionString, bool dropOnDispose)
+    public SqlServerGateStore(string connectionString, bool dropOnDispose, bool indexAge = false)
     {
         _connectionString = connectionString;
         _dropOnDispose = dropOnDispose;
+        _indexAge = indexAge;
     }
 
     public string EngineName => "SQL Server";
     public string CacheModeName => "BufferPool";
     public string DurabilityModeName => "Committed";
     private string QualifiedTable => $"[dbo].[{_tableName}]";
+
+    public ValueTask<Func<ValueTask<bool>>> PrepareExistenceProbeAsync(string id) =>
+        ValueTask.FromResult<Func<ValueTask<bool>>>(async () =>
+        {
+            await using var connection = await OpenAsync(default).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {QualifiedTable} WHERE Id = @id) THEN 1 ELSE 0 END";
+            command.Parameters.Add("@id", SqlDbType.NVarChar, 64).Value = id;
+            return Convert.ToInt32(await command.ExecuteScalarAsync().ConfigureAwait(false)) == 1;
+        });
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -531,6 +594,7 @@ internal sealed class SqlServerGateStore : IProductionGateStore
             CREATE INDEX [IX_{_tableName}_Role_Age] ON {QualifiedTable}(Role, Age);
             CREATE INDEX [IX_{_tableName}_Name] ON {QualifiedTable}(Name);
             """;
+        if (_indexAge) command.CommandText += $"\nCREATE INDEX [IX_{_tableName}_Age] ON {QualifiedTable}(Age);";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         Volatile.Write(ref _initialized, 1);
     }
