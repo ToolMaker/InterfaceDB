@@ -649,8 +649,8 @@ static async Task RepositoryOperationsHonorContractsAsync()
             .QuerySingleOrDefaultAsync(x => x.Id == "operations")
             .ConfigureAwait(false);
         Assert(
-            ReferenceEquals(optional, stored),
-            "QuerySingleOrDefaultAsync should return the single matching stored instance.");
+            optional?.Value == "initial" && !ReferenceEquals(optional, stored),
+            "QuerySingleOrDefaultAsync should return an isolated copy of the committed value.");
 
         var missingCompatibilityQuery = await repository
             .QueryAsync(x => x.Id == "missing")
@@ -864,7 +864,7 @@ static async Task RepositoryWeakObjectCacheUsesWeakReferenceAsync()
         Assert(cached!.ObjectInstance is null, "Weak cache should not retain a strong object reference.");
         var weakReference = AssertNotNull(cached.ObjectInstanceWeakReference, "Weak cache should store a weak object reference.");
         Assert(weakReference.TryGetTarget(out var weakTarget), "Weak target should be alive while the caller still holds the saved object.");
-        Assert(ReferenceEquals(saved, weakTarget), "Weak cache should point at the saved object while it remains alive.");
+        Assert(!ReferenceEquals(saved, weakTarget) && weakTarget!.Value == "stored", "Weak cache should retain a private committed copy while a caller holds a result.");
 
         var queried = await repository.QueryFirstAsync(x => x.Id == "weak-cache").ConfigureAwait(false);
         queried = AssertNotNull(queried, "Weak-cached record should still be queryable.");
@@ -893,7 +893,7 @@ static async Task RepositoryCachesStorageCachedObjectsAsync()
             IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
 
         Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after save.");
-        Assert(ReferenceEquals(saved, cached!.ObjectInstance), "StorageCached concrete types should retain the object instance.");
+        Assert(!ReferenceEquals(saved, cached!.ObjectInstance) && cached.ObjectInstance?.Value == "stored", "StorageCached types should retain a private committed copy.");
     }
     finally
     {
@@ -921,7 +921,7 @@ static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
             var envelopes = writerProvider.GetRequiredKeyedService<
                 IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<ILockTestRecord>>>("ObjectCacheTest");
             Assert(envelopes.TryGetValue(storageKey, out var cached), "Envelope should be cached after flagged save.");
-            Assert(ReferenceEquals(saved, cached!.ObjectInstance), "Envelope cache flag should retain the current object instance.");
+            Assert(!ReferenceEquals(saved, cached!.ObjectInstance) && cached.ObjectInstance?.Value == "stored", "The envelope flag should retain a private committed copy.");
         }
 
         await using (var readerProvider = BuildSelectiveObjectCacheProvider(testRoot))
@@ -937,7 +937,7 @@ static async Task RepositoryCachesEnvelopeFlaggedObjectsAsync()
             var queried = await repository.QueryFirstAsync(x => x.Id == "envelope-cache").ConfigureAwait(false);
             queried = AssertNotNull(queried, "Flagged record should be queryable after restart.");
             Assert(coldEnvelope.CacheObjectInstance, "Persisted envelope cache flag should be restored from storage.");
-            Assert(ReferenceEquals(queried, coldEnvelope.ObjectInstance), "Persisted envelope flag should retain the queried object instance.");
+            Assert(!ReferenceEquals(queried, coldEnvelope.ObjectInstance) && coldEnvelope.ObjectInstance?.Value == "stored", "A persisted flag should retain a private committed copy after restart.");
         }
     }
     finally
@@ -2083,8 +2083,8 @@ static async Task EncryptedStorageLazilyRotatesToActiveKeyAsync()
             "Lazy rotation should rewrite directly with the current active key.");
         Assert(keyProvider.RequestedKeyIds.Count(id => id == "key-1") == 1,
             "The historical key should be resolved once for decryption.");
-        Assert(keyProvider.RequestedKeyIds.Count(id => id == "key-2") == 1,
-            "The active key should be resolved once for replacement encryption.");
+        Assert(keyProvider.RequestedKeyIds.Count(id => id == "key-2") == 3,
+            "Resolve the active key once for rotation and once each for the private cache and caller copy.");
         AssertNoSidecarArtifacts(testRoot);
     }
     finally

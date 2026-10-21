@@ -376,6 +376,14 @@ internal interface IExistenceGateStore
     ValueTask<Func<ValueTask<bool>>> PrepareExistenceProbeAsync(string id);
 }
 
+internal interface ICacheReadProbeGateStore
+{
+    // Pin caller-owned results to measure a populated weak cache explicitly.
+    ValueTask<IDisposable> RetainReadObjectsAsync(int expectedCount);
+    // Resolve the physical identity outside timing; timed reads materialize every field.
+    ValueTask<Func<ValueTask<GateQueryResult>>> PreparePointReadProbeAsync(string id);
+}
+
 internal interface IQueryPlanGateStore
 {
     ValueTask<Dictionary<string, string[]>> ExplainQueriesAsync(string exactId);

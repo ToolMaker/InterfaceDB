@@ -12,9 +12,14 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// so storage identity stays consistent across cache and disk. The factory receives both the
 /// materialized contract instance and its storage location.
 /// </summary>
-public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>
+public sealed class FileObjectEnvelope<TContract> : IObjectEnvelope<TContract>, IEnvelopeCacheState<TContract>
     where TContract : class, IStoredContract<TContract>
 {
+    private long _commitOrder;
+    long IEnvelopeRuntimeState.CommitOrder { get => Volatile.Read(ref _commitOrder); set => Volatile.Write(ref _commitOrder, value); }
+    ICommittedEnvelopeSnapshot<TContract>? IEnvelopeCacheState<TContract>.CommittedSnapshot { get; set; }
+    TContract? IEnvelopeCacheState<TContract>.CachedOwner { get; set; }
+
     public FileObjectEnvelope()
     {
     }

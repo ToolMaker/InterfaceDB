@@ -18,7 +18,7 @@ public sealed class ReviewRegressionFileProviderTests
     [TestMethod]
     [DataRow(StorageObjectCacheMode.StrongObject)]
     [DataRow(StorageObjectCacheMode.WeakObject)]
-    public async Task ReopenedFileCacheExposesUnsavedEditsToIndexedQueries(StorageObjectCacheMode mode)
+    public async Task ReopenedFileCacheKeepsUnsavedEditsPrivate(StorageObjectCacheMode mode)
     {
         var initial = Build(p => p.Id, mode: mode);
         try
@@ -41,12 +41,15 @@ public sealed class ReviewRegressionFileProviderTests
                 Assert.IsNotNull(record);
                 record.Score = 99;
                 var source = (ICachedEnvelopeSource<IFileProbe>)envelopes;
-                Assert.IsTrue(source.EnumerateCachedObjects().Any(item => ReferenceEquals(item.Value, record)));
+                Assert.IsTrue(source.IsolatesCachedReads);
+                Assert.IsTrue(source.EnumerateCachedObjects().All(item => item.Value.Score == 1 && !ReferenceEquals(item.Value, record)));
                 var matches = new List<IFileProbe>();
                 await foreach (var row in reopened.Repo.SearchManyAsync(r => r.Score == 99)) matches.Add(row);
-                Assert.HasCount(1, matches);
-                Assert.AreSame(record, matches[0]);
-                await foreach (var row in reopened.Repo.SearchManyAsync(r => r.Score == 1)) Assert.Fail("Stale index value returned.");
+                Assert.IsEmpty(matches);
+                Assert.IsNotNull(await reopened.Repo.SearchFirstAsync(r => r.Score == 1));
+                await reopened.Repo.SaveAsync(record);
+                Assert.IsNotNull(await reopened.Repo.SearchFirstAsync(r => r.Score == 99));
+                Assert.IsNull(await reopened.Repo.SearchFirstAsync(r => r.Score == 1));
             }
         }
         finally { Directory.Delete(initial.Root, recursive: true); }

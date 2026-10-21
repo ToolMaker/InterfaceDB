@@ -523,8 +523,12 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
         }
     }
 
-    private sealed class PlainEnvelope : IObjectEnvelope<TContract>
+    private sealed class PlainEnvelope : IObjectEnvelope<TContract>, IEnvelopeCacheState<TContract>
     {
+        private long _commitOrder;
+        long IEnvelopeRuntimeState.CommitOrder { get => Volatile.Read(ref _commitOrder); set => Volatile.Write(ref _commitOrder, value); }
+        ICommittedEnvelopeSnapshot<TContract>? IEnvelopeCacheState<TContract>.CommittedSnapshot { get; set; }
+        TContract? IEnvelopeCacheState<TContract>.CachedOwner { get; set; }
         public long RevisionTimestampUtcMicroseconds { get; set; }
         public string EnvelopeCacheKey { get; set; } = string.Empty;
         public string VersionTag { get; set; } = string.Empty;

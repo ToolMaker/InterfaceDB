@@ -39,6 +39,17 @@ catch (WriteConflictException<IContact> conflict)
 
 `Working`, each original read, and committed-current reads are isolated through the configured serializer/lifecycle. A mutable cache entry is never the historical baseline. The session holds an opaque reference, not a previous object or envelope chain. Do not mutate its key, revision or locator, save `Working` directly, or modify it concurrently with `SaveAsync`.
 
+When editing through `Working`, other cached reads and searches keep seeing the
+last committed value until the session saves successfully. Disposing an unsaved
+session leaves that value unchanged. The working graph also remains separate
+from the published cache after save, including nested lists and arrays.
+
+Ordinary File and SegmentCore reads now use the same committed-value rule, even
+without retention enabled: query results are independent copies and unsaved
+edits remain private. Explicit edit sessions additionally retain the original
+historical baseline for conflict resolution. Cache isolation does not retain
+that history or require an edit session. See the [upgrade guide](storage-correctness-upgrade.md#query-and-cache-behaviour).
+
 A successful session is single-use and releases its baseline. A rejection, validation exception or pre-commit cancellation leaves the session available until disposal/expiry. Disposal is idempotent. An already-admitted save/read keeps its own hold until it finishes; expiry/disposal prevents new uses. `Renew(duration)` is explicit, cannot resurrect an expired scope, and cannot exceed either the configured lease duration or total maximum lifetime. Expired handles raise `RetainedVersionUnavailableException`.
 
 Limits apply to each opened retention registry. Multiple File processes have independent admission budgets, so deployments must budget their aggregate disk use. Shared physical SegmentCore records count once toward its retained-record/byte limit, with one hold per editor; File captures one encoded copy per acquisition. Pending failed deletions continue to count against archive space/admission. Statistics distinguish active sessions, protected record bytes, physically present archive bytes, successfully published copied bytes, historical read bytes, and failed cleanup attempts. Encoded payload/frame accounting is not an exact filesystem-allocation measurement.

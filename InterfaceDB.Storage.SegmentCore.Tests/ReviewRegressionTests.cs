@@ -324,7 +324,7 @@ public sealed partial class SegmentCoreProviderTests
     [DataRow(StorageObjectCacheMode.StrongObject)]
     [DataRow(StorageObjectCacheMode.WeakObject)]
     [DataRow(StorageObjectCacheMode.MetadataOnly)]
-    public async Task ReviewRegression_StrongCacheAliasing(StorageObjectCacheMode mode)
+    public async Task ReviewRegression_CachedReadsStayCommitted(StorageObjectCacheMode mode)
     {
         using var root = new ProviderTemporaryDirectory();
         var policy = StoragePolicy.Default with { ObjectCacheMode = mode, RaiseNotifications = true, HydrateOnInitialize = false };
@@ -339,12 +339,17 @@ public sealed partial class SegmentCoreProviderTests
             saved = await repo.SaveAsync(saved);
         }
         var source = (ICachedEnvelopeSource<IProviderRecord>)provider.GetRequiredService<IEnvelopeRepository<IProviderRecord>>();
-        Assert.IsTrue(source.EnumerateCachedObjects().Any(item => ReferenceEquals(item.Value, saved)));
+        Assert.IsTrue(source.IsolatesCachedReads);
+        Assert.IsTrue(source.EnumerateCachedObjects().All(item => item.Value.Score == 1 && !ReferenceEquals(item.Value, saved)));
         saved.Name = "UNSAVED EDIT"; saved.Score = 999;
         var reread = await repo.QueryFirstByStorageKeyAsync("alias");
         var currentMatches = await ToListAsync(repo.SearchManyAsync(r => r.Score == 999));
-        Assert.HasCount(1, currentMatches);
-        Assert.AreSame(reread, currentMatches[0]);
+        Assert.IsEmpty(currentMatches);
+        Assert.AreNotSame(saved, reread);
+        Assert.AreEqual(1, reread!.Score);
+        Assert.HasCount(1, await ToListAsync(repo.SearchManyAsync(r => r.Score == 1)));
+        await repo.SaveAsync(saved);
+        Assert.HasCount(1, await ToListAsync(repo.SearchManyAsync(r => r.Score == 999)));
         Assert.IsEmpty(await ToListAsync(repo.SearchManyAsync(r => r.Score == 1)));
         var byIndex = (await ToListAsync(repo.SearchManyAsync(r => r.Score == 1))).Select(r => r.Name + "/" + r.Score);
         Report("strong-cache-aliasing", new[]

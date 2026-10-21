@@ -14,6 +14,103 @@ namespace InterfaceDb.Tests;
 [TestClass]
 public sealed class RetainedEditingTests
 {
+    [TestMethod]
+    [DataRow(false, StorageObjectCacheMode.StrongObject)]
+    [DataRow(false, StorageObjectCacheMode.WeakObject)]
+    [DataRow(true, StorageObjectCacheMode.StrongObject)]
+    [DataRow(true, StorageObjectCacheMode.WeakObject)]
+    public async Task OrdinaryCachedReadsPublishOnlySuccessfulSaves(bool segment, StorageObjectCacheMode cache)
+    {
+        await using var fixture = new EditFixture(segment, cache: cache);
+        var input = new Record { Id = "one", Value = 1, Names = ["B"], Bytes = [1] };
+        var saved = await ((IEnvelopeMetadataRepository<IRecord>)fixture.Repository)
+            .SaveWithExtensionMetadataAsync(input, null, [1]);
+        input.Names[0] = "unsaved input";
+        saved.Value = 99;
+        saved.Bytes[0] = 99;
+        var reader = (await fixture.Repository.QueryFirstByStorageKeyAsync(saved.Envelope!.EnvelopeCacheKey))!;
+        Assert.AreEqual(1, reader.Value);
+        Assert.AreEqual("B", reader.Names[0]);
+        Assert.AreEqual((byte)1, reader.Bytes[0]);
+        Assert.AreEqual((byte)1, reader.Envelope!.ExtensionMetadata![0]);
+        reader.Envelope.ExtensionMetadata[0] = 2;
+        reader.Value = 2; reader.Names[0] = "C"; reader.Bytes[0] = 2;
+        Assert.IsNull(await fixture.Repository.SearchFirstAsync(row => row.Value == 2));
+        var original = (await fixture.Repository.SearchFirstAsync(row => row.Value == 1))!;
+        Assert.IsNotNull(original);
+        Assert.AreNotSame(reader, original);
+        Assert.AreNotSame(reader.Names, original.Names);
+        Assert.AreEqual("B", original.Names[0]);
+        Assert.AreEqual((byte)1, original.Envelope!.ExtensionMetadata![0]);
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Repository.SaveAsync(reader, cancelled.Token).AsTask());
+        }
+        Assert.AreEqual(1, (await fixture.Repository.QueryFirstAsync(row => row.Id == "one"))!.Value);
+        await fixture.Repository.SaveAsync(reader);
+        reader.Value = 3; reader.Names[0] = "later draft"; reader.Bytes[0] = 3;
+        reader.Envelope.ExtensionMetadata![0] = 3;
+        var committed = (await fixture.Repository.SearchFirstAsync(row => row.Value == 2))!;
+        Assert.IsNotNull(committed);
+        Assert.AreEqual("C", committed.Names[0]);
+        Assert.AreEqual((byte)2, committed.Bytes[0]);
+        Assert.AreEqual((byte)2, committed.Envelope!.ExtensionMetadata![0]);
+        original.Value = 4;
+        await Assert.ThrowsExactlyAsync<WriteConflictException<IRecord>>(() => fixture.Repository.SaveAsync(original).AsTask());
+        Assert.IsNull(await fixture.Repository.SearchFirstAsync(row => row.Value == 4));
+        Assert.AreEqual(2, (await fixture.Repository.QueryFirstAsync(row => row.Id == "one"))!.Value);
+        GC.KeepAlive(input); GC.KeepAlive(saved); GC.KeepAlive(reader);
+    }
+
+    [TestMethod]
+    [DataRow(false, StorageObjectCacheMode.StrongObject, false)]
+    [DataRow(false, StorageObjectCacheMode.StrongObject, true)]
+    [DataRow(false, StorageObjectCacheMode.WeakObject, false)]
+    [DataRow(false, StorageObjectCacheMode.WeakObject, true)]
+    [DataRow(true, StorageObjectCacheMode.StrongObject, false)]
+    [DataRow(true, StorageObjectCacheMode.StrongObject, true)]
+    [DataRow(true, StorageObjectCacheMode.WeakObject, false)]
+    [DataRow(true, StorageObjectCacheMode.WeakObject, true)]
+    public async Task CachedReadersSeeCommittedValuesUntilIsolatedEditIsSaved(
+        bool segment, StorageObjectCacheMode cache, bool commit)
+    {
+        await using var fixture = new EditFixture(segment, cache: cache);
+        var original = await fixture.Repository.SaveAsync(
+            new Record { Id = "one", Value = 1, Names = ["original"], Bytes = [1] });
+        await using var edit = await fixture.Repository.BeginEditAsync(original.Envelope!.EnvelopeCacheKey);
+        edit.Working.Value = 2;
+        edit.Working.Names[0] = "editing";
+        edit.Working.Bytes[0] = 2;
+
+        var duringEdit = (await fixture.Repository.QueryFirstAsync(row => row.Id == "one"))!;
+        Assert.AreNotSame(edit.Working, duringEdit);
+        Assert.AreNotSame(edit.Working.Names, duringEdit.Names);
+        Assert.AreNotSame(edit.Working.Bytes, duringEdit.Bytes);
+        Assert.AreEqual(1, duringEdit.Value);
+        Assert.AreEqual("original", duringEdit.Names[0]);
+        Assert.AreEqual((byte)1, duringEdit.Bytes[0]);
+        Assert.IsNotNull(await fixture.Repository.SearchFirstAsync(row => row.Value == 1));
+        Assert.IsNull(await fixture.Repository.SearchFirstAsync(row => row.Value == 2));
+
+        if (commit) await edit.SaveAsync();
+        else await edit.DisposeAsync();
+
+        // The edit buffer must not become the published cache object after save either.
+        edit.Working.Value = 3;
+        edit.Working.Names[0] = "later draft";
+        edit.Working.Bytes[0] = 3;
+        var expected = commit ? 2 : 1;
+        var afterEdit = (await fixture.Repository.QueryFirstAsync(row => row.Id == "one"))!;
+        Assert.AreEqual(expected, afterEdit.Value);
+        Assert.AreEqual(commit ? "editing" : "original", afterEdit.Names[0]);
+        Assert.AreEqual((byte)expected, afterEdit.Bytes[0]);
+        Assert.IsNotNull(await fixture.Repository.SearchFirstAsync(row => row.Value == expected));
+        Assert.IsNull(await fixture.Repository.SearchFirstAsync(row => row.Value == 3));
+        GC.KeepAlive(original);
+        GC.KeepAlive(duringEdit);
+    }
+
     [TestMethod] [DataRow(false)] [DataRow(true)]
     public async Task CommittedBaselineAndWorkingGraphsAreIsolatedAndSuccessfulSessionIsSingleUse(bool segment)
     {
@@ -180,17 +277,20 @@ public sealed class RetainedEditingTests
         internal IDbContractConfigDto<IRecord> Configuration { get; }
         private readonly bool _deleteRoot;
         internal EditFixture(bool segment, IWriteConflictStrategy<IRecord>? strategy = null, RetainedVersionOptions? options = null,
-            string? root = null, StorageDurabilityMode durability = StorageDurabilityMode.Durable, string extension = ".mpk", bool hydrate = false)
+            string? root = null, StorageDurabilityMode durability = StorageDurabilityMode.Durable, string extension = ".mpk", bool hydrate = false,
+            StorageObjectCacheMode cache = StorageObjectCacheMode.StrongObject,
+            IObjectSerializer<IRecord>? serializer = null)
         {
             _deleteRoot = root is null;
             if (root is not null) Root = root;
             var policy = StoragePolicy.Default with { RetainedVersions = options ?? new(), RaiseNotifications = false,
                 DurabilityMode = durability,
                 HydrateOnInitialize = hydrate,
-                WatchStorageChanges = false, ObjectCacheMode = StorageObjectCacheMode.StrongObject, RepositoryNotifications = new() };
+                WatchStorageChanges = false, ObjectCacheMode = cache, RepositoryNotifications = new() };
             IDbContractConfigDto<IRecord> config = new ExtensionConfig(new Config(Root, segment ? ContractRepositoryType.SegmentCore : ContractRepositoryType.FileSystem, policy), extension);
             Configuration = config;
             var services = new ServiceCollection();
+            if (serializer is not null) services.AddKeyedSingleton(config.EnvelopeDICacheKey, serializer);
             if (strategy is not null) services.AddSingleton(strategy);
             if (segment) services.AddSegmentCoreRepository(config); else services.AddFileRepository(config);
             Services = services.BuildServiceProvider(); Repository = Services.GetRequiredService<IRepository<IRecord>>();

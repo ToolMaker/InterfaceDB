@@ -7,7 +7,7 @@ using Idb.Libraries.Implementation.Extensions;
 using Idb.Libraries.Implementation.Indexes;
 using Microsoft.Extensions.DependencyInjection;
 
-internal sealed class InterfaceDbGateStore : IProductionGateStore, IExistenceGateStore, IOrdinalStringGateStore
+internal sealed class InterfaceDbGateStore : IProductionGateStore, IExistenceGateStore, IOrdinalStringGateStore, ICacheReadProbeGateStore
 {
     private readonly string _dataRoot;
     private readonly StorageObjectCacheMode _cacheMode;
@@ -134,6 +134,37 @@ internal sealed class InterfaceDbGateStore : IProductionGateStore, IExistenceGat
         var entity = await Repository.SearchFirstAsync(record => record.Id == id).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Existence probe requires an existing record.");
         return () => Repository.ExistsAsync(entity);
+    }
+
+    public async ValueTask<IDisposable> RetainReadObjectsAsync(int expectedCount)
+    {
+        var objects = new List<IProductionGateRecord>();
+        await foreach (var record in Repository.QueryManyAsync(static _ => true)) objects.Add(record);
+        if (objects.Count != expectedCount) throw new InvalidOperationException("Cache population count differs.");
+        return new ReadRetention(objects);
+    }
+
+    public async ValueTask<Func<ValueTask<GateQueryResult>>> PreparePointReadProbeAsync(string id)
+    {
+        var entity = await Repository.SearchFirstAsync(record => record.Id == id)
+            ?? throw new InvalidOperationException("Point-read probe requires an existing record.");
+        var key = entity.Envelope!.EnvelopeCacheKey;
+        var envelopes = _provider!.GetRequiredService<IEnvelopeRepository<IProductionGateRecord>>();
+        return async () =>
+        {
+            var envelope = await envelopes.GetPhysicalAsync(key)
+                ?? throw new InvalidOperationException("Point-read probe lost its record.");
+            var record = envelope.ObjectInstance;
+            if (record is null && envelope.ObjectInstanceWeakReference is { } weak) weak.TryGetTarget(out record);
+            if (record is null) throw new InvalidOperationException("Point-read probe did not materialize its record.");
+            return new GateQueryResult(1, MaterializedChecksum(record));
+        };
+    }
+
+    private sealed class ReadRetention(List<IProductionGateRecord> objects) : IDisposable
+    {
+        private List<IProductionGateRecord>? _objects = objects;
+        public void Dispose() { GC.KeepAlive(_objects); _objects = null; }
     }
 
     public async ValueTask<GateQueryResult> QueryOrdinalAsync(GateQueryKind kind)

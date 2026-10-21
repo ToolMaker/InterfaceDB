@@ -135,8 +135,8 @@ Future providers:
 Object caching can improve read-heavy scenarios. InterfaceDB supports three repository object-cache modes:
 
 - `MetadataOnly`: retain envelope metadata only; each query result is freshly read and deserialized, making this the canonical storage-to-object benchmark mode.
-- `WeakObject`: retain a `WeakReference<TContract>` so live objects can be reused without InterfaceDB keeping them alive.
-- `StrongObject`: retain the object instance strongly until cache update/removal; benchmark results in this mode describe a hot InterfaceDB object cache.
+- `WeakObject`: retain a private committed object and encoded snapshot weakly; live caller copies keep the cache entry usable, and releasing them permits collection.
+- `StrongObject`: retain a private committed object and encoded snapshot strongly until cache update/removal. Each read materializes a separate caller copy; reference identity is not shared.
 
 Example:
 
@@ -147,7 +147,9 @@ public sealed class Employee : IPerson
 }
 ```
 
-If employees are marked as cached, the repository can skip file reads for those instances and return the retained object. Weak cache mode provides a middle ground: if the application still holds the object, InterfaceDB can reuse it; if the application releases it, the .NET GC can collect it and InterfaceDB will fall back to storage on the next read.
+If employees are marked as cached, the repository skips file reads and materializes independent copies from committed cached bytes through the configured serializer. No extra serialization is needed on a cache hit. Unsaved changes stay private, including nested lists and arrays. Weak caching remains usable while callers hold their copies; otherwise the GC may collect the private object and the next read falls back to storage.
+
+The 21 October committed-cache isolation change adds materialization/allocation costs. Earlier strong/weak cache timings in this document measured shared objects and are not measurements of the new implementation. The [three-build Windows/SQL comparison](performance-proposal-review-20261020.md#windows-three-build-comparison--21-october-2026) records faster selective cached searches alongside slower direct reads, large cached results and scans. A1 improves uncached SegmentCore paths by skipping unused context work; its effect on warm cached copies is small.
 
 Future storage engines can use object pointers and page/catalog metadata to move the read head past cached objects and avoid unnecessary object payload reads.
 

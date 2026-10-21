@@ -1,5 +1,47 @@
 # Review follow-up — 20 October 2026
 
+## Serializer context work — 21 October 2026
+
+A1 now avoids building unused storage-encryption context for non-contextual
+serializers in File and SegmentCore. Contextual serializer calls and direct
+migration decryption retain their full original context. This is independent
+of the committed cache behavior below. The three-build Windows comparison passed
+18 processes, 117 engine/cache configurations and 1,413 measurement rows. It
+separates A1's uncached-read gains from faster selective cached searches and the
+higher cost of copied large results and scans. Final public verification passed
+791 tests with 12 platform skips. See the measured
+[proposal review](performance-proposal-review-20261020.md#windows-three-build-comparison--21-october-2026).
+
+## Committed cache reads — 21 October 2026
+
+The clarified requirement is implemented for ordinary File and SegmentCore
+reads, including strong/weak caching and per-object/type overrides: readers see
+committed B while an editor changes its own copy, and a successful save publishes
+C. This intentionally supersedes the earlier shared-reference/unsaved-search
+behavior. Nested lists, byte arrays and extension metadata are isolated too.
+Abandoned edits, rejected revisions and pre-commit cancellation preserve B.
+
+Private encoded snapshots reuse the configured serializer and encryption context.
+Cache hits decode an independent graph without encoding again. Copy preparation
+for writes happens before commit so a copy failure cannot change stored data.
+Weak entries stay alive while caller copies are held and can be collected later.
+Indexed searches use committed candidates for providers declaring isolated reads;
+custom providers retain their previous fallback unless they provide that contract.
+The compaction deadlock fix and the current scan consistency model are unchanged.
+
+Four ordinary-read regressions failed before the change and now pass. The initial
+Windows Release runs passed core **387** (10 platform skips), SegmentCore **211**
+(2 platform skips), and public transport **184**. Focused coverage also verifies
+reads during a paused save, injected copy failure before commit, weak-cache reads
+under garbage collection, and use of the configured serializer without repeated
+encoding. Existing retained editing, encryption/rotation and compaction tests pass.
+
+This correctness change adds copy/deserialization and snapshot-memory costs.
+Earlier shared-cache benchmark timings are historical; the subsequent
+[three-build comparison](performance-proposal-review-20261020.md#windows-three-build-comparison--21-october-2026)
+measures the final cache implementation and A1 separately, including slower cases.
+Source and documentation remain uncommitted and no package was published.
+
 ## What changed and why
 
 This follow-up implements confirmed correctness and diagnostic gaps from the
@@ -84,6 +126,13 @@ Package publication remains gated on Android-device and physical power-loss
 qualification, as agreed for this snapshot. A local commit does not satisfy
 those publication gates.
 
+The final public snapshot was committed as `fde3b5392b006cb7c87f0147215a43ac65d249be`.
+The subsequent [committed baseline performance check](performance-baseline-20261020.md)
+compares it with `0b567f275ca92b26c9601a46af8ea28e10dee511`, using 12 complete
+processes within one boot session and six separate longer WeakObject checks.
+It records the remaining timing variation and lifecycle/tail costs without
+changing production code or claiming a new optimization.
+
 | Finding | Change | Verification |
 | --- | --- | --- |
 | New File directories were created without the configured durable publication step | Added `IFilePublication.EnsureDirectory`; the repository, coordinator, watcher and revision clock use it before acknowledging durable work | Injected ancestor-barrier failure prevents payload preparation/revision issue; retry succeeds; native nested-path checks run on Windows and Linux |
@@ -100,10 +149,19 @@ path, which was fixed before the final measurements. Existing constructor
 signatures remain available. The directory-publication capability has a default
 interface implementation so existing custom implementations remain compatible.
 
-No query result semantics, mutable cache semantics, revision protection,
-transaction behavior or default durability strategy were removed to obtain
-performance numbers. The analyzer does not automatically change string comparison
-semantics. Logging uses the configured diagnostics service.
+Mutable cache semantics, revision protection and the default durability strategy
+were preserved. Numeric and string predicates keep their original comparison
+meaning; the analyzer does not automatically change it. Logging uses the
+configured diagnostics service.
+
+The earlier compaction deadlock fix did change concurrent streaming-scan
+visibility: it captures keys, then resolves current values per batch, rather than
+holding the original record locations for the entire scan. Later batches can
+observe updates or omit deletions made after enumeration starts. This is a real
+behavior difference, even though snapshot transactions were not a general
+repository guarantee. It must be considered when upgrading consumers that relied
+on a stable raw scan; it is not a performance-only change. See the
+[scan upgrade guidance](storage-correctness-upgrade.md#scans-compaction-and-transactions).
 
 ## Original follow-up verification (before the correction above)
 

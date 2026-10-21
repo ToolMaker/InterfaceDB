@@ -158,7 +158,13 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
         }
         else
         {
-            StorageObjectCachePolicy.StoreObjectReference(cachedEnvelope, unwrapped, _storagePolicy);
+            cachedEnvelope = CommittedCacheCopies<TContract>.Copy(envelope, retainCache: false);
+            var privateInstance = cachedEnvelope.ObjectInstance;
+            if (cacheMode == StorageObjectCacheMode.WeakObject)
+                cachedEnvelope = EnvelopeWriteCoordinator<TContract>.CopyEnvelope(cachedEnvelope);
+            StorageObjectCachePolicy.StoreObjectReference(cachedEnvelope, privateInstance, _storagePolicy);
+            if (unwrapped is not null && privateInstance is not null)
+                CommittedCacheCopies<TContract>.KeepAlive(unwrapped, privateInstance);
         }
 
         _envelopes.AddOrUpdate(
@@ -197,10 +203,15 @@ public sealed class FileEnvelopeStorageChangeHandler<TContract> : IEnvelopeStora
                 var payload = new byte[checked((int)stream.Length)];
                 await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
                 var physicalKey = Path.GetFileNameWithoutExtension(file.Name);
-                return ContextualObjectSerialization.Deserialize(
+                var envelope = ContextualObjectSerialization.Deserialize(
                     _serializer,
                     payload,
                     StorageEncryptionContext.Create(_contractConfig, "file", physicalKey));
+                envelope.EnvelopeCacheKey = physicalKey;
+                envelope.Location = file.FullName;
+                CommittedCacheCopies<TContract>.Remember(envelope, payload, _serializer,
+                    _envelopeLifecycle, _storagePolicy, StorageEncryptionContext.Create(_contractConfig, "file", physicalKey));
+                return envelope;
             }
             catch (IOException) when (attempt < attempts)
             {

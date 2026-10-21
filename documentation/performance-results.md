@@ -1,5 +1,12 @@
 # Current Performance Results
 
+## Committed cache isolation and A1 — 21 October 2026
+
+See the [three-build follow-up](performance-proposal-review-20261020.md) for the
+committed-read cache contract, A1 integration and measurements separating their
+costs. Strong/weak cache figures below predate isolated read copies and must not
+be used as measurements of the new cache implementation.
+
 ## Latest review follow-up — 20 October 2026
 
 See [the review follow-up](review-followup-20261020.md) for the subsequent

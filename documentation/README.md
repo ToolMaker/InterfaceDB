@@ -40,6 +40,8 @@ Use the focused guides when needed:
 - [Current Performance Results](performance-results.md): reproducible measurements and honest interpretation.
 - [SQL Performance Comparison — 20 October 2026](performance-sql-20261020.md): repeated full-repository SQLite/SQL Server comparison, before/current changes, ordinal string controls, and historical storage-core rerun.
 - [Review Follow-up — 20 October 2026](review-followup-20261020.md): regression-tested publication and notification fixes, the string-search analyzer, and controlled flush-strategy measurements.
+- [Committed Baseline Performance Check — 20 October 2026](performance-baseline-20261020.md): repeated before/current measurements after the final corrections, with reboot isolation, SQL controls, and a focused weak-cache follow-up.
+- [Performance Proposal Review and Three-Build Comparison — 20–21 October 2026](performance-proposal-review-20261020.md): committed-cache isolation and A1 measured separately against the baseline and SQL, including copying costs, allocations, slower cases and the superseded shared-cache assessment.
 - [Preview.6 Performance Snapshot](performance-preview6-20260905.md): historical complete-object SQLite comparison, repository timings, allocations and regressions.
 - [Preview.6 Release Notes](preview6-release-notes.md): changes, IDB5 compatibility and release qualification.
 - [SegmentCore Storage Provider](segment-core-storage-provider.md): installation, registration, atomic writes, paged locators, migration, online backup/restore, compatibility policy, qualification, performance, and supported boundaries.

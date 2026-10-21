@@ -1,5 +1,9 @@
 # SQL performance comparison — 20 October 2026
 
+The [21 October follow-up](performance-proposal-review-20261020.md) measures the
+later committed-cache isolation and A1 changes separately. The shared-cache
+figures in this document describe the earlier implementation.
+
 ## Scope and result
 
 This is a measured comparison of post-preview.11 public source, not a new NuGet

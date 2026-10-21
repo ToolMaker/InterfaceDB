@@ -43,6 +43,8 @@ internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
         => ((ICachedEnvelopeSource<TContract>)_repository).EnumerateCachedObjects();
 
+    public bool IsolatesCachedReads => ((ICachedEnvelopeSource<TContract>)_repository).IsolatesCachedReads;
+
     public ValueTask<bool> ExistsPhysicalAsync(string physicalKey, CancellationToken cancellationToken = default)
         => ((IPhysicalEnvelopeLookup)_repository).ExistsPhysicalAsync(physicalKey, cancellationToken);
 

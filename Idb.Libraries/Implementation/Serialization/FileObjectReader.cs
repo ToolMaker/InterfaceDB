@@ -9,7 +9,7 @@ using Idb.Libraries.Abstractions.Services.Serialization;
 
 namespace Idb.Libraries.Implementation.Serialization
 {
-    public class FileObjectReader<TContract> : IObjectReader<TContract>, ICommittedEnvelopeSnapshotSource<TContract>
+    public class FileObjectReader<TContract> : IIsolatedObjectReader<TContract>, ICommittedEnvelopeSnapshotSource<TContract>
         where TContract : class, IStoredContract<TContract>
     {
         private IObjectSerializer<TContract> _serializer;
@@ -50,9 +50,10 @@ namespace Idb.Libraries.Implementation.Serialization
                 cached.Location = file.FullName;
                 if (StorageObjectCachePolicy.TryGetObjectInstance(cached, out var cachedInstance) && cachedInstance is not null)
                 {
+                    cached = CommittedCacheCopies<TContract>.Copy(cached, pinnedInstance: cachedInstance);
+                    cachedInstance = cached.ObjectInstance!;
                     cached.ObjectInstance = cachedInstance;
                     var unwrapped = _envelopeLifecycle.Unwrap(cached);
-                    StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
                     return unwrapped;
                 }
 
@@ -72,15 +73,18 @@ namespace Idb.Libraries.Implementation.Serialization
                 if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
                 {
                     var unwrapped = _envelopeLifecycle.Unwrap(deserialized);
+                    var privateEnvelope = CommittedCacheCopies<TContract>.Copy(deserialized, retainCache: false);
                     cached.VersionTag = deserialized.VersionTag;
                     cached.Location = deserialized.Location;
                     cached.State = deserialized.State;
                     cached.ImplementationTypeName = deserialized.ImplementationTypeName;
                     cached.CacheObjectInstance = deserialized.CacheObjectInstance;
-                    cached.EncryptedFields = deserialized.EncryptedFields;
+                    cached.EncryptedFields = privateEnvelope.EncryptedFields;
                     cached.ExtensionMetadata = deserialized.ExtensionMetadata?.ToArray();
                     cached.RevisionTimestampUtcMicroseconds = deserialized.RevisionTimestampUtcMicroseconds;
-                    StorageObjectCachePolicy.StoreObjectReference(cached, unwrapped, _storagePolicy);
+                    StorageObjectCachePolicy.StoreObjectReference(cached, privateEnvelope.ObjectInstance, _storagePolicy);
+                    CommittedCacheCopies<TContract>.KeepAlive(unwrapped, privateEnvelope.ObjectInstance!);
+                    if (_envelopes is ICachedEnvelopeTracker<TContract> tracker) tracker.RefreshCachedObject(cached);
                     return unwrapped;
                 }
 
@@ -113,7 +117,7 @@ namespace Idb.Libraries.Implementation.Serialization
                     _envelopeLifecycle,
                     identity.EnvelopeCacheKey,
                     identity.Location,
-                    CreateEncryptionContext(identity.EnvelopeCacheKey));
+                    CreateSerializerContext(identity.EnvelopeCacheKey));
             }
             catch (FileNotFoundException) { return null; }
             catch (DirectoryNotFoundException) { return null; }
@@ -148,7 +152,11 @@ namespace Idb.Libraries.Implementation.Serialization
                 try
                 {
                     await stream.ReadExactlyAsync(buffer.AsMemory(0, length), cancellationToken).ConfigureAwait(false);
-                    return memorySerializer.DeserializeMemory(buffer.AsMemory(0, length));
+                    var envelope = memorySerializer.DeserializeMemory(buffer.AsMemory(0, length));
+                    // The memory serializer owns its values. Retained snapshots copy just
+                    // the encoded bytes they need before the borrowed buffer is returned.
+                    Remember(envelope, buffer.AsMemory(0, length), file, physicalKey);
+                    return envelope;
                 }
                 finally
                 {
@@ -166,7 +174,7 @@ namespace Idb.Libraries.Implementation.Serialization
             var result = ContextualObjectSerialization.DeserializeForRead(
                 _serializer,
                 payload,
-                CreateEncryptionContext(physicalKey));
+                CreateSerializerContext(physicalKey));
             if (result.ReplacementPayload is not null)
             {
                 _ = await _fileWriteCoordinator.ReplaceIfUnchangedAsync(
@@ -176,11 +184,23 @@ namespace Idb.Libraries.Implementation.Serialization
                     cancellationToken).ConfigureAwait(false);
             }
 
+            Remember(result.Envelope, result.ReplacementPayload ?? payload, file, physicalKey);
             return result.Envelope;
         }
 
-        private byte[] CreateEncryptionContext(string physicalKey)
-            => StorageEncryptionContext.Create(_contractConfig, "file", physicalKey);
+        private void Remember(IObjectEnvelope<TContract> envelope, ReadOnlyMemory<byte> payload, FileInfo file, string physicalKey)
+        {
+            envelope.EnvelopeCacheKey = physicalKey;
+            envelope.Location = file.FullName;
+            if (StorageObjectCachePolicy.ResolveObjectCacheMode(envelope, _storagePolicy) == StorageObjectCacheMode.MetadataOnly) return;
+            CommittedCacheCopies<TContract>.Remember(envelope, payload, _serializer,
+                _envelopeLifecycle, _storagePolicy, CreateSerializerContext(physicalKey));
+        }
+
+        private byte[] CreateSerializerContext(string physicalKey)
+            => _serializer is IContextualObjectSerializer<TContract>
+                ? StorageEncryptionContext.Create(_contractConfig, "file", physicalKey)
+                : Array.Empty<byte>();
 
         private int ValidatePayloadLength(long length)
         {

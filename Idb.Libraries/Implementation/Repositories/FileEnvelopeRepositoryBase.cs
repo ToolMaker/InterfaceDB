@@ -31,7 +31,11 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     where TContract : class, IStoredContract<TContract>
 {
     public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
-        => CachedEnvelopeEnumeration.Enumerate(_envelopes);
+        => CachedEnvelopeEnumeration.Enumerate(_envelopes)
+            .Select(item => new KeyValuePair<string, TContract>(item.Key,
+                CommittedCacheCopies<TContract>.Copy(item.Value.Envelope!, pinnedInstance: item.Value).ObjectInstance!));
+
+    public bool IsolatesCachedReads => ReaderAndWriter.Reader is IIsolatedObjectReader<TContract>;
 
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StorageObjectCardinality _objectCardinality;
@@ -162,20 +166,24 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        return TryGet(storageKey, out _);
+        return _envelopes.TryGetGroup(storageKey, out _)
+            || (_envelopes.ContainsKey(storageKey) && _envelopes.TryGetGroup(
+                _objectCardinality == StorageObjectCardinality.Single ? storageKey : EnvelopeCacheKey.ToLogicalKey(storageKey), out _));
     }
 
     public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
     {
-        if (string.IsNullOrWhiteSpace(storageKey))
-        {
-            throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
-        }
+        var found = TryGetCachedGroup(storageKey, out var group);
+        envelopes = group.Select(e => CommittedCacheCopies<TContract>.Copy(e)).ToArray();
+        return found;
+    }
 
+    private bool TryGetCachedGroup(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         if (_envelopes.TryGetGroup(storageKey, out envelopes)) return true;
         if (_envelopes.ContainsKey(storageKey))
-            return _envelopes.TryGetGroup(_objectCardinality == StorageObjectCardinality.Single
-                ? storageKey : EnvelopeCacheKey.ToLogicalKey(storageKey), out envelopes);
+            return _envelopes.TryGetGroup((_objectCardinality == StorageObjectCardinality.Single ? storageKey : EnvelopeCacheKey.ToLogicalKey(storageKey)), out envelopes);
         return false;
     }
 
@@ -432,7 +440,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             throw new ArgumentException("Storage key cannot be null or whitespace.", nameof(storageKey));
         }
 
-        if (!TryGet(storageKey, out var envelopes))
+        if (!TryGetCachedGroup(storageKey, out var envelopes))
         {
             yield break;
         }
@@ -534,7 +542,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             foreach (var envelope in cached)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                yield return envelope;
+                yield return CommittedCacheCopies<TContract>.Copy(envelope);
             }
             yield break;
         }
@@ -613,6 +621,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         }
 
         var currentEnvelope = envelope;
+        var isolatedRead = false;
         StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance);
         if (instance is null
             && _migrationStrategy?.StrategyType == MigrationStrategyType.Lazy
@@ -634,6 +643,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         {
             var file = new FileInfo(currentEnvelope.Location);
             var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
+            isolatedRead = ReaderAndWriter.Reader is IIsolatedObjectReader<TContract>;
             instance = hydrated;
             var hydratedEnvelope = hydrated.Envelope;
             if (hydratedEnvelope is not null)
@@ -650,15 +660,17 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             }
 
             var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(hydrated, _storagePolicy);
-            if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
+            if (!isolatedRead && cacheMode is not StorageObjectCacheMode.MetadataOnly)
             {
+                var privateEnvelope = CommittedCacheCopies<TContract>.Copy(hydrated.Envelope!, retainCache: false);
                 envelope.ImplementationTypeName = hydrated.Envelope?.ImplementationTypeName;
-                envelope.EncryptedFields = hydrated.Envelope?.EncryptedFields
+                envelope.EncryptedFields = privateEnvelope.EncryptedFields
                     ?? envelope.EncryptedFields;
                 envelope.ExtensionMetadata = hydrated.Envelope?.ExtensionMetadata?.ToArray();
                 envelope.RevisionTimestampUtcMicroseconds = hydrated.Envelope?.RevisionTimestampUtcMicroseconds ?? 0;
                 envelope.CacheObjectInstance |= hydrated.Envelope?.CacheObjectInstance == true;
-                StorageObjectCachePolicy.StoreObjectReference(envelope, hydrated, _storagePolicy);
+                StorageObjectCachePolicy.StoreObjectReference(envelope, privateEnvelope.ObjectInstance, _storagePolicy);
+                CommittedCacheCopies<TContract>.KeepAlive(hydrated, privateEnvelope.ObjectInstance!);
                 if (_envelopes is ICachedEnvelopeTracker<TContract> tracker) tracker.RefreshCachedObject(envelope);
                 currentEnvelope = envelope;
             }
@@ -676,11 +688,13 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             return PinReadEnvelope(currentEnvelope, instance);
         }
 
-        return instance is null ? null : currentEnvelope;
+        return instance is null ? null : isolatedRead ? currentEnvelope : CommittedCacheCopies<TContract>.Copy(currentEnvelope, pinnedInstance: instance);
     }
 
     private IObjectEnvelope<TContract> PinReadEnvelope(IObjectEnvelope<TContract> envelope, TContract instance)
     {
+        var isolated = CommittedCacheCopies<TContract>.Copy(envelope, pinnedInstance: instance);
+        if (!ReferenceEquals(isolated, envelope)) return isolated;
         if (envelope.ObjectInstance is not null)
         {
             return envelope;

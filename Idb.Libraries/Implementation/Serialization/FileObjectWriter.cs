@@ -50,7 +50,7 @@ namespace Idb.Libraries.Implementation.Serialization
             _pathComparer = FileSystemPathIdentity.ResolveComparer(_identityLockScope);
             if (storagePolicy.RetainedVersions is { } retention)
             {
-                retention.Validate(); _editing = new(serializer, envelopeLifecycle, CreateEncryptionContext);
+                retention.Validate(); _editing = new(serializer, envelopeLifecycle, CreateSerializerContext);
                 _retention = new(_identityLockScope, retention, _ => ValueTask.FromResult<IDisposable>(HistoryRead.Instance),
                     (_, _, _) => throw new InvalidOperationException("A File baseline must be archived before reading."),
                     maximumPayloadBytes: _storagePolicy.NormalizedMaximumStoredObjectBytes);
@@ -62,7 +62,7 @@ namespace Idb.Libraries.Implementation.Serialization
                 envelopeLifecycle,
                 writeConflictStrategy,
                 _editing,
-                CreateEncryptionContext);
+                CreateSerializerContext);
             var normalizedConcurrency = _storagePolicy.NormalizedConcurrency;
             _writeSemaphore = (normalizedConcurrency > 1 && _storagePolicy.UseWriterSemaphore)
                 ? new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency)
@@ -160,14 +160,16 @@ namespace Idb.Libraries.Implementation.Serialization
                         var payload = ContextualObjectSerialization.Serialize(
                             _serializer,
                             envelope,
-                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
+                            CreateSerializerContext(envelope.EnvelopeCacheKey));
                         ValidatePayloadLength(payload.LongLength);
+                        CommittedCacheCopies<TContract>.Remember(envelope, payload, _serializer,
+                            _envelopeLifecycle, _storagePolicy, CreateSerializerContext(envelope.EnvelopeCacheKey), prepareCacheCopy: true);
                         CommittedWriteCapture<TContract>.Remember(
                             envelope,
                             payload,
                             _serializer,
                             _envelopeLifecycle,
-                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
+                            CreateSerializerContext(envelope.EnvelopeCacheKey));
                         using var handle = File.OpenHandle(
                             proposalPath,
                             FileMode.CreateNew,
@@ -206,18 +208,21 @@ namespace Idb.Libraries.Implementation.Serialization
                         ct => ReadPayloadAsync(path, ct), token).ConfigureAwait(false);
                     if (EnvelopeWriteOutcome.IsNoChange(envelope)) return;
                     await WriteProposalAsync(stagingPath, token).ConfigureAwait(false);
-                    if (!_storagePolicy.UseSingleWriteBuffer && CommittedWriteCapture<TContract>.Enabled)
+                    if (!_storagePolicy.UseSingleWriteBuffer && _serializer is not EncryptingObjectSerializer<TContract>
+                        && (CommittedWriteCapture<TContract>.Enabled
+                            || StorageObjectCachePolicy.ResolveObjectCacheMode(envelope, _storagePolicy) != StorageObjectCacheMode.MetadataOnly))
+                    {
+                        var payload = await BoundedStoredPayload.ReadFileAsync(stagingPath,
+                            _storagePolicy.NormalizedMaximumStoredObjectBytes, token).ConfigureAwait(false);
+                        CommittedCacheCopies<TContract>.Remember(envelope, payload, _serializer,
+                            _envelopeLifecycle, _storagePolicy, CreateSerializerContext(envelope.EnvelopeCacheKey), prepareCacheCopy: true);
                         CommittedWriteCapture<TContract>.Remember(
                             envelope,
-                            await BoundedStoredPayload
-                                .ReadFileAsync(
-                                    stagingPath,
-                                    _storagePolicy.NormalizedMaximumStoredObjectBytes,
-                                    token)
-                                .ConfigureAwait(false),
+                            payload,
                             _serializer,
                             _envelopeLifecycle,
-                            CreateEncryptionContext(envelope.EnvelopeCacheKey));
+                            CreateSerializerContext(envelope.EnvelopeCacheKey));
+                    }
                 }
                 void Publish()
                 {
@@ -586,13 +591,15 @@ namespace Idb.Libraries.Implementation.Serialization
                 return ContextualObjectSerialization.ReadRevision(
                     _serializer,
                     payload,
-                    CreateEncryptionContext(physicalKey));
+                    CreateSerializerContext(physicalKey));
             }
             return await ((IRevisionObjectSerializer<TContract>)_serializer).ReadRevisionAsync(source, token).ConfigureAwait(false);
         }
 
-        private byte[] CreateEncryptionContext(string physicalKey)
-            => StorageEncryptionContext.Create(_contractConfig, "file", physicalKey);
+        private byte[] CreateSerializerContext(string physicalKey)
+            => _serializer is IContextualObjectSerializer<TContract>
+                ? StorageEncryptionContext.Create(_contractConfig, "file", physicalKey)
+                : Array.Empty<byte>();
 
         private async ValueTask<byte[]?> ReadPayloadAsync(string path, CancellationToken token)
         {
@@ -629,6 +636,12 @@ namespace Idb.Libraries.Implementation.Serialization
             var cacheMode = StorageObjectCachePolicy.ResolveObjectCacheMode(envelope, _storagePolicy);
             if (cacheMode is not StorageObjectCacheMode.MetadataOnly)
             {
+                var caller = instance!;
+                envelope = CommittedCacheCopies<TContract>.Copy(envelope, retainCache: false);
+                instance = envelope.ObjectInstance;
+                CommittedCacheCopies<TContract>.KeepAlive(caller, instance!);
+                if (cacheMode == StorageObjectCacheMode.WeakObject)
+                    envelope = EnvelopeWriteCoordinator<TContract>.CopyEnvelope(envelope);
                 StorageObjectCachePolicy.StoreObjectReference(envelope, instance, _storagePolicy);
                 _envelopes.AddOrUpdate(
                     envelope.EnvelopeCacheKey,

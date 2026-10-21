@@ -35,6 +35,10 @@ internal static class RepositorySqlComparison
         if (onlyInterfaceDb && args.Contains("--include-sqlserver"))
             throw new ArgumentException("--only-interfacedb cannot be combined with --include-sqlserver.");
         var queriesOnly = args.Contains("--queries-only");
+        var readProbes = args.Contains("--read-probes");
+        var retainCacheObjects = args.Contains("--retain-cache-objects");
+        if (retainCacheObjects && !queriesOnly)
+            throw new ArgumentException("--retain-cache-objects requires --queries-only; retained drafts must not affect mutation workloads.");
         var compareOrdinalStrings = args.Contains("--compare-ordinal-strings");
         var skipFile = args.Contains("--skip-file");
         if (!Enum.TryParse<ObjectLogDurabilityStrategy>(Arg("--segment-durability") ?? "ExplicitFlush", true, out var segmentDurability)
@@ -136,6 +140,7 @@ internal static class RepositorySqlComparison
                 Records = records, Iterations = iterations, MutationLimit = mutations,
                 CacheModes = caches.Select(value => value.ToString()).ToArray(),
                 OnlyInterfaceDb = onlyInterfaceDb, QueriesOnly = queriesOnly, CompareOrdinalStrings = compareOrdinalStrings,
+                ReadProbes = readProbes, RetainCacheObjects = retainCacheObjects,
                 SkipFile = skipFile, SegmentDurability = segmentDurability.ToString(),
                 QueryKinds = queryKinds.Select(kind => kind.ToString()).ToArray(),
                 Reverse = reverse, MaterializationContract = GateRecordMaterialization.Contract,
@@ -162,6 +167,19 @@ internal static class RepositorySqlComparison
             await ValidateAsync();
 
             var id = source[records / 2].Id;
+            using var retained = retainCacheObjects && store is ICacheReadProbeGateStore cacheStore
+                && store.CacheModeName != nameof(StorageObjectCacheMode.MetadataOnly)
+                ? await cacheStore.RetainReadObjectsAsync(records) : null;
+            if (readProbes)
+            {
+                var read = store is ICacheReadProbeGateStore pointStore
+                    ? await pointStore.PreparePointReadProbeAsync(id)
+                    : () => store.QueryAsync(GateQueryKind.Exact, id);
+                var expectedRead = new GateQueryResult(1, source[records / 2].MaterializedChecksum);
+                for (var i = 0; i < 16; i++) VerifyQuery(await read(), expectedRead);
+                await Measure("read-known-key", Math.Max(1000, iterations), 1,
+                    async _ => VerifyQuery(await read(), expectedRead));
+            }
             if (store is IQueryPlanGateStore planner)
             {
                 var plans = await planner.ExplainQueriesAsync(id);

@@ -181,7 +181,7 @@ public sealed partial class SegmentCoreProviderTests
     [DataRow(StorageObjectCacheMode.StrongObject, false, false)]
     [DataRow(StorageObjectCacheMode.MetadataOnly, true, false)]
     [DataRow(StorageObjectCacheMode.MetadataOnly, false, true)]
-    public async Task ScanCacheMetadata_RetentionAndOverridesStillReuseLiveObjects(StorageObjectCacheMode mode, bool perObject, bool attribute)
+    public async Task ScanCacheMetadata_RetentionAndOverridesKeepCommittedCopies(StorageObjectCacheMode mode, bool perObject, bool attribute)
     {
         using var root = new ProviderTemporaryDirectory();
         var config = new ProviderConfig(root.Path, StoragePolicy.Default with { ObjectCacheMode = mode, HydrateOnInitialize = false });
@@ -199,10 +199,13 @@ public sealed partial class SegmentCoreProviderTests
         await ((IPersistentSearchIndexCatalogRepository)envelopes).InitializeForSearchIndexCatalogAsync();
         var first = (await ScanRead(envelopes, key, "scan")).Single().ObjectInstance!;
         var second = (await ScanRead(envelopes, key, "scan")).Single().ObjectInstance!;
-        Assert.AreSame(first, second);
+        Assert.AreNotSame(first, second);
+        first.Score = 99;
+        Assert.AreEqual(3, second.Score);
+        Assert.AreEqual(3, (await ScanRead(envelopes, key, "point")).Single().ObjectInstance!.Score);
         var cached = ScanCache(reader, config)[key];
         if (mode == StorageObjectCacheMode.WeakObject) { Assert.IsNull(cached.ObjectInstance); Assert.IsNotNull(cached.ObjectInstanceWeakReference); }
-        else Assert.AreSame(first, cached.ObjectInstance);
+        else { Assert.IsNotNull(cached.ObjectInstance); Assert.AreNotSame(first, cached.ObjectInstance); Assert.AreEqual(3, cached.ObjectInstance.Score); }
         GC.KeepAlive(first);
     }
 

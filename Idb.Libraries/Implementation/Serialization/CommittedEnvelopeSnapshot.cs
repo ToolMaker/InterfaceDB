@@ -43,7 +43,12 @@ internal sealed class CommittedEnvelopeSnapshot<TContract> : ICommittedEnvelopeS
         envelope.State = StorageObjectState.Active;
         var plain = envelope.ObjectInstance ?? throw new InvalidDataException("Snapshot has no entity.");
         var entity = _lifecycle.Unwrap(envelope);
-        if (attachEnvelope) return entity;
+        if (attachEnvelope)
+        {
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(entity, envelope);
+            envelope.ObjectInstance = entity;
+            return entity;
+        }
 
         // Field-encrypted reads may use a proxy that owns its envelope. For a deletion payload,
         // materialize the values accessible to this repository into the isolated plain instance.

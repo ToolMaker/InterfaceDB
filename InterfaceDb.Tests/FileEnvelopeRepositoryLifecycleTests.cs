@@ -73,7 +73,8 @@ public sealed class FileEnvelopeRepositoryLifecycleTests
             var again = await batched.GetPhysicalManyAsync([keys[2]]);
             if (cacheMode != StorageObjectCacheMode.MetadataOnly)
             {
-                Assert.AreSame(held, again[0].ObjectInstance);
+                Assert.AreNotSame(held, again[0].ObjectInstance);
+                Assert.AreEqual(held.Id, again[0].ObjectInstance!.Id);
             }
 
             using var cancellation = new CancellationTokenSource();

@@ -712,11 +712,11 @@ public sealed partial class SegmentCoreProviderTests
         }
 
         Assert.AreEqual(32, count);
-        Assert.AreEqual(32, serializer.DeserializeCount);
+        Assert.AreEqual(64, serializer.DeserializeCount, "Each cold read creates a private cache object and a caller copy.");
     }
 
     [TestMethod]
-    public async Task Repository_StrongHydration_EnumerationUsesCacheWithoutSecondDeserializePass()
+    public async Task Repository_StrongHydration_EnumerationMaterializesIsolatedCachedCopies()
     {
         using var root = new ProviderTemporaryDirectory();
         var policy = StoragePolicy.Default with
@@ -752,7 +752,7 @@ public sealed partial class SegmentCoreProviderTests
         }
 
         Assert.AreEqual(40, count);
-        Assert.AreEqual(0, serializer.DeserializeCount);
+        Assert.AreEqual(40, serializer.DeserializeCount, "Each caller receives an isolated copy of the cached committed bytes.");
     }
 
     [TestMethod]
@@ -1227,20 +1227,21 @@ public sealed partial class SegmentCoreProviderTests
     {
         var batches = (IBatchedEnvelopeRepository<IProviderRecord>)repository;
         var miss = batches.GetPhysicalManyAsync([key]).AsTask().GetAwaiter().GetResult();
-        Assert.AreEqual(1, serializer.DeserializeCount);
+        Assert.AreEqual(2, serializer.DeserializeCount);
         Assert.IsNotNull(miss[0].ObjectInstance);
         var weak = new WeakReference<IProviderRecord>(miss[0].ObjectInstance!);
         ForceCollection();
         Assert.IsTrue(weak.TryGetTarget(out _), "A newly materialized batch must own its objects.");
         var hit = batches.GetPhysicalManyAsync([key]).AsTask().GetAwaiter().GetResult();
-        Assert.AreEqual(1, serializer.DeserializeCount);
-        Assert.AreSame(miss[0].ObjectInstance, hit[0].ObjectInstance);
+        Assert.AreEqual(3, serializer.DeserializeCount);
+        Assert.AreNotSame(miss[0].ObjectInstance, hit[0].ObjectInstance);
+        Assert.AreEqual(miss[0].ObjectInstance!.Id, hit[0].ObjectInstance!.Id);
         miss = null;
         ForceCollection();
         Assert.IsNotNull(hit[0].ObjectInstance, "A weak-cache hit must stay materialized after earlier references disappear.");
         Assert.IsTrue(repository.TryGet("record-000000", out var cached));
-        Assert.IsNull(cached[0].ObjectInstance, "The repository cache remains weak.");
-        Assert.IsNotNull(cached[0].ObjectInstanceWeakReference);
+        Assert.IsNotNull(cached[0].ObjectInstance, "The public envelope lookup returns a caller-owned copy.");
+        Assert.AreNotSame(hit[0].ObjectInstance, cached[0].ObjectInstance);
         GC.KeepAlive(hit);
         return weak;
     }

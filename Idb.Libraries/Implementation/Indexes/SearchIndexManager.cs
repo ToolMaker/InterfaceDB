@@ -206,7 +206,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
                 double.PositiveInfinity, 1) { FallbackReason = reason };
 
         var explanation = _searchIndexes.ExplainPlan(predicate);
-        return explanation.UsesIndexes && _envelopeRepository is ICachedEnvelopeSource<TContract>
+        return explanation.UsesIndexes && _envelopeRepository is ICachedEnvelopeSource<TContract> { IsolatesCachedReads: false }
             ? explanation with
             {
                 PlanText = explanation.PlanText + "\nRecheck live cached objects without loading storage.",
@@ -349,7 +349,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         // that both enter and leave the indexed result. Inspect only live cache objects,
         // and pin matches so a weak reference cannot disappear before they are returned.
         var cachedMatches = new Dictionary<string, TImplementation>(StringComparer.Ordinal);
-        if (_envelopeRepository is ICachedEnvelopeSource<TContract> cachedSource)
+        if (_envelopeRepository is ICachedEnvelopeSource<TContract> { IsolatesCachedReads: false } cachedSource)
         {
             foreach (var entry in cachedSource.EnumerateCachedObjects())
             {

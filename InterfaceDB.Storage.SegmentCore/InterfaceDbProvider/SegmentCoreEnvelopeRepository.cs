@@ -39,13 +39,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     where TContract : class, IStoredContract<TContract>
 {
     public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
-        => CachedEnvelopeEnumeration.Enumerate(_envelopes);
+        => CachedEnvelopeEnumeration.Enumerate(_envelopes)
+            .Select(item => new KeyValuePair<string, TContract>(item.Key,
+                CommittedCacheCopies<TContract>.Copy(item.Value.Envelope!, pinnedInstance: item.Value).ObjectInstance!));
+
+    bool ICachedEnvelopeSource<TContract>.IsolatesCachedReads => true;
 
     private const int CacheMutationGateCount = 64;
     private readonly IDbContractConfigDto<TContract> _contractConfig;
     private readonly StoragePolicy _storagePolicy;
     private readonly SegmentCoreRepositoryOptions _options;
     private readonly IObjectSerializer<TContract> _serializer;
+    private readonly bool _serializerConsumesContext;
     private readonly IEnvelopeLifecycle<TContract> _envelopeLifecycle;
     private readonly IEnvelopeStorageIdentityFactory<TContract> _identityFactory;
     private readonly IEnvelopeDictionaryCacheManager<string, IObjectEnvelope<TContract>> _envelopes;
@@ -98,6 +103,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _options.Validate();
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _serializerConsumesContext = _serializer is IContextualObjectSerializer<TContract>;
         _envelopeLifecycle = envelopeLifecycle ?? throw new ArgumentNullException(nameof(envelopeLifecycle));
         _identityFactory = identityFactory ?? throw new ArgumentNullException(nameof(identityFactory));
         _envelopes = envelopes ?? throw new ArgumentNullException(nameof(envelopes));
@@ -117,7 +123,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         if (storagePolicy.RetainedVersions is { } retention)
         {
             retention.Validate();
-            _editing = new(serializer, envelopeLifecycle, CreateEncryptionContext);
+            _editing = new(serializer, envelopeLifecycle, CreateSerializerContext);
         }
         _revisions = new(
             _storeRoot,
@@ -125,7 +131,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             envelopeLifecycle,
             writeConflictStrategy,
             _editing,
-            CreateEncryptionContext);
+            CreateSerializerContext);
     }
 
     public IReaderAndWriter<TContract> ReaderAndWriter => _readerAndWriter;
@@ -183,10 +189,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         EnsureInitializedSynchronously();
-        return TryGet(storageKey, out _);
+        return _envelopes.TryGetGroup(storageKey, out _)
+            || (_envelopes.ContainsKey(storageKey) && _envelopes.TryGetGroup(ToLogicalKey(storageKey), out _));
     }
 
     public bool TryGet(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
+    {
+        var found = TryGetCachedGroup(storageKey, out var group);
+        envelopes = group.Select(e => CommittedCacheCopies<TContract>.Copy(e)).ToArray();
+        return found;
+    }
+
+    private bool TryGetCachedGroup(string storageKey, out IReadOnlyList<IObjectEnvelope<TContract>> envelopes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         EnsureInitializedSynchronously();
@@ -277,7 +291,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 item.Payload,
                 _serializer,
                 _envelopeLifecycle,
-                CreateEncryptionContext(key));
+                CreateSerializerContext(key));
             CacheEnvelope(item.Envelope, saved);
             ReleaseReservation(item);
             reservationReleased = true;
@@ -360,7 +374,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                     item.Payload,
                     _serializer,
                     _envelopeLifecycle,
-                    CreateEncryptionContext(item.Envelope.EnvelopeCacheKey));
+                    CreateSerializerContext(item.Envelope.EnvelopeCacheKey));
                 CacheEnvelope(item.Envelope, saved);
                 ReleaseReservation(item);
                 results[index] = saved;
@@ -437,7 +451,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
-        if (!TryGet(storageKey, out var group))
+        if (!TryGetCachedGroup(storageKey, out var group))
         {
             yield break;
         }
@@ -467,7 +481,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             _envelopeLifecycle,
             identity.EnvelopeCacheKey,
             identity.EnvelopeCacheKey,
-            CreateEncryptionContext(identity.EnvelopeCacheKey));
+            CreateSerializerContext(identity.EnvelopeCacheKey));
     }
 
     public async ValueTask<IObjectEnvelope<TContract>?> GetPhysicalAsync(
@@ -477,9 +491,9 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         ArgumentException.ThrowIfNullOrWhiteSpace(physicalStorageKey);
         await EnsureInitializedAsync(hydrateOnInitialize: false, cancellationToken).ConfigureAwait(false);
         if (_envelopes.TryGetValue(physicalStorageKey, out var cached)
-            && StorageObjectCachePolicy.TryGetObjectInstance(cached, out _))
+            && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var instance))
         {
-            return cached;
+            return CommittedCacheCopies<TContract>.Copy(cached, pinnedInstance: instance);
         }
 
         var payload = await Store.GetAsync(physicalStorageKey, cancellationToken).ConfigureAwait(false);
@@ -518,26 +532,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var instance)
                 && instance is not null)
             {
-                // Keep a weak-cache hit alive for the lifetime of this materialized batch.
-                if (cached.ObjectInstance is null)
-                {
-                    var readEnvelope = _envelopeFactory();
-                    readEnvelope.EnvelopeCacheKey = cached.EnvelopeCacheKey;
-                    readEnvelope.VersionTag = cached.VersionTag;
-                    readEnvelope.Location = cached.Location;
-                    readEnvelope.State = cached.State;
-                    readEnvelope.ImplementationTypeName = cached.ImplementationTypeName;
-                    readEnvelope.CacheObjectInstance = cached.CacheObjectInstance;
-                    readEnvelope.EncryptedFields = cached.EncryptedFields;
-                    readEnvelope.ExtensionMetadata = cached.ExtensionMetadata;
-                    readEnvelope.RevisionTimestampUtcMicroseconds = cached.RevisionTimestampUtcMicroseconds;
-                    readEnvelope.ObjectInstance = instance;
-                    batch.Set(entry.Value, readEnvelope);
-                }
-                else
-                {
-                    batch.Set(entry.Value, cached);
-                }
+                batch.Set(entry.Value, CommittedCacheCopies<TContract>.Copy(cached, pinnedInstance: instance));
             }
             else
             {
@@ -612,8 +607,8 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
-        // A complete strong-object cache is already the materialized store. Avoid rereading and
-        // deserializing the object log for warm full scans and index rebuilds after eager hydration.
+        // A complete cache avoids rereading the object log. Materialize independent caller
+        // copies from committed cached bytes for warm scans and index rebuilds.
         var cachedEnvelopes = _envelopes.Values;
         var cacheIsCompleteAndStrong = cachedEnvelopes.Count == Store.Count;
         if (cacheIsCompleteAndStrong)
@@ -633,7 +628,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             foreach (var envelope in cachedEnvelopes)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                yield return envelope;
+                yield return CommittedCacheCopies<TContract>.Copy(envelope);
             }
 
             yield break;
@@ -661,7 +656,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
             if (_envelopes.TryGetValue(record.Key, out var cached)
                 && StorageObjectCachePolicy.TryGetObjectInstance(cached, out var cachedInstance))
             {
-                yield return cached;
+                yield return CommittedCacheCopies<TContract>.Copy(cached, pinnedInstance: cachedInstance);
                 GC.KeepAlive(cachedInstance);
                 continue;
             }
@@ -832,7 +827,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 var sourceRevision = ContextualObjectSerialization.ReadRevision(
                     _serializer,
                     record.Payload,
-                    CreateEncryptionContext(record.Key));
+                    CreateSerializerContext(record.Key));
                 EnvelopeWriteCoordinator<TContract>.SetCondition(envelope, new EnvelopeWriteCondition(0,
                     sourceRevision > 0 ? EnvelopeRevisionAction.Import : EnvelopeRevisionAction.Advance,
                     sourceRevision, ExpectedMissing: true));
@@ -1322,14 +1317,14 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 replacementPayload,
                 cancellationToken).ConfigureAwait(false);
         }
-        CacheReadIfUnchanged(key, envelope, instance, expectedCacheEntry);
+        CacheReadIfUnchanged(key, envelope, instance, expectedCacheEntry, takeOwnership: true);
     }
 
     private void CacheReadIfUnchanged(
         string key,
         IObjectEnvelope<TContract> envelope,
         TContract instance,
-        IObjectEnvelope<TContract>? expectedCacheEntry)
+        IObjectEnvelope<TContract>? expectedCacheEntry, bool takeOwnership = false)
     {
         lock (GetCacheMutationGate(key))
         {
@@ -1346,7 +1341,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                 return;
             }
 
-            var cached = CreateCachedEnvelope(envelope, instance);
+            var cached = CreateCachedEnvelope(envelope, instance, takeOwnership);
             _envelopes.AddOrUpdate(key, ToLogicalKey(key), cached);
         }
 
@@ -1370,10 +1365,11 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         byte[] payload)
     {
         ValidateStoredPayload(payload, "Stored payload");
+        var context = CreateSerializerContext(key);
         var result = ContextualObjectSerialization.DeserializeForRead(
             _serializer,
             payload,
-            CreateEncryptionContext(key));
+            context);
         var envelope = result.Envelope;
         if (!string.Equals(envelope.EnvelopeCacheKey, key, StringComparison.Ordinal))
         {
@@ -1388,16 +1384,18 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         envelope.ImplementationTypeName ??= instance.GetType().AssemblyQualifiedName
             ?? instance.GetType().FullName
             ?? instance.GetType().Name;
+        CommittedCacheCopies<TContract>.Remember(envelope, result.ReplacementPayload ?? payload,
+            _serializer, _envelopeLifecycle, _storagePolicy, context);
         return (envelope, instance, result.ReplacementPayload);
     }
 
     private byte[] SerializePayload(IObjectEnvelope<TContract> envelope, string physicalKey)
-        => ValidateStoredPayload(
-            ContextualObjectSerialization.Serialize(
-                _serializer,
-                envelope,
-                CreateEncryptionContext(physicalKey)),
-            "Serialized payload");
+    {
+        var context = CreateSerializerContext(physicalKey);
+        var payload = ValidateStoredPayload(ContextualObjectSerialization.Serialize(_serializer, envelope, context), "Serialized payload");
+        CommittedCacheCopies<TContract>.Remember(envelope, payload, _serializer, _envelopeLifecycle, _storagePolicy, context, prepareCacheCopy: true);
+        return payload;
+    }
 
     private byte[] ValidateStoredPayload(byte[] payload, string description)
     {
@@ -1431,6 +1429,11 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
     private byte[] CreateEncryptionContext(string physicalKey)
         => StorageEncryptionContext.Create(_contractConfig, "segment-core", physicalKey);
+
+    // Only contextual serializers consume associated data. Migration decrypts directly
+    // and retains CreateEncryptionContext independently of the serializer capability.
+    private byte[] CreateSerializerContext(string physicalKey)
+        => _serializerConsumesContext ? CreateEncryptionContext(physicalKey) : Array.Empty<byte>();
 
     private void CacheEnvelopeSkeleton(string physicalKey)
     {
@@ -1467,8 +1470,15 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
 
     private IObjectEnvelope<TContract> CreateCachedEnvelope(
         IObjectEnvelope<TContract> hydrated,
-        TContract instance)
+        TContract instance, bool takeOwnership = false)
     {
+        var caller = instance;
+        if (!takeOwnership && StorageObjectCachePolicy.ResolveObjectCacheMode(instance, _storagePolicy) != StorageObjectCacheMode.MetadataOnly)
+        {
+            hydrated = CommittedCacheCopies<TContract>.Copy(hydrated, retainCache: false);
+            instance = hydrated.ObjectInstance!;
+            CommittedCacheCopies<TContract>.KeepAlive(caller, instance);
+        }
         IObjectEnvelope<TContract> cached;
         if (StorageObjectCachePolicy.ResolveObjectCacheMode(instance, _storagePolicy)
             == StorageObjectCacheMode.StrongObject)
