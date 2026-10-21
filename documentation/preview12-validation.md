@@ -82,7 +82,29 @@ build/pack/integration logs, raw audits, consumer source and assets, and
 packages. Candidate packages are not evidence of NuGet.org publication.
 
 The NuGet feed checked before preparation advertised preview.11 for all four
-public packages and no preview.12. No release tag has been pushed.
+public packages and no preview.12.
+
+### First release attempt and benchmark correction
+
+The first tagged [release run](https://github.com/ToolMaker/InterfaceDB/actions/runs/39628090759)
+passed all five Linux test suites (893 passed, two platform skips), integration,
+materialization and complete-repository smoke. It stopped before packing or
+publication when the storage-review harness required exactly one deserialize
+for a collected weak-cache result.
+
+That assertion predated committed-copy isolation. A collected entry legitimately
+materializes the caller object and an independent private cache copy. A surviving
+weak entry only needs a caller copy; temporary-root lifetimes vary by runtime.
+The harness now requires one deserialize per result plus at most one private
+copy, while preserving full-object count/checksum and durable-reopen checks.
+The two new File/SegmentCore regressions prove a genuinely collected miss creates
+two independent objects, unsaved edits remain private, and reads do not serialize
+again. All 14 cache-isolation test cases and three six-configuration review smoke
+runs passed locally. Only benchmark, test and documentation files changed;
+published library source and the measured performance baseline are unchanged.
+
+Nothing was published by the failed attempt. The unpublished preview.12 tag is
+being advanced to include this corrected release check before retrying.
 
 The [release procedure](releasing.md) describes publication and subsequent
 public-feed verification. Real-device and physical power-loss qualification

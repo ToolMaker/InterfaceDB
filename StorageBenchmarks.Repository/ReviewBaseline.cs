@@ -113,8 +113,13 @@ internal static class ReviewBaseline
                         }
                         var decodes = counter.Deserializations;
                         await CaptureAsync(name, i, action, expected);
-                        if (collect && counter.Deserializations - decodes != expected.Count)
-                            throw new InvalidDataException($"{name}: {counter.Deserializations - decodes} deserializations for {expected.Count} results at iteration {i}.");
+                        // A surviving weak-cache entry needs one caller copy; a collected
+                        // entry can also materialize an independent private cache copy.
+                        // Forced GC does not guarantee identical temporary-root lifetimes
+                        // across JITs. Require fresh results without rejecting that copy.
+                        var materializations = counter.Deserializations - decodes;
+                        if (collect && (materializations < expected.Count || materializations > 2L * expected.Count))
+                            throw new InvalidDataException($"{name}: {materializations} deserializations for {expected.Count} results at iteration {i}; expected one per result plus at most one private cache copy.");
                     }
                 }
 
@@ -147,7 +152,7 @@ internal static class ReviewBaseline
                 {
                     "Durable repository operations; background maintenance, notifications, file watching and telemetry disabled.",
                     "Point/range results consume every field/payload byte. Every save and final full-store reopen is verified.",
-                    "Strong and pinned-weak caches retain all seeded objects. Collected-weak cases reopen and force GC outside timing before EACH query, and assert fresh materialization.",
+                    "Strong and pinned-weak caches retain all seeded objects. Collected-weak cases reopen and force GC outside timing before EACH query; require one materialization per result plus at most one independent private cache copy. GC does not guarantee every temporary root is dead.",
                     "Updates use MetadataOnly, warm 64 records, then save min(records,update-limit) evenly spaced distinct records once per process.",
                     "Search warmup/iterations are explicit. Exists has 16 warmups and at least 2000 measured calls (16 in smoke mode).",
                     "Allocations are process-wide; asynchronous/background runtime work can contribute. No OS cache eviction.",

@@ -111,6 +111,30 @@ public sealed class CommittedCacheIsolationTests
     }
 
     [TestMethod] [DataRow(false)] [DataRow(true)]
+    public async Task CollectedWeakReadMaterializesCallerAndPrivateCopyWithoutEncodingAgain(bool segment)
+    {
+        using var serializer = new ProbeSerializer();
+        await using var f = new EditFixture(segment, cache: StorageObjectCacheMode.WeakObject, serializer: serializer);
+        await f.Repository.InitializeAsync();
+        var weak = HoldThenReleaseWeakCopy(f);
+        Collect();
+        Assert.IsFalse(weak.TryGetTarget(out _), "The measured read must miss the collected private cache.");
+        var before = serializer.Deserializations;
+        var read = await f.Repository.SearchFirstAsync(r => r.Value == 1);
+        Assert.IsNotNull(read);
+        Assert.AreEqual(2, serializer.Deserializations - before,
+            "A cache miss creates the caller object and its independent private cache copy.");
+        read.Value = 99;
+        var other = await f.Repository.SearchFirstAsync(r => r.Value == 1);
+        Assert.IsNotNull(other);
+        Assert.AreNotSame(read, other);
+        Assert.AreEqual(1, other.Value);
+        Assert.IsNull(await f.Repository.SearchFirstAsync(r => r.Value == 99));
+        Assert.AreEqual(1, serializer.Serializations, "Reads must not encode the cached object again.");
+        GC.KeepAlive(read);
+    }
+
+    [TestMethod] [DataRow(false)] [DataRow(true)]
     public async Task WeakCacheReleasesPrivateGraphWhenCallersReleaseTheirCopies(bool segment)
     {
         await using var f = new EditFixture(segment, cache: StorageObjectCacheMode.WeakObject);
@@ -158,6 +182,7 @@ public sealed class CommittedCacheIsolationTests
     {
         private readonly BinaryObjectSerializer<IRecord> _inner = new();
         public int Serializations;
+        public int Deserializations;
         public bool RejectCopies;
         public bool BlockNextWrite;
         public bool UseCustomEnvelope;
@@ -176,6 +201,7 @@ public sealed class CommittedCacheIsolationTests
         }
         public IObjectEnvelope<IRecord> Deserialize(byte[] payload)
         {
+            Interlocked.Increment(ref Deserializations);
             if (RejectCopies) throw new InvalidDataException("Injected cache-copy failure.");
             var envelope = _inner.Deserialize(payload);
             return UseCustomEnvelope ? new CustomEnvelope(envelope) : envelope;
