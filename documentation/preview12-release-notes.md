@@ -1,12 +1,12 @@
 # InterfaceDB 1.0.0-preview.12
 
-Status: **locally validated baseline candidate; not published**.
+Status: **published and verified on NuGet.org on 21 October 2026**.
 All four public package projects use `1.0.0-preview.12`: InterfaceDB,
 InterfaceDB.Storage.SegmentCore, InterfaceDB.Authentication and InterfaceDB.Transport.
 
 ## Baseline and scope
 
-This candidate freezes public runtime commit
+This release freezes public runtime commit
 `4e63ddb786d7d89c4151e62535e623090b33cba3`, before further cache-read optimization.
 Versioning and release documentation are separate changes. It includes the
 reviewed storage corrections and A1 serializer-context optimization accumulated
@@ -100,4 +100,5 @@ behavior and lacks these correctness fixes.
 
 This remains a preview. Android/other target-device qualification, physical
 power-cut evidence and representative application soak remain separate gates.
-See [candidate validation](preview12-validation.md) for exactly what was run.
+See [release validation](preview12-validation.md) for the release workflow,
+Windows/Linux checks and fresh public-feed consumer verification.

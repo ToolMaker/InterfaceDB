@@ -1,6 +1,6 @@
 # Logs, metrics and traces
 
-Implemented in source on 19 October 2026; not included in the published preview.11 packages.
+Implemented in source on 19 October 2026 and included in preview.12, published on 21 October.
 Telemetry is opt-in and uses standard .NET `Meter`, `ActivitySource` and `ILogger` APIs. No
 external exporter, collector, account or paid service is enabled by the library.
 

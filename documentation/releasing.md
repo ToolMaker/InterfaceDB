@@ -55,5 +55,5 @@ Observe the actual workflow result, then verify all four package versions and de
 consume from the public feed. Update release status only after those checks pass. Local validation
 does not replace the release workflow or prove that packages were published.
 
-The commands use preview.12, the prepared baseline candidate. Advance all four versions together
+The commands retain the now-published preview.12 example. Choose a new version and advance all four versions together
 for subsequent releases. Never reuse a version whose packages have already been published.

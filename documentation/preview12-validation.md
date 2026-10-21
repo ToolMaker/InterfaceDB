@@ -1,6 +1,60 @@
 # Preview.12 baseline validation — 21 October 2026
 
-Status: **local candidate validation passed; not published**.
+Status: **published on NuGet.org and verified through a fresh public-feed consumer on 21 October 2026**.
+
+## Release workflow
+
+Tag `v1.0.0-preview.12` resolves to
+`b9cbde5d590ee56eb8098e0bba24a8eefd121da1`. The
+[release workflow](https://github.com/ToolMaker/InterfaceDB/actions/runs/39629190648)
+passed all gates and NuGet accepted all four uploads on 21 October 2026 at
+15:53 UTC. The separate
+[Windows/Linux CI run](https://github.com/ToolMaker/InterfaceDB/actions/runs/39629191050)
+also succeeded, including the Windows production pilot and integration harness.
+
+| Release source verification | Core | Analyzers | SegmentCore | TCP | Authentication | Total passed | Skipped |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux release workflow | 401 | 31 | 218 | 184 | 61 | **895** | **2** |
+| Windows CI | 393 | 31 | 218 | 184 | 61 | **887** | **10** |
+
+These totals include the two weak-cache regression cases described below.
+The GitHub Windows runner could execute the symlink cases skipped locally.
+No packaged runtime source changed between the prepared candidate and release;
+the final addition corrects the benchmark assertion and adds regression tests.
+
+## Published packages and consumer verification
+
+All four public feeds advertise `1.0.0-preview.12`. The packages were downloaded
+from NuGet.org, checked for their MIT license, allowed assembly/dependency
+boundaries, release commit metadata and matching InterfaceDB dependency versions.
+
+A separate .NET 10 consumer restored from NuGet.org into a fresh isolated package
+cache, with no project references or local candidate feed. Its package-origin
+records identify NuGet.org for all four packages, and the cached package hashes
+match the independently downloaded files. The SDK additionally lists its built-in
+`library-packs` directory; no InterfaceDB package was sourced from it.
+
+The public-feed consumer passed JWT/TLS save, query, update, pub/sub readiness and
+server reopen. File and SegmentCore each passed MetadataOnly, WeakObject and
+StrongObject save/query/reopen checks, notification readiness, independent read
+copies, and indexed searches before and after saving an edit. No private assembly
+was loaded. The published consumer's transitive dependency audit reports no known
+vulnerable packages at the time of this check.
+
+SHA-256 of the published packages:
+
+| NuGet package | SHA-256 |
+| --- | --- |
+| [InterfaceDB](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.12) | `f865b03c438e8c9f50e5d1fd0d531a06607819dbe283605590fcb1bb243ad3cf` |
+| [InterfaceDB.Authentication](https://www.nuget.org/packages/InterfaceDB.Authentication/1.0.0-preview.12) | `3bf7fda033548781e9aaa159aba07b7a81bbf574944e36cbbd48559c9ffc9492` |
+| [InterfaceDB.Storage.SegmentCore](https://www.nuget.org/packages/InterfaceDB.Storage.SegmentCore/1.0.0-preview.12) | `eb3bc3eee8434306aef661bc9b4aac8e27ff3aef894ddd0afdaa72666f9805f7` |
+| [InterfaceDB.Transport](https://www.nuget.org/packages/InterfaceDB.Transport/1.0.0-preview.12) | `857e303b27b8742d839b30bd93a8cef395c327c1442a4609aa23b1a66a0fe4fc` |
+
+Local evidence includes `published-manifest.json`, the final feed snapshots,
+published packages, clean consumer source/restore/run/audit logs, and both release
+attempt logs under `.codex-preview12-baseline-20261021`. The candidate checksums
+below describe the earlier local Windows preparation; published hashes also
+reflect the CI build, final release metadata and NuGet processing.
 
 ## Frozen runtime
 
@@ -103,8 +157,9 @@ again. All 14 cache-isolation test cases and three six-configuration review smok
 runs passed locally. Only benchmark, test and documentation files changed;
 published library source and the measured performance baseline are unchanged.
 
-Nothing was published by the failed attempt. The unpublished preview.12 tag is
-being advanced to include this corrected release check before retrying.
+Nothing was published by the failed attempt. The unpublished preview.12 tag was
+advanced with an explicit expected-old-tag lease to include this corrected
+release check, and the retry above succeeded. The published tag is now fixed.
 
 The [release procedure](releasing.md) describes publication and subsequent
 public-feed verification. Real-device and physical power-loss qualification

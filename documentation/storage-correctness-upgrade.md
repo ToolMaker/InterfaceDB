@@ -1,6 +1,7 @@
 # Storage correctness fixes and upgrade guidance
 
-These changes are in the current source after preview.11. They are not a newly published NuGet release.
+These changes are included in preview.12, published on NuGet.org on 21 October 2026.
+See the [release validation](preview12-validation.md) for the tested package baseline.
 
 The [20 October performance baseline](performance-results.md#storage-review-follow-up--20-october-2026)
 records repeated before/after measurements, cache costs, allocations and limitations.
