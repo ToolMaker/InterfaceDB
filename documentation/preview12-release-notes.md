@@ -1,6 +1,6 @@
 # InterfaceDB 1.0.0-preview.12
 
-Status: **baseline candidate under local validation; not published**.
+Status: **locally validated baseline candidate; not published**.
 All four public package projects use `1.0.0-preview.12`: InterfaceDB,
 InterfaceDB.Storage.SegmentCore, InterfaceDB.Authentication and InterfaceDB.Transport.
 

@@ -177,8 +177,10 @@ are additional checks, not extra unit-test cases.
 The new timing matrix covers public File and SegmentCore only. It does not
 measure remote TCP deployments, large-scale/concurrent workloads, mobile devices,
 encrypted performance or physical power-loss recovery. Linux timing and Android
-qualification remain separate work. This is uncommitted source work; no package
-has been published.
+qualification remain separate work. The tested runtime is now committed as
+`4e63ddb`, with a [locally validated preview.12 candidate](preview12-validation.md).
+No package has been published. Follow-up [cache-read profiling](cache-read-profile-20261021.md)
+did not introduce another runtime change.
 
 ### Builds and method
 

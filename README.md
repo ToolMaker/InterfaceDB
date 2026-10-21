@@ -1,8 +1,8 @@
 # InterfaceDB
 
 **Preview.12 baseline candidate:** the reviewed storage fixes, committed-value
-cache reads and serializer-context optimization are being packaged from the
-verified snapshot. See the [upgrade notes](documentation/preview12-release-notes.md),
+cache reads and serializer-context optimization are packaged and locally validated
+from the verified snapshot. See the [upgrade notes](documentation/preview12-release-notes.md),
 [validation status](documentation/preview12-validation.md) and
 [performance trade-offs](documentation/performance-proposal-review-20261020.md).
 It has not been published; preview.11 remains the latest verified feed version.

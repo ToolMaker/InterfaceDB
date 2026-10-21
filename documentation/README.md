@@ -11,6 +11,7 @@ Start with these documents:
 Use the focused guides when needed:
 
 - [Preview.12 baseline candidate](preview12-release-notes.md): committed-cache isolation, storage corrections, compatibility and measured costs; [validation status](preview12-validation.md). Not published.
+- [Committed-cache read profile](cache-read-profile-20261021.md): diagnostic evidence for the next optimization decision, with isolation constraints and no speculative runtime change.
 - [Storage correctness fixes and upgrade guidance](storage-correctness-upgrade.md): query, key, compaction, transaction and durability fixes in current source after preview.11.
 
 - [Telemetry](telemetry.md): opt-in bounded logs, metrics and traces; current source, not published preview.11.

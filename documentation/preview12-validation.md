@@ -1,6 +1,6 @@
 # Preview.12 baseline validation — 21 October 2026
 
-Status: **preparation in progress; not published**.
+Status: **local candidate validation passed; not published**.
 
 ## Frozen runtime
 
@@ -15,9 +15,71 @@ The source fingerprints still matched the tested runtime when it was committed.
 
 ## Candidate gates
 
-Fresh versioned Release build, release suites, integration/smoke gates, package
-boundaries, dependency audit and isolated package-consumer checks are pending.
-Candidate packages are not evidence of NuGet.org publication.
+The four candidate packages were built from version/documentation commit
+`aa7c116c3ddae8a2058d8e83ba6d74482ab1b323`. It changes no runtime code after
+`4e63ddb`. Package repository metadata and matching preview.12 dependencies were
+checked. Subsequent validation documentation does not change these artifacts.
+
+Fresh Windows Release validation passed:
+
+| Suite | Passed | Skipped |
+| --- | ---: | ---: |
+| Core | 391 | 10 |
+| Analyzers | 31 | 0 |
+| SegmentCore | 216 | 2 |
+| Authentication | 61 | 0 |
+| Public transport | 184 | 0 |
+| **Total** | **883** | **12** |
+
+The skips cover POSIX enter-only directories, case-sensitive paths and symlink
+alias checks unavailable in this Windows setup. They are not counted as passes.
+This run did not repeat Linux, Android/device, live Keycloak or power-cut tests.
+
+Additional gates passed:
+
+- Full solution restore and Release build: zero errors. Eight existing
+  `MSTEST0032` warnings remain, plus four dependency-advisory warnings described below.
+- Integration harness, including encrypted historical-key reads, Windows
+  Credential Manager and eager encrypted migration.
+- Materialization contract self-test for InterfaceDB and both SQLite consumers.
+- Repository smoke with 200 complete objects in all three cache modes, and the
+  32-record review smoke in all three cache modes.
+- Source boundary check across 28 public projects; package boundary check across
+  exactly four MIT packages, each with its one permitted assembly.
+- Clean .NET 10 package consumer using a fresh isolated package cache and no
+  project references. All four resolved package versions are preview.12.
+- Package-consumer JWT/TLS save/read/update, disposable pub/sub readiness and
+  server reopen. Embedded File and SegmentCore each passed MetadataOnly,
+  StrongObject and WeakObject save/query/notification/reopen checks, including
+  unsaved-edit isolation and independent returned copies.
+
+### Dependency audit
+
+NuGet's vulnerability audit reports no known vulnerable dependencies in the four
+public package projects or the isolated consumer graph at the time of this run.
+This is a dependency-advisory check, not a new comprehensive security audit.
+
+The solution still reports `System.Security.Cryptography.Pkcs` 9.0.18 in two
+benchmark projects, with one High and one Moderate advisory
+(`GHSA-846f-f764-76mx`, `GHSA-2fmv-rv2c-59x7`). That dependency is absent from the
+four public package graphs. It remains separate benchmark-tooling maintenance;
+no dependency change was mixed into the frozen performance comparison.
+
+### Candidate artifact checksums
+
+SHA-256 of the locally validated `.nupkg` files:
+
+| Package, all version 1.0.0-preview.12 | SHA-256 |
+| --- | --- |
+| InterfaceDB | `c8bc019b8a43a982925dfcf33c94add53cdd51766cd98b37e1cb5718fe7759d1` |
+| InterfaceDB.Authentication | `a95207d467dc1d27c671e82db8148cdad42737cd7c5f6a1fbf7e4b2fe2a6e175` |
+| InterfaceDB.Storage.SegmentCore | `f6d5e710049fbe796918a529334ffcf8a4965e3f4e8a766ff55264c951430c9e` |
+| InterfaceDB.Transport | `671a0ef2b958e109eb8dbf9c416824db78d3266a97cd5c2330d3735792432455` |
+
+Local evidence is retained in `.codex-preview12-baseline-20261021`: TRX results,
+build/pack/integration logs, raw audits, consumer source and assets, and
+`candidate-manifest.json`. These local artifacts are not included in the public
+packages. Candidate packages are not evidence of NuGet.org publication.
 
 The NuGet feed checked before preparation advertised preview.11 for all four
 public packages and no preview.12. No release tag has been pushed.
@@ -25,3 +87,7 @@ public packages and no preview.12. No release tag has been pushed.
 The [release procedure](releasing.md) describes publication and subsequent
 public-feed verification. Real-device and physical power-loss qualification
 are outside these local checks.
+
+The [cache-read profile](cache-read-profile-20261021.md) records the next
+performance investigation. No further runtime optimization was adopted from
+those diagnostic traces.
