@@ -4,14 +4,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB.Transport</PackageId>
-    <Version>1.0.0-preview.11</Version>
+    <Version>1.0.0-preview.12</Version>
     <Authors>ToolMaker</Authors>
     <Description>TLS TCP host and typed remote repository for InterfaceDB with configurable envelope serialization.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 11 adds optional public TCP and JWT packages, shared configurable envelope serialization, and avoids redundant TCP metadata decoding. Keep all InterfaceDB packages on the same preview. Existing preview 10 envelope formats are unchanged. See https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.11/documentation/preview11-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 12 establishes the reviewed storage and committed-cache baseline: corrected query/index/key behavior, compaction-safe scans, isolated committed cache reads and serializer-aware context work. Keep all InterfaceDB packages aligned. Read the compatibility and performance trade-offs at https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview12-release-notes.md</PackageReleaseNotes>
     <RootNamespace>Idb.Transport</RootNamespace>
   </PropertyGroup>
   <ItemGroup>

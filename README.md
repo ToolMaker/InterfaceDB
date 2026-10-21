@@ -1,5 +1,12 @@
 # InterfaceDB
 
+**Preview.12 baseline candidate:** the reviewed storage fixes, committed-value
+cache reads and serializer-context optimization are being packaged from the
+verified snapshot. See the [upgrade notes](documentation/preview12-release-notes.md),
+[validation status](documentation/preview12-validation.md) and
+[performance trade-offs](documentation/performance-proposal-review-20261020.md).
+It has not been published; preview.11 remains the latest verified feed version.
+
 InterfaceDB is an interface-first object repository and embedded object database for .NET 10. Application code works with versioned interfaces and `IRepository<TContract>`; serialization, concrete types, storage providers, indexes, migrations, caching, concurrency, and encryption stay behind that boundary.
 
 The central design rule is simple:

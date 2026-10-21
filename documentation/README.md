@@ -10,6 +10,7 @@ Start with these documents:
 
 Use the focused guides when needed:
 
+- [Preview.12 baseline candidate](preview12-release-notes.md): committed-cache isolation, storage corrections, compatibility and measured costs; [validation status](preview12-validation.md). Not published.
 - [Storage correctness fixes and upgrade guidance](storage-correctness-upgrade.md): query, key, compaction, transaction and durability fixes in current source after preview.11.
 
 - [Telemetry](telemetry.md): opt-in bounded logs, metrics and traces; current source, not published preview.11.
@@ -19,7 +20,7 @@ Use the focused guides when needed:
 - [JWT authentication](jwt-authentication.md): supplied user tokens, service credentials and Keycloak configuration.
 - [Preview.11 Release Notes](preview11-release-notes.md): public TCP/authentication packages, serializer reuse and upgrade guidance.
 
-- [Public package overview](../Idb.Libraries/README.md): current preview.11 behavior, examples, defaults and upgrade requirements.
+- [Public package overview](../Idb.Libraries/README.md): preview.12 candidate behavior, examples, defaults and upgrade requirements.
 - [Preview.10 Release Notes](preview10-release-notes.md): subscription readiness, running versions, migration corrections, updated dependencies and combined upgrade guidance.
 - [Preview.9 Release Notes](preview9-release-notes.md): context-bound encryption, runtime-type enrollment, input limits, encrypted-index isolation and hardened SegmentCore restore.
 - [Preview.8 Release Notes](preview8-release-notes.md): expanded NuGet documentation; unchanged preview.7 runtime.

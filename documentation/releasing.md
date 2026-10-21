@@ -33,7 +33,7 @@ dotnet pack Idb.Libraries/Idb.Libraries.csproj -c Release --no-build --no-restor
 dotnet pack InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj -c Release --no-build --no-restore -o artifacts/next-preview/packages
 dotnet pack InterfaceDB.Authentication/InterfaceDB.Authentication.csproj -c Release --no-build --no-restore -o artifacts/next-preview/packages
 dotnet pack InterfaceDB.Transport/InterfaceDB.Transport.csproj -c Release --no-build --no-restore -o artifacts/next-preview/packages
-pwsh -NoProfile -File Scripts/Test-PublicPackageBoundary.ps1 -PackageDirectory artifacts/next-preview/packages -Version 1.0.0-preview.11
+pwsh -NoProfile -File Scripts/Test-PublicPackageBoundary.ps1 -PackageDirectory artifacts/next-preview/packages -Version 1.0.0-preview.12
 dotnet list InterfaceDB.sln package --vulnerable --include-transitive
 ```
 
@@ -46,7 +46,7 @@ cannot prove packaged dependencies and assets are correct.
 ## Publish and verify
 
 After the intended source/docs changes are committed and reviewed, the release tag must exactly
-match `v` plus all project versions (for example `v1.0.0-preview.11`). Pushing that tag triggers
+match `v` plus all project versions (for example `v1.0.0-preview.12`). Pushing that tag triggers
 `.github/workflows/release.yml` and therefore publication; perform it only as an approved release.
 The workflow checks versions, builds/tests on Linux, runs its integration/smoke gates, packs only
 the four projects, checks package boundaries, and uses NuGet OIDC credentials for publishing.
@@ -55,5 +55,5 @@ Observe the actual workflow result, then verify all four package versions and de
 consume from the public feed. Update release status only after those checks pass. Local validation
 does not replace the release workflow or prove that packages were published.
 
-The commands use preview.11, the approved next release. Advance all four versions together
+The commands use preview.12, the prepared baseline candidate. Advance all four versions together
 for subsequent releases. Never reuse a version whose packages have already been published.
