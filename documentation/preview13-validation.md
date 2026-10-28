@@ -1,23 +1,62 @@
 # Preview.13 release validation — 28 October 2026
 
-Status: the owner authorized preview.13 publication on 28 October 2026 after the completed
-designer review and Windows/Linux validation. The reviewed corrections follow candidate
-`38a074c`. Tag publication, package inspection and clean-feed verification are now release steps;
-their outcomes will be recorded here. Earlier hold statements below describe review history.
+Status: **all four `1.0.0-preview.13` packages were published to NuGet.org on 28 October 2026**.
+Windows/Linux CI and release automation passed at commit
+`f390bba5f0fea097ed398eac1827565c1e18f587`, tagged `v1.0.0-preview.13`.
+The published packages passed 298 isolated consumer tests. The reviewed corrections follow
+candidate `38a074c`; earlier candidate results and hold statements below describe review history.
 
 The feature snapshot passed 874 public test cases with 12 platform-specific skips on Windows.
 The 24 production benchmark rounds passed exact payload, partition, ordering and reopen checks.
 See [feature validation](access-policy-production-20261028.md). Those results do not replace the
 release workflow checks below.
 
-The release will verify package versions, source and package boundaries, full Windows/Linux CI,
+The release verified package versions, source and package boundaries, full Windows/Linux CI,
 analyzers, repository/integration smoke checks, and isolated package consumers. The tag workflow
-uses NuGet trusted publishing with a temporary credential. Public packages must contain only
+used NuGet trusted publishing with a temporary credential. Public packages contain only
 their intended MIT assemblies and allowed dependencies. Commercial verification remains private.
 
-Release commit, workflow outcomes, package hashes and public-feed consumption will be recorded
-here after verification. Live Keycloak, real mobile devices and physical power-loss qualification
-are not claimed by these package checks.
+Release commit, workflow outcomes, package hashes and public-feed consumption are recorded
+below. Live Keycloak, real mobile devices and physical power-loss qualification are not claimed
+by these package checks.
+
+## Published release verification
+
+- [Windows/Linux CI](https://github.com/ToolMaker/InterfaceDB/actions/runs/40767373197) passed
+  for the immutable release commit.
+- [Release workflow](https://github.com/ToolMaker/InterfaceDB/actions/runs/40768512396) passed
+  its checks, rebuilt the four packages from that commit and pushed all four successfully.
+  Publication occurred at approximately 21:04 UTC; all four appeared in the public package
+  feed by 21:20 UTC. No duplicate-package skip was used.
+- The final local candidate consumer passed **298/298 tests**. A separate consumer with fresh
+  package and HTTP caches then restored the published packages from NuGet.org and also passed
+  **298/298: 237 transport and 61 authentication**, with zero failures or skips. These are
+  repeated validation of the same cases, not 596 distinct tests. Five host-process cases remain
+  in the full source suite because they require its executable layout.
+- The package consumer used no production project references. Each InterfaceDB package's
+  recorded source was NuGet.org and each nuspec referenced the release commit. The .NET SDK
+  also supplied its implicit local framework library-packs source during the first restore;
+  none of the four InterfaceDB packages came from it.
+- Downloaded published packages passed the MIT, assembly and dependency boundary checks.
+  All four NuGet repository signatures passed `dotnet nuget verify --all`. Their SHA-256 hashes are recorded below;
+  they are the published artifacts, not the unsigned local candidate packages.
+
+| Package, version `1.0.0-preview.13` | Published nupkg SHA-256 |
+|---|---|
+| [InterfaceDB](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.13) | `c524ca8e39364702ad3ed4120107f89b7f48a0c1447c51a8702889b38fbd3a11` |
+| [InterfaceDB.Storage.SegmentCore](https://www.nuget.org/packages/InterfaceDB.Storage.SegmentCore/1.0.0-preview.13) | `7c0c0397e3a5941a2539bfea7af88a3a67479e0447139ca32372d706b91d7fc5` |
+| [InterfaceDB.Authentication](https://www.nuget.org/packages/InterfaceDB.Authentication/1.0.0-preview.13) | `7e61f3ff1e26f3aa21aee52db9e956b0d52ab9574bc75023f8fb36d851810e90` |
+| [InterfaceDB.Transport](https://www.nuget.org/packages/InterfaceDB.Transport/1.0.0-preview.13) | `e8ed9c2ae4ef85f8dbd8a992f42d8f579f4714cbfc388f4aea4b1e275fdd86bf` |
+
+Local receipts, package inspection and hashes are retained under `.tmp/preview13-release/`;
+consumer logs, TRX files and package origins are under `.tmp/preview13-final-consumer/runs/`.
+Old preview.13 development packages in this machine's global cache were backed up where present
+and replaced with the published packages; all four cached origins and release commits were checked.
+This prevents a same-version development package from masking the release in subsequent builds.
+
+The release tag remains on the tested runtime commit. This post-publication documentation receipt
+does not change or republish its binaries. Upgrade all four public packages and TCP clients/hosts
+together using [the release notes](preview13-release-notes.md#breaking-upgrade-from-preview12).
 
 ## Local candidate checks
 

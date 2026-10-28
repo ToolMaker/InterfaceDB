@@ -59,7 +59,7 @@ grant to another tenant's records.
 - [Release validation and qualification limits](preview13-validation.md)
 
 The raw reports include all trials, physical-work counters and the loaded transport module ID.
-The source changes are approved for preview.13 publication. The unchanged source
+The source changes are included in the published preview.13 packages. The unchanged source
 subsequently passed Linux correctness validation as recorded in the release validation document;
 the timing table remains Windows-only. Android, physical power-loss and release qualification
 are not granted by these measurements.

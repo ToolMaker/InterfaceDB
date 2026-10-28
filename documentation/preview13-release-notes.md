@@ -1,7 +1,7 @@
 # InterfaceDB 1.0.0-preview.13
 
-Status: publication authorized after Windows/Linux validation; publication and clean-feed verification are tracked in
-[the validation record](preview13-validation.md).
+Status: published to NuGet.org on 28 October 2026. Windows/Linux CI, package inspection and
+298 tests against the published packages passed; see [the validation record](preview13-validation.md).
 
 The completed designer-review follow-up makes unrestricted
 TCP sessions consistently address unpartitioned data, preserves trusted all-partition migration,
