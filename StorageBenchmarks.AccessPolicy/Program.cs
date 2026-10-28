@@ -16,6 +16,12 @@ using InterfaceDB.Transport.Tests;
 using MessagePack;
 using Microsoft.IdentityModel.Tokens;
 
+if (args.Contains("--mixed-paging"))
+{
+    await MixedPagingBenchmark.RunAsync(args);
+    return;
+}
+
 var output = Path.GetFullPath(args.Length > 0 ? args[0] : ".tmp/access-policy-production/benchmark");
 Directory.CreateDirectory(output);
 bool smoke = args.Contains("--smoke");

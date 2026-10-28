@@ -40,6 +40,11 @@ public interface IPartitionKeyIndexFactory { IPartitionKeyIndex Create(); }
 
 public interface IPartitionIndexDiagnostics { PartitionIndexStatistics PartitionIndexStatistics { get; } }
 
+// Emitted only by the built-in selector before it changes any cached bucket. An arbitrary
+// OperationCanceledException from an injected index cannot make this recovery guarantee.
+internal sealed class UnchangedPartitionIndexCancellationException(CancellationToken token)
+    : OperationCanceledException(token);
+
 public sealed class BoundedPartitionKeyIndexFactory : IPartitionKeyIndexFactory
 {
     private readonly PartitionIndexOptions _options;
@@ -65,6 +70,11 @@ internal sealed class BoundedPartitionKeyIndex(PartitionIndexOptions options) : 
     private static long KeyBytes(string key) => 96L + 2L * key.Length;
     private static bool Canonical(string prefix) => prefix.Length == ScopedEncodedStore.PrefixBytes
         && ScopedEncodedStore.TryGetPrefix(prefix + "x", out var found) && found == prefix;
+
+    private static void CheckSelectionCancellation(CancellationToken token)
+    {
+        if (token.IsCancellationRequested) throw new UnchangedPartitionIndexCancellationException(token);
+    }
 
     public PartitionIndexStatistics Statistics
     {
@@ -95,7 +105,7 @@ internal sealed class BoundedPartitionKeyIndex(PartitionIndexOptions options) : 
     {
         if (options.Mode == PartitionIndexMode.Disabled || !Canonical(partition)) return null;
         ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
-        cancellationToken.ThrowIfCancellationRequested();
+        CheckSelectionCancellation(cancellationToken);
         lock (_sync)
         {
             if (_buckets.TryGetValue(partition, out var bucket))
@@ -107,7 +117,7 @@ internal sealed class BoundedPartitionKeyIndex(PartitionIndexOptions options) : 
             var keys = new List<string>();
             foreach (var key in committedKeys())
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                CheckSelectionCancellation(cancellationToken);
                 if (key.StartsWith(partition, StringComparison.Ordinal)) keys.Add(key);
             }
             if (Cache(partition, keys)) return Page(_buckets[partition].Keys, afterKey, take);

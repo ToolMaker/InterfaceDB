@@ -43,3 +43,23 @@ Compare equal workloads: the unrestricted and one-tenant 10,000-row scenarios sh
 The 100-tenant cases show how selection scales; they return fewer rows and must not be compared
 directly against the unrestricted scenario as a measure of authorization overhead. The old
 isolated prototype measurements remain in `experiments/AccessPolicySelection`.
+
+## Mixed shared/tenant paging regression
+
+Append `--mixed-paging` to run the separate 0 / 2,000 / 10,000 hidden-tenant workload:
+
+```powershell
+dotnet StorageBenchmarks.AccessPolicy/bin/Release/net10.0/StorageBenchmarks.AccessPolicy.dll .tmp/policy-paging/new-run --mixed-paging
+```
+
+Build first and use the same quiet-machine and tiered-compilation settings above. Ten shared
+64-byte records sort after all tenant keys. Page sizes 50 and 64 run with two warmups and five
+alternating-order trials per mode. The forwarding mode preserves the server-assigned enumeration
+hint; the fallback control reconstructs only the shared enumeration request without the hint.
+Tenant operations and writes forward unchanged. The host enforces scope in both modes.
+
+Assertions verify exact bytes, keys, cursors, tenant access and trusted raw physical enumeration.
+The report counts provider calls, returned records and returned payload bytes; it does not
+measure allocations or reopen performance. A 60-second diagnostic timeout allows the old slow
+path to complete without changing production timeouts. See the
+[measured follow-up](../documentation/policy-paging-review-20261028.md).

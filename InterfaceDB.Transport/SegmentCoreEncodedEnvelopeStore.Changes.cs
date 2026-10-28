@@ -6,7 +6,7 @@ namespace Idb.Transport;
 
 public sealed partial class SegmentCoreEncodedEnvelopeStore
 {
-    private const string FeedPrefix = "\u0001idb-changes:";
+    private const string FeedPrefix = ScopedEncodedStore.ChangeJournalPrefix;
     /// <summary>Maximum retained mutation keys per authenticated partition. Expired cursors require a snapshot.</summary>
     public int RetainedChangeCount { get; private init; } = 2048;
     private sealed record Change(long Sequence, string Key);
@@ -58,8 +58,20 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore
             else if (await transaction.DeleteAsync(mutation.Key, token).ConfigureAwait(false)) affected++;
         }
         await transaction.SaveAsync(FeedPrefix + partition, encoded, token).ConfigureAwait(false);
-        await transaction.CommitAsync(token).ConfigureAwait(false);
-        _partitionIndex.ApplyCommitted(mutations);
+        try
+        {
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            _partitionIndex.ApplyCommitted(mutations);
+        }
+        catch (Exception exception)
+        {
+            // Only a commit attempt or failed derived-state update can make committed keys
+            // disagree with this index. Validation/read failures must not evict other tenants.
+            _partitionIndex.Invalidate();
+            if (exception is EncodedStoreRequestRejectedException)
+                throw new IOException("A derived-state update failed after a commit attempt.", exception);
+            throw;
+        }
         return new() { AffectedCount = affected };
     }
 
@@ -69,7 +81,8 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore
         var feedCount = snapshot.Count(key => key.StartsWith(FeedPrefix, StringComparison.Ordinal));
         if (!snapshot.Contains(FeedPrefix + partition, StringComparer.Ordinal)
             && feedCount >= _maximumEnumerationKeys)
-            throw LimitExceeded("The mutation would exceed the configured change-partition capacity.");
+            throw new EncodedStoreRequestRejectedException(RemoteErrorCode.LimitExceeded,
+                "The mutation would exceed the configured change-partition capacity.");
         var keys = snapshot.Where(key => !key.StartsWith(FeedPrefix, StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);
         var originalGlobalCount = keys.Count;
@@ -89,10 +102,12 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore
         }
 
         if (keys.Count > _maximumEnumerationKeys && keys.Count > originalGlobalCount)
-            throw LimitExceeded("The mutation would exceed the configured store key capacity.");
+            throw new EncodedStoreRequestRejectedException(RemoteErrorCode.LimitExceeded,
+                "The mutation would exceed the configured store key capacity.");
         if (partition.Length != 0 && partitionCount > _maximumPartitionKeys
             && partitionCount > originalPartitionCount)
-            throw LimitExceeded("The mutation would exceed the configured partition key capacity.");
+            throw new EncodedStoreRequestRejectedException(RemoteErrorCode.LimitExceeded,
+                "The mutation would exceed the configured partition key capacity.");
     }
 
     internal HashSet<string> GetChangePartitions() => _store.GetKeysSnapshot()

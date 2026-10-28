@@ -96,14 +96,27 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 || System.Text.Encoding.UTF8.GetByteCount(token.Value) > TransportValidation.MaximumAccessTokenBytes))
                 throw new ArgumentException("The access token is missing or exceeds the transport limit.");
             await tcp.ConnectAsync(options.Host, options.Port, deadline.Token).ConfigureAwait(false);
-            stream = new SslStream(tcp.GetStream(), false, options.ServerCertificateValidation);
-            await stream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            var transport = new TlsHandshakeStream(tcp.GetStream());
+            stream = new SslStream(transport, false, options.ServerCertificateValidation);
+            try
             {
-                TargetHost = options.TargetHost ?? options.Host,
-                ClientCertificates = options.ClientCertificate is null ? new() : new() { options.ClientCertificate },
-                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                CertificateRevocationCheckMode = X509RevocationMode.Online
-            }, deadline.Token).ConfigureAwait(false);
+                await stream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = options.TargetHost ?? options.Host,
+                    ClientCertificates = options.ClientCertificate is null ? new() : new() { options.ClientCertificate },
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = X509RevocationMode.Online
+                }, deadline.Token).ConfigureAwait(false);
+            }
+            catch (IOException exception) when (exception.GetType() == typeof(IOException)
+                && exception.InnerException is null && transport.PeerClosedWithoutResponse)
+            {
+                // A host can accept TCP just before stopping and close before replying to TLS.
+                // Only an observed empty close is an outage: TLS alerts, certificate rejection,
+                // partial handshakes and other IO failures retain their original classification.
+                throw new EndOfStreamException("The server closed before sending a TLS response.", exception);
+            }
+            transport.CompleteHandshake();
             await MessagePackFrameCodec.WriteAsync(stream, new WireMessage
             {
                 Kind = discovery ? WireMessageKind.Discover : subscription ? WireMessageKind.Subscribe : WireMessageKind.Hello,
@@ -187,7 +200,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                     || reply.TimeoutMilliseconds != 0
                     || (reply.Error == RemoteErrorCode.None) != (reply.Response is not null))
                     throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "Invalid or mismatched operation response.");
-                if (reply.Error == RemoteErrorCode.None) ValidateResponse(request, reply.Response!);
+                if (reply.Error == RemoteErrorCode.None) TransportValidation.Response(request, reply.Response!);
             }
             catch (Exception ex) when (ex is IOException or AuthenticationException or OperationCanceledException or ObjectDisposedException)
             {
@@ -214,73 +227,6 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
         }
         }
         catch (Exception exception) { TransportTelemetry.Fail(telemetry, exception); throw; }
-    }
-
-    private static void ValidateResponse(EncodedStoreRequest request, EncodedStoreResponse response)
-    {
-        bool invalid = response.AffectedCount < 0;
-        switch (request.Command)
-        {
-            case EncodedStoreCommand.Changes:
-                invalid |= response.Records is null || response.Records.Length > request.PageSize
-                    || response.Payload is null || response.Payload.Length > 100
-                    || response.AffectedCount != 0 || (response.Found && (response.NextAfterKey is not null || response.Records?.Length != 0))
-                    || response.Records?.Any(record => record.Payload.Length != 0) == true;
-                break;
-            case EncodedStoreCommand.Get:
-                invalid |= response.Found != (response.Payload is not null) || response.Records is not null
-                    || response.NextAfterKey is not null || response.AffectedCount != 0;
-                break;
-            case EncodedStoreCommand.GetMany:
-            case EncodedStoreCommand.Enumerate:
-                invalid |= response.Records is null || response.Payload is not null || response.Found || response.AffectedCount != 0;
-                if (request.Command == EncodedStoreCommand.GetMany)
-                {
-                    invalid |= response.NextAfterKey is not null || response.Records?.Length > request.Keys!.Length;
-                    if (response.Records is not null)
-                    {
-                        var remaining = request.Keys!.GroupBy(key => key, StringComparer.Ordinal)
-                            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
-                        foreach (var record in response.Records)
-                        {
-                            if (!remaining.TryGetValue(record.Key, out var count) || count == 0) invalid = true;
-                            else remaining[record.Key] = count - 1;
-                        }
-                    }
-                }
-                else
-                {
-                    invalid |= response.Records?.Length > request.PageSize;
-                    var previous = request.AfterKey;
-                    foreach (var record in response.Records ?? [])
-                    {
-                        if (previous is not null && StringComparer.Ordinal.Compare(previous, record.Key) >= 0) invalid = true;
-                        previous = record.Key;
-                    }
-                    if (response.NextAfterKey is not null)
-                        invalid |= response.Records is not { Length: > 0 }
-                            || response.NextAfterKey != response.Records[^1].Key;
-                }
-                break;
-            case EncodedStoreCommand.Put:
-                invalid |= response.Found || response.AffectedCount != 1;
-                goto default;
-            case EncodedStoreCommand.Delete:
-                invalid |= response.AffectedCount != (response.Found ? 1 : 0);
-                goto default;
-            case EncodedStoreCommand.ApplyBatch:
-                invalid |= response.Found || response.AffectedCount > request.Mutations!.Length
-                    || response.AffectedCount < request.Mutations.Count(mutation => mutation.Payload is not null);
-                goto default;
-            case EncodedStoreCommand.Checkpoint:
-            case EncodedStoreCommand.Ping:
-                invalid |= response.Found || response.AffectedCount != 0;
-                goto default;
-            default:
-                invalid |= response.Payload is not null || response.Records is not null || response.NextAfterKey is not null;
-                break;
-        }
-        if (invalid) throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "Invalid storage response shape.");
     }
 
     private static void ThrowRemoteError(RemoteErrorCode code)

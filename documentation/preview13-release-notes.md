@@ -1,7 +1,16 @@
 # InterfaceDB 1.0.0-preview.13
 
-Status: release candidate; publication and clean-feed verification are tracked in
+Status: publication authorized after Windows/Linux validation; publication and clean-feed verification are tracked in
 [the validation record](preview13-validation.md).
+
+The completed designer-review follow-up makes unrestricted
+TCP sessions consistently address unpartitioned data, preserves trusted all-partition migration,
+and distinguishes proven pre-commit rejections from uncertain mutation outcomes. Predictable
+rejections and safe cancellation no longer discard other tenants' valid partition indexes.
+The subsequent measured follow-up skips hidden tenant payloads before shared-page selection
+and classifies a proven empty close during TLS setup as downtime, preserving explicit denial
+and malformed-response handling. See [paging measurements](policy-paging-review-20261028.md)
+and the validation record for the exact tested snapshot and remaining qualification limits.
 
 All four public MIT packages move together: InterfaceDB, InterfaceDB.Storage.SegmentCore,
 InterfaceDB.Authentication and InterfaceDB.Transport. The release contains public code only.
@@ -36,7 +45,7 @@ InterfaceDB.Authentication and InterfaceDB.Transport. The release contains publi
    fields. Older peers are rejected. The stored IDB6/IDBE envelope formats are unchanged.
 3. Replace `IsolateBySubject`, `TcpStoreAccessMode` and subject/shared capability flags with a
    server `IDataAccessPolicy`. Use `SubjectDataAccessPolicy` to retain the previous subject
-   namespace, or `UnrestrictedDataAccessPolicy.Instance` for deliberate whole-alias access.
+   namespace, or `UnrestrictedDataAccessPolicy.Instance` for deliberate shared, unpartitioned access.
    A null registration inherits the host default; if neither exists, data is unrestricted.
 4. Choosing a new claim/ownership policy changes the namespace. Perform an explicit trusted
    ownership migration and revalidation. Existing records are not automatically assigned to

@@ -1,0 +1,807 @@
+{
+  "Complete": true,
+  "CapturedAtUtc": "2026-10-28T20:19:24.0784296+00:00",
+  "Environment": {
+    "OS": "Microsoft Windows 10.0.19045",
+    "Runtime": ".NET 10.0.12",
+    "ProcessorCount": 32,
+    "TieredCompilation": "0",
+    "TransportMvid": "fa4a5bd3-c0d8-4815-af16-8754742ec575"
+  },
+  "Workload": "Loopback TLS/JWT, 64-byte opaque payloads, 500 records per tenant, 10 shared zz-* keys sort after tenant keys",
+  "Method": "Same live store, 2 warmups per mode, 5 interleaved trials per mode; connection setup and result assertions excluded from timing",
+  "Durability": "Existing transport defaults; no durability settings changed",
+  "DiagnosticTimeoutSeconds": 60,
+  "Stages": [
+    {
+      "TenantRecords": 0,
+      "SharedRecords": 10,
+      "RawPhysicalRecordsVerified": 10,
+      "Pages": [
+        {
+          "PageSize": 50,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 0.1481,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 0.1367,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 0.2048,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 0.1367,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 0.3057,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 0.1501,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 0.1481,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 0.1288,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 0.1276,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 0.1247,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 0.1228,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 0.1472,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            }
+          ]
+        },
+        {
+          "PageSize": 64,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 0.1288,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 0.1313,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 0.131,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 0.1276,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 0.1313,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 0.1288,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 0.1322,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 0.1497,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 0.1366,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 0.1275,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 0.1234,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 0.1243,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            }
+          ]
+        }
+      ],
+      "TenantControl": null
+    },
+    {
+      "TenantRecords": 2000,
+      "SharedRecords": 10,
+      "RawPhysicalRecordsVerified": 2010,
+      "Pages": [
+        {
+          "PageSize": 50,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 0.3474,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 25.0265,
+              "PhysicalCalls": [
+                41
+              ],
+              "PhysicalRecords": [
+                2010
+              ],
+              "PhysicalPayloadBytes": [
+                128640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 0.4252,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 25.0265,
+              "PhysicalCalls": 41,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 24.93,
+              "PhysicalCalls": 41,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 0.3474,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 0.3208,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 26.8757,
+              "PhysicalCalls": 41,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 24.8158,
+              "PhysicalCalls": 41,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 0.4648,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 0.3038,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 25.4601,
+              "PhysicalCalls": 41,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            }
+          ]
+        },
+        {
+          "PageSize": 64,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 0.4011,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 21.0511,
+              "PhysicalCalls": [
+                32
+              ],
+              "PhysicalRecords": [
+                2010
+              ],
+              "PhysicalPayloadBytes": [
+                128640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 0.4011,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 21.4019,
+              "PhysicalCalls": 32,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 21.0511,
+              "PhysicalCalls": 32,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 0.4235,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 0.284,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 21.3451,
+              "PhysicalCalls": 32,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 20.915,
+              "PhysicalCalls": 32,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 0.5145,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 0.395,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 20.5761,
+              "PhysicalCalls": 32,
+              "PhysicalRecords": 2010,
+              "PhysicalPayloadBytes": 128640
+            }
+          ]
+        }
+      ],
+      "TenantControl": {
+        "MedianMs": 0.3348,
+        "Samples": [
+          {
+            "Mode": "tenant-forward",
+            "Trial": 0,
+            "ElapsedMs": 0.71,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 1,
+            "ElapsedMs": 0.5121,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 2,
+            "ElapsedMs": 0.316,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 3,
+            "ElapsedMs": 0.2536,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 4,
+            "ElapsedMs": 0.3348,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          }
+        ]
+      }
+    },
+    {
+      "TenantRecords": 10000,
+      "SharedRecords": 10,
+      "RawPhysicalRecordsVerified": 10010,
+      "Pages": [
+        {
+          "PageSize": 50,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 1.0893,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 545.3985,
+              "PhysicalCalls": [
+                201
+              ],
+              "PhysicalRecords": [
+                10010
+              ],
+              "PhysicalPayloadBytes": [
+                640640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 1.0829,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 539.8621,
+              "PhysicalCalls": 201,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 583.7797,
+              "PhysicalCalls": 201,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 1.274,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 1.0893,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 544.1405,
+              "PhysicalCalls": 201,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 545.3985,
+              "PhysicalCalls": 201,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 1.3688,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 1.0865,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 547.7481,
+              "PhysicalCalls": 201,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            }
+          ]
+        },
+        {
+          "PageSize": 64,
+          "Summaries": [
+            {
+              "Mode": "forward",
+              "MedianMs": 0.979,
+              "PhysicalCalls": [
+                1
+              ],
+              "PhysicalRecords": [
+                10
+              ],
+              "PhysicalPayloadBytes": [
+                640
+              ]
+            },
+            {
+              "Mode": "forced-fallback",
+              "MedianMs": 421.9596,
+              "PhysicalCalls": [
+                157
+              ],
+              "PhysicalRecords": [
+                10010
+              ],
+              "PhysicalPayloadBytes": [
+                640640
+              ]
+            }
+          ],
+          "Samples": [
+            {
+              "Mode": "forward",
+              "Trial": 0,
+              "ElapsedMs": 1.0403,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 0,
+              "ElapsedMs": 418.4483,
+              "PhysicalCalls": 157,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 1,
+              "ElapsedMs": 421.9596,
+              "PhysicalCalls": 157,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 1,
+              "ElapsedMs": 0.979,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 2,
+              "ElapsedMs": 0.9423,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 2,
+              "ElapsedMs": 423.7571,
+              "PhysicalCalls": 157,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 3,
+              "ElapsedMs": 420.4049,
+              "PhysicalCalls": 157,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 3,
+              "ElapsedMs": 1.0034,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forward",
+              "Trial": 4,
+              "ElapsedMs": 0.9532,
+              "PhysicalCalls": 1,
+              "PhysicalRecords": 10,
+              "PhysicalPayloadBytes": 640
+            },
+            {
+              "Mode": "forced-fallback",
+              "Trial": 4,
+              "ElapsedMs": 423.6623,
+              "PhysicalCalls": 157,
+              "PhysicalRecords": 10010,
+              "PhysicalPayloadBytes": 640640
+            }
+          ]
+        }
+      ],
+      "TenantControl": {
+        "MedianMs": 0.3234,
+        "Samples": [
+          {
+            "Mode": "tenant-forward",
+            "Trial": 0,
+            "ElapsedMs": 0.3354,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 1,
+            "ElapsedMs": 0.3234,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 2,
+            "ElapsedMs": 0.3017,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 3,
+            "ElapsedMs": 0.3023,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          },
+          {
+            "Mode": "tenant-forward",
+            "Trial": 4,
+            "ElapsedMs": 0.349,
+            "PhysicalCalls": 1,
+            "PhysicalRecords": 50,
+            "PhysicalPayloadBytes": 3200
+          }
+        ]
+      }
+    }
+  ]
+}

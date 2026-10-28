@@ -1,8 +1,8 @@
 # InterfaceDB
 
-**Preview.13 release candidate:** tenant/group access policies, interface-declared ownership
-validation and bounded partition indexing are ready for the release checks. Update all four
-public packages together to `1.0.0-preview.13` after publication. TCP client/server upgrades
+**Preview.13:** tenant/group access policies, interface-declared ownership validation and bounded
+partition indexing, including reviewed isolation, paging and reconnect corrections. This release
+uses `1.0.0-preview.13` for all four public packages. TCP client/server upgrades
 must be coordinated; embedded storage durability and committed-read semantics are unchanged.
 See [upgrade notes](documentation/preview13-release-notes.md),
 [release validation](documentation/preview13-validation.md),
@@ -288,4 +288,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-The latest verified publication before this release candidate is `1.0.0-preview.12` (21 October 2026). Preview.13 publication is tracked in [its validation record](documentation/preview13-validation.md). The release workflow and Windows/Linux CI passed. See the [release validation](documentation/preview12-validation.md). Preview.12 adds reviewed storage corrections, committed-value cache isolation, serializer-context optimization and opt-in telemetry. It retains preview.11's public TCP/JWT packages and shared serializer support, the preview.10 fixes, and preview.9's runtime security hardening and `IDBE` ciphertext-format transition. Upgrades from older previews require the documented migration steps. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.
+Preview.13 is authorized for publication following Windows and Linux validation; publication and feed verification are tracked in [its validation record](documentation/preview13-validation.md). The previous verified publication is `1.0.0-preview.12` (21 October 2026), whose release workflow and Windows/Linux CI passed; see [that release's validation](documentation/preview12-validation.md). Preview.12 added reviewed storage corrections, committed-value cache isolation, serializer-context optimization and opt-in telemetry. It retained preview.11's public TCP/JWT packages and shared serializer support, the preview.10 fixes, and preview.9's runtime security hardening and `IDBE` ciphertext-format transition. Upgrades from older previews require the documented migration steps. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.

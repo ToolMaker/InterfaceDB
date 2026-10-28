@@ -144,7 +144,7 @@ public sealed record TcpStoreHostOptions
     public Action<Exception>? OnError { get; init; }
 }
 
-internal static class TransportValidation
+internal static partial class TransportValidation
 {
     internal static void ConfigureSubscriptionKeepAlive(System.Net.Sockets.Socket socket)
     {

@@ -62,7 +62,7 @@ public sealed class TcpTransportTests
     {
         var backend = new CountingStore();
         await using var host = await TcpStoreHost.StartAsync(HostOptions(backend));
-        await AssertTlsFailureAsync(async () =>
+        await AssertTlsFailureCannotFallBackAsync(async () =>
         {
             await using var client = await TcpEncodedEnvelopeStore.ConnectAsync(ClientOptions(host) with { ServerCertificateValidation = null });
             await client.ExecuteAsync(Ping());
@@ -75,12 +75,64 @@ public sealed class TcpTransportTests
     {
         var backend = new CountingStore();
         await using var host = await TcpStoreHost.StartAsync(HostOptions(backend));
-        await AssertTlsFailureAsync(async () =>
+        await AssertTlsFailureCannotFallBackAsync(async () =>
         {
             await using var client = await TcpEncodedEnvelopeStore.ConnectAsync(ClientOptions(host) with { TargetHost = "wrong-host.invalid" });
             await client.ExecuteAsync(Ping());
         });
         Assert.AreEqual(0, backend.Calls);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(2)]
+    [DataRow(3)]
+    public async Task TlsSetupOnlyTreatsCloseBeforeAnyResponseAsUnavailable(int responseKind)
+    {
+        byte[] response = responseKind switch
+        {
+            0 => [],
+            1 => [22], // Truncated TLS header is not an empty transport close.
+            2 => [21, 3, 3, 0, 2, 2, 40], // Fatal TLS handshake_failure alert.
+            _ => [255, 255, 255, 0, 1, 255] // Malformed TLS record.
+        };
+        using var timeout = new CancellationTokenSource(TestDeadline);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var server = ReplyToClientHelloAsync(listener, response, timeout.Token);
+        try
+        {
+            var exception = await Assert.ThrowsAsync<Exception>(async () =>
+            {
+                await using var client = await TcpEncodedEnvelopeStore.ConnectAsync(new()
+                {
+                    Host = IPAddress.Loopback.ToString(), Port = ((IPEndPoint)listener.LocalEndpoint).Port,
+                    TargetHost = "localhost", StoreAlias = Alias, Manifest = Manifest(),
+                    ClientCertificate = _certificates.Client, ServerCertificateValidation = _certificates.ValidateServer,
+                    ConnectTimeout = TimeSpan.FromSeconds(5)
+                }, timeout.Token);
+            });
+            Assert.AreEqual(responseKind == 0,
+                Idb.Transport.Repositories.TcpRepositoryAvailability.IsUnavailable(exception), exception.ToString());
+            if (responseKind == 0) Assert.IsInstanceOfType<EndOfStreamException>(exception);
+        }
+        finally { await server; }
+    }
+
+    private static async Task ReplyToClientHelloAsync(TcpListener listener, byte[] response, CancellationToken token)
+    {
+        using var client = await listener.AcceptTcpClientAsync(token);
+        var stream = client.GetStream();
+        var header = new byte[5];
+        await stream.ReadExactlyAsync(header, token);
+        Assert.AreEqual(22, (int)header[0]);
+        var payload = new byte[(header[3] << 8) | header[4]];
+        await stream.ReadExactlyAsync(payload, token);
+        if (response.Length > 0) await stream.WriteAsync(response, token);
+        client.Client.Shutdown(SocketShutdown.Send);
+        try { while (await stream.ReadAsync(header, token) != 0) { } }
+        catch (IOException exception) when (exception.InnerException is SocketException) { }
     }
 
     [TestMethod]
@@ -430,6 +482,17 @@ public sealed class TcpTransportTests
         try { await action().WaitAsync(TestDeadline); }
         catch (Exception exception) when (exception is AuthenticationException or IOException) { return; }
         Assert.Fail("TLS must reject the connection before a storage operation succeeds.");
+    }
+
+    private static async Task AssertTlsFailureCannotFallBackAsync(Func<Task> action)
+    {
+        try { await action().WaitAsync(TestDeadline); }
+        catch (Exception exception) when (exception is AuthenticationException or IOException)
+        {
+            Assert.IsFalse(Idb.Transport.Repositories.TcpRepositoryAvailability.IsUnavailable(exception), exception.ToString());
+            return;
+        }
+        Assert.Fail("TLS must reject the connection without permitting offline fallback.");
     }
 
     private static async Task<TcpEncodedEnvelopeStore> ConnectAfterLeaseReleasedAsync(TcpStoreClientOptions options)

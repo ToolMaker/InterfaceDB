@@ -68,7 +68,7 @@ public sealed class PartitionKeyIndexTests
                 await a.ApplyBatchAsync([new("1", [1]), new("2", [2])]);
                 await a.EnumerateAsync(1); // Populate; growth below must invalidate/evict safely.
                 await a.PutAsync("3", [3]);
-                await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await a.PutAsync("4", [4]));
+                await Assert.ThrowsExactlyAsync<EncodedStoreRequestRejectedException>(async () => await a.PutAsync("4", [4]));
                 await a.ApplyBatchAsync([new("1", null), new("2", [9])]);
                 await b.PutAsync("2", [22]); await b.EnumerateAsync(1);
                 CollectionAssert.AreEqual(new[] { "2", "3" }, (await a.EnumerateAsync(4)).Records!.Select(r => r.Key).ToArray());
@@ -143,5 +143,84 @@ public sealed class PartitionKeyIndexTests
         public PartitionKeyPage? Select(string partition, string? after, int take, Func<IReadOnlyList<string>> source, CancellationToken token) => new(1, [key]);
         public void ApplyCommitted(IReadOnlyList<EncodedMutation> mutations) { }
         public void Invalidate() { }
+    }
+
+    [TestMethod]
+    public async Task PolicyReview_UnrestrictedViewHidesTenantKeysReturnedByAnInjectedIndex()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "idb-root-index-boundary-" + Guid.NewGuid().ToString("N"));
+        var owner = DataAccessScope.Partitioned("test", "owner");
+        try
+        {
+            await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(path,
+                keyIndexFactory: new IncorrectIndex(owner.Partition + "secret"));
+            await new ScopedEncodedStore(store, owner).PutAsync("secret", [42]);
+            IEncodedEnvelopeStore view = new ScopedEncodedStore(store, DataAccessScope.Unrestricted);
+            Assert.HasCount(0, (await view.EnumerateAsync(5)).Records!);
+            // Trusted physical enumeration remains available for offline migration.
+            Assert.HasCount(1, (await store.EnumerateAsync(5)).Records!);
+        }
+        finally { if (Directory.Exists(path)) Directory.Delete(path, true); }
+    }
+
+    [TestMethod]
+    [DataRow(false)] [DataRow(true)]
+    public async Task PolicyReview_SelectionCancellationPreservesOnlyProvenConsistentIndexState(bool customFailure)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "idb-index-cancellation-" + Guid.NewGuid().ToString("N"));
+        using var cancellation = new CancellationTokenSource();
+        var alice = DataAccessScope.Partitioned("review", "a");
+        var bob = DataAccessScope.Partitioned("review", "b");
+        var factory = new CancellingSelectionIndex(bob.Partition, cancellation, customFailure);
+        try
+        {
+            await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(path, keyIndexFactory: factory);
+            IEncodedEnvelopeStore a = new ScopedEncodedStore(store, alice);
+            IEncodedEnvelopeStore b = new ScopedEncodedStore(store, bob);
+            await a.PutAsync("one", [1]);
+            await a.EnumerateAsync(10);
+            var before = store.PartitionIndexStatistics;
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await b.EnumerateAsync(10, cancellationToken: cancellation.Token));
+            Assert.AreEqual(customFailure ? 0 : before.CachedPartitions, store.PartitionIndexStatistics.CachedPartitions);
+            CollectionAssert.AreEqual(new[] { "one" }, (await a.EnumerateAsync(10)).Records!.Select(record => record.Key).ToArray());
+            Assert.AreEqual(before.Hits + (customFailure ? 0 : 1), store.PartitionIndexStatistics.Hits);
+        }
+        finally { if (Directory.Exists(path)) Directory.Delete(path, true); }
+    }
+
+    private sealed class CancellingSelectionIndex(string target, CancellationTokenSource cancellation, bool customFailure)
+        : IPartitionKeyIndexFactory, IPartitionKeyIndex
+    {
+        private readonly IPartitionKeyIndex _inner = new BoundedPartitionKeyIndexFactory().Create();
+        public IPartitionKeyIndex Create() => this;
+        public PartitionIndexStatistics Statistics => _inner.Statistics;
+        public void Initialize(Func<IReadOnlyList<string>> source, CancellationToken token) => _inner.Initialize(source, token);
+        public void Invalidate() => _inner.Invalidate();
+        public void ApplyCommitted(IReadOnlyList<EncodedMutation> mutations) => _inner.ApplyCommitted(mutations);
+        public PartitionKeyPage? Select(string partition, string? after, int take, Func<IReadOnlyList<string>> source, CancellationToken token)
+        {
+            if (partition != target) return _inner.Select(partition, after, take, source, token);
+            if (customFailure)
+            {
+                _inner.Select(partition, after, take, source, token);
+                throw new OperationCanceledException("Injected index failure after modifying cache state.");
+            }
+            return _inner.Select(partition, after, take, () => new CancelDuringScan(source(), cancellation), token);
+        }
+    }
+
+    private sealed class CancelDuringScan(IReadOnlyList<string> keys, CancellationTokenSource cancellation) : IReadOnlyList<string>
+    {
+        public int Count => keys.Count;
+        public string this[int index] => keys[index];
+        public IEnumerator<string> GetEnumerator()
+        {
+            foreach (var key in keys)
+            {
+                yield return key;
+                cancellation.Cancel();
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

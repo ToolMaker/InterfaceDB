@@ -109,7 +109,8 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
                 case EncodedStoreCommand.ApplyBatch:
                     return await ApplyTrackedBatchAsync(owned.Mutations!, owned.Partition, cancellationToken).ConfigureAwait(false);
                 case EncodedStoreCommand.Enumerate:
-                    return await EnumerateAsync(owned.PageSize, owned.AfterKey, owned.Partition, cancellationToken).ConfigureAwait(false);
+                    return await EnumerateAsync(owned.PageSize, owned.AfterKey, owned.Partition,
+                        owned.UnpartitionedOnly, cancellationToken).ConfigureAwait(false);
                 case EncodedStoreCommand.Checkpoint:
                     await _store.CheckpointAsync(cancellationToken).ConfigureAwait(false);
                     return new();
@@ -119,7 +120,6 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
                     throw new ArgumentException("Unknown storage command.", nameof(request));
             }
         }
-        catch { _partitionIndex.Invalidate(); throw; }
         finally { _gate.Release(); }
     }
 
@@ -153,7 +153,9 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
         if (snapshot.Mutations is not null)
             foreach (var mutation in snapshot.Mutations)
                 bytes += RecordOverheadReserve + Encoding.UTF8.GetByteCount(mutation.Key) + (mutation.Payload?.Length ?? 0);
-        if (bytes > _limits.MaximumFrameBytes) throw LimitExceeded("The aggregate request exceeds the frame budget.");
+        if (bytes > _limits.MaximumFrameBytes)
+            throw new EncodedStoreRequestRejectedException(RemoteErrorCode.LimitExceeded,
+                "The aggregate request exceeds the frame budget.");
         return snapshot with
         {
             Payload = snapshot.Payload?.ToArray(),
@@ -177,35 +179,70 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
     }
 
     private async ValueTask<EncodedStoreResponse> EnumerateAsync(
-        int pageSize, string? afterKey, string partition, CancellationToken token)
+        int pageSize, string? afterKey, string partition, bool unpartitionedOnly, CancellationToken token)
     {
         string[] keys;
         int start;
-        var indexed = _partitionIndex.Select(partition, afterKey, pageSize + 1, _store.GetKeysSnapshot, token);
+        PartitionKeyPage? indexed;
+        try
+        {
+            // A partition index's empty-scope contract describes physical enumeration, not
+            // shared-only keys. Do not let an injected index hide shared records behind tenants.
+            indexed = unpartitionedOnly && partition.Length == 0 ? null
+                : _partitionIndex.Select(partition, afterKey, pageSize + 1, _store.GetKeysSnapshot, token);
+            if (indexed is not null)
+            {
+                if (indexed.PartitionCount < indexed.Keys.Count || indexed.Keys.Count > pageSize + 1)
+                    throw new InvalidDataException("Invalid partition index page.");
+                string? previous = afterKey;
+                foreach (var key in indexed.Keys)
+                {
+                    if (!key.StartsWith(partition, StringComparison.Ordinal)
+                        || (previous is not null && StringComparer.Ordinal.Compare(key, previous) <= 0))
+                        throw new InvalidDataException("The partition index returned an out-of-scope or unordered key.");
+                    previous = key;
+                }
+            }
+        }
+        catch (UnchangedPartitionIndexCancellationException) { throw; }
+        catch
+        {
+            // A custom index can partially mutate derived state before failing selection.
+            _partitionIndex.Invalidate();
+            throw;
+        }
         if (indexed is not null)
         {
             if (indexed.PartitionCount > _maximumPartitionKeys)
                 throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
             keys = indexed.Keys.ToArray(); start = 0;
-            if (indexed.PartitionCount < keys.Length || keys.Length > pageSize + 1)
-                throw new InvalidDataException("Invalid partition index page.");
-            string? previous = afterKey;
-            foreach (var key in keys)
-            {
-                if (!key.StartsWith(partition, StringComparison.Ordinal)
-                    || (previous is not null && StringComparer.Ordinal.Compare(key, previous) <= 0))
-                    throw new InvalidDataException("The partition index returned an out-of-scope or unordered key.");
-                previous = key;
-            }
         }
         else
         {
-            // Unrestricted access and providers without indexed selection retain the existing path.
-            keys = _store.GetKeysSnapshot().Where(key => !key.StartsWith(FeedPrefix, StringComparison.Ordinal)
-                && (partition.Length == 0 || key.StartsWith(partition, StringComparison.Ordinal))).ToArray();
+            var snapshot = _store.GetKeysSnapshot();
             var ceiling = partition.Length == 0 ? _maximumEnumerationKeys : _maximumPartitionKeys;
-            if (keys.Length > ceiling)
-                throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
+            if (unpartitionedOnly && partition.Length == 0)
+            {
+                var visible = new List<string>();
+                var physicalCount = 0;
+                foreach (var key in snapshot)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (key.StartsWith(FeedPrefix, StringComparison.Ordinal)) continue;
+                    // The hint changes work performed, not the existing physical key ceiling.
+                    if (++physicalCount > ceiling)
+                        throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
+                    if (ScopedEncodedStore.IsUnpartitioned(key)) visible.Add(key);
+                }
+                keys = visible.ToArray();
+            }
+            else
+            {
+                keys = snapshot.Where(key => !key.StartsWith(FeedPrefix, StringComparison.Ordinal)
+                    && (partition.Length == 0 || key.StartsWith(partition, StringComparison.Ordinal))).ToArray();
+                if (keys.Length > ceiling)
+                    throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
+            }
             Array.Sort(keys, StringComparer.Ordinal);
             start = afterKey is null ? 0 : Array.BinarySearch(keys, afterKey, StringComparer.Ordinal);
             if (afterKey is not null) start = start < 0 ? ~start : start + 1;

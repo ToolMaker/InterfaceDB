@@ -19,6 +19,12 @@ public sealed record EncodedStoreRequest
 {
     public required EncodedStoreCommand Command { get; init; }
     internal string Partition { get; init; } = "";
+    /// <summary>
+    /// Server-assigned enumeration hint: omit physical tenant and change-journal keys before
+    /// reading payloads. Providers may ignore it; the host still enforces the approved scope.
+    /// This is not sent on the wire. The default preserves trusted physical enumeration.
+    /// </summary>
+    public bool UnpartitionedOnly { get; internal init; }
     public string? Key { get; init; }
     public byte[]? Payload { get; init; }
     public string[]? Keys { get; init; }
@@ -64,6 +70,21 @@ public interface IEncodedEnvelopeStore : IAsyncDisposable
 {
     EncodedStoreCapabilities Capabilities { get; }
     ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// A provider's explicit guarantee that request validation rejected the operation before any
+/// mutation could commit. Never use for timeouts, I/O failures or uncertain acknowledgements.
+/// The host returns the rejection code without closing the session or publishing a change hint.
+/// </summary>
+public sealed class EncodedStoreRequestRejectedException : RemoteStoreException
+{
+    public EncodedStoreRequestRejectedException(RemoteErrorCode code, string message)
+        : base(code, message)
+    {
+        if (code is not (RemoteErrorCode.InvalidRequest or RemoteErrorCode.LimitExceeded))
+            throw new ArgumentOutOfRangeException(nameof(code));
+    }
 }
 
 /// <summary>

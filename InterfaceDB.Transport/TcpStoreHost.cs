@@ -270,8 +270,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 IEncodedEnvelopeStore endpoint = lease.Registration.Store is IAccessContextEncodedStore contextual
                     ? new AccessContextEncodedStore(contextual, new(identity, hello.StoreAlias!, hello.RequestedScope, hello.Capabilities))
                     : lease.Registration.Store;
-                var sessionStore = accessScope!.Partition.Length != 0
-                    ? new ScopedEncodedStore(endpoint, accessScope) : endpoint;
+                var sessionStore = new ScopedEncodedStore(endpoint, accessScope!);
                 var sessionExpiresAt = _options.TimeProvider.GetUtcNow() + _options.MaximumSessionLifetime;
                 await ServeSessionAsync(stream, sessionStore, limits, hello.Capabilities,
                     hello.StoreAlias!, identity, accessScope!, hello.RequestedScope, sessionExpiresAt).ConfigureAwait(false);
@@ -412,6 +411,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             Task<EncodedStoreResponse>? execution = null;
             var error = RemoteErrorCode.None;
             EncodedStoreResponse? response = null;
+            bool rejectedBeforeCommit = false;
             bool validatingWrite = writePolicy is not null
                 && request.Command is EncodedStoreCommand.Put or EncodedStoreCommand.ApplyBatch;
             try
@@ -435,9 +435,11 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             catch (Exception ex)
             {
                 Report(ex);
+                rejectedBeforeCommit = ex is EncodedStoreRequestRejectedException;
                 // Once storage was invoked, generic failures cannot prove that a mutation did not commit.
                 error = validatingWrite ? (ex is UnauthorizedAccessException ? RemoteErrorCode.Unauthorized
                         : ex is OperationCanceledException ? RemoteErrorCode.DeadlineExceeded : RemoteErrorCode.InvalidRequest)
+                    : ex is EncodedStoreRequestRejectedException rejection ? rejection.Code
                     : request.IsMutation ? RemoteErrorCode.OutcomeUnknown
                     : ex is OperationCanceledException ? RemoteErrorCode.DeadlineExceeded
                     : ex is RemoteStoreException remote ? remote.Code : RemoteErrorCode.StorageFailure;
@@ -456,7 +458,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     catch (Exception ex) { Report(ex, record: false); }
                 }
                 // Even an uncertain outcome invalidates observers after storage has settled.
-                if (request.IsMutation && execution is not null) PublishChange(alias, accessScope);
+                if (request.IsMutation && execution is not null && !rejectedBeforeCommit) PublishChange(alias, accessScope);
             }
             if (error is RemoteErrorCode.OutcomeUnknown or RemoteErrorCode.DeadlineExceeded) return;
         }

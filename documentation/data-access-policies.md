@@ -17,10 +17,19 @@ These are separate decisions, applied on the server in this order:
 | Layer | Responsibility | Configuration |
 |---|---|---|
 | Transport authentication | Establish who connected; validate TLS and, in JWT modes, signature, issuer, audience and token lifetime. | `TokenValidator`, authentication mode and certificate trust. |
-| Store/operation authorization | Decide whether that identity may use this alias and the requested operations. Roles or application permissions belong here. | `AuthorizeIdentity` in JWT modes; `AuthorizeClient` in certificate modes. |
-| Data authorization and selection | Check tenant/account/group membership and resolve one permitted data partition. | `IDataAccessPolicy` on the server registration. |
+| Store/operation authorization | Decide whether that identity may use this alias and the requested operations. Roles or application permissions belong here. | `AuthorizeIdentity` checks alias and operations in JWT modes; `AuthorizeClient` admits a certificate to an alias in certificate modes. Registered store capabilities also apply. |
+| Data authorization and selection | Check tenant/account/group membership and resolve one permitted data partition. | `IDataAccessPolicy` on the server registration; the built-in identity policies require JWT claims. |
 | Ownership on writes | Require declared record fields to match the authorized claim values before committing. | `ContractDataAccessPolicy<T>` and `[StorageAccessClaim]`. |
 | Encryption at rest | Protect persisted payload contents when configured. | The storage serializer/encryptor and key provider; independent of the access policy. |
+
+`SubjectDataAccessPolicy`, `ClaimDataAccessPolicy` and `ContractDataAccessPolicy<T>` require a
+validated JWT identity. Use `JwtBearer` or `MutualTlsAndJwtBearer` with these policies. In
+certificate-only `MutualTls` mode, `DataAccessContext.Identity` is null and the context does not
+contain the validated client certificate; these identity policies therefore deny access.
+Certificate trust and `AuthorizeClient` still protect alias admission. Unrestricted access and
+custom policies based on trusted server configuration rather than caller identity remain usable,
+but a custom data policy cannot distinguish client certificates through the current context.
+Do not infer certificate ownership from the client-supplied scope selector.
 
 A valid token alone does not grant access to every tenant. A client-supplied `TenantId`, scope
 selector, key or query predicate is not authorization. The server resolves the partition from
@@ -57,7 +66,7 @@ var messages = new TcpStoreRegistration("messages", messageManifest, messageStor
 
 Each registration has its own policy, including multiple registrations of the same contract.
 A null registration policy inherits `TcpStoreHostOptions.DefaultAccessPolicy`. If both are
-null, data is unrestricted within the authorized alias. Set
+null, callers share the unpartitioned dataset within the authorized alias. Set
 `UnrestrictedDataAccessPolicy.Instance` to explicitly override a default policy.
 Do not remove a policy from an existing protected dataset without a deliberate data migration.
 
@@ -66,9 +75,20 @@ Do not remove a policy from an existing protected dataset without a deliberate d
 | `SubjectDataAccessPolicy` | Validated issuer plus subject; preserves the former subject key format. |
 | `ClaimDataAccessPolicy("groups")` | One authorized claim value, namespaced by issuer and claim type. |
 | `ClaimDataAccessPolicy("groups", "family-a")` | Registration pinned to that membership. |
-| `UnrestrictedDataAccessPolicy` / no policy | Entire alias dataset, subject to transport admission. |
+| `UnrestrictedDataAccessPolicy` / no policy | The alias's unpartitioned dataset, subject to transport admission; no implicit access to protected partitions. |
 | `ContractDataAccessPolicy<T>` | AND of interface-declared claim criteria; validates ownership fields before writes. |
 | Custom `IDataAccessPolicy` or `DelegateDataAccessPolicy` | Application-defined scope and operation permissions. |
+
+Configure each physical store consistently as an unpartitioned shared dataset or a partitioned
+dataset, including when multiple aliases expose the same store. `Unrestricted` is the ordinary
+unpartitioned scope, not an administrator grant across partitions. In a store that has never used
+partitioning, this retains the existing shared-dataset behavior. Switching a protected store to
+unrestricted does not merge or transfer its data.
+
+For administration, authorize an explicit tenant selection through the same policy and connect
+within that approved scope. An administrator can work with each permitted tenant this way;
+cross-partition enumeration is not a built-in capability. Never fall back to unrestricted access
+when required claims or membership checks fail.
 
 Policies return a `DataAccessScope` or null to deny. Exceptions deny access. They are called
 before operations and notification delivery, and must be thread-safe. A session cannot switch
@@ -93,7 +113,7 @@ not unlock a special fast path.
 | Private data per login, no stored ownership-field rule | `SubjectDataAccessPolicy` | Resolves issuer/subject and a partition; does not decode record bodies for ownership. No extra tenant property is needed. |
 | Shared family/account/group data, partition membership is sufficient | `ClaimDataAccessPolicy("family_id")`, `"account_id"`, `"groups"` or the appropriate trusted claim | Checks exact membership and selects one partition; no record-body ownership decoding. Multiple memberships require an authorized selection or a pinned registration. |
 | Stored ownership fields must match validated claims | `ContractDataAccessPolicy<T>` | Adds envelope decoding and ownership checks on upserts before commit. Reads still select partition keys without domain decoding for this policy. Preserve this check when it is part of the business contract. |
-| Everyone admitted to the alias may access the entire dataset | `UnrestrictedDataAccessPolicy.Instance` | Omits membership partitioning and ownership checks. It retains ordinary enumeration rather than the partition index, so it is not automatically the fastest read choice. |
+| Everyone admitted to the alias may share its unpartitioned dataset | `UnrestrictedDataAccessPolicy.Instance` | Omits membership partitioning and ownership checks. It retains ordinary enumeration rather than the partition index, so it is not automatically the fastest read choice. |
 | Permissions require additional trusted relationships or rules | Custom `IDataAccessPolicy` and, where needed, `IDataAccessWritePolicy` | Keep checks bounded and thread-safe. A prebuilt immutable lookup can represent application-owned configuration; it must not become a stale cache of user authorization decisions. Profile the actual implementation. |
 
 The descriptions above follow the implementation; they are **not a measured speed ranking**.
@@ -305,10 +325,24 @@ partitions fall back to a temporary scan/sort and are not retained. The byte bud
 of retained index metadata, not a process-memory ceiling; cold scans still allocate snapshots.
 `Disabled` preserves the previous scan path. `Eager` warms partitions at open within the same
 retained budgets but requires a temporary whole-store grouping and more startup work.
-Unrestricted access retains its existing scan path in all modes.
+Unrestricted access scans shared keys in all modes. The host assigns an optional
+`EncodedStoreRequest.UnpartitionedOnly` enumeration hint; SegmentCore uses it to skip tenant
+keys before sorting or reading payloads. The global physical-key ceiling is unchanged. The hint
+is not on the wire and is not an authorization decision: the host still validates and filters
+every response. Custom providers can ignore the hint and retain the correct, slower fallback.
+Custom request-copying adapters should preserve it when forwarding server requests. Direct raw
+enumeration defaults to the complete physical dataset for trusted migrations and validation.
+
+The original unrestricted baseline rebuilds and sorts its key list for each page; it does not use the
+partition index. Its slower multi-page result therefore compares two selection algorithms,
+not the cost of authorization alone. Writes also scan committed keys to enforce global,
+partition and change-journal capacity. Replacing those scans with counters or extending indexed
+selection to unpartitioned data is separate optimization work, requiring paired measurements and
+tests for atomic batches, reopen, net-neutral writes at capacity and bounded metadata memory.
 
 Derived keys are updated only after the durable transaction commits, under the store's commit
-gate. An error discards derived state; a later read reconstructs it from committed storage.
+gate. A commit or index-state failure discards derived state; a later read reconstructs it from
+committed storage. Proven pre-commit rejections preserve the index because nothing was changed.
 Eviction and reopen never discard data. Quotas, frame limits, ordering and continuation cursors
 remain enforced. The adapter also checks an injected index's returned keys for scope and order.
 `IPartitionIndexDiagnostics.PartitionIndexStatistics` exposes hits, misses, evictions, fallbacks
@@ -361,6 +395,8 @@ receipts using the matching commercial source and its private integration guide.
 | Valid JWT but `Unauthorized` | Alias/operation permissions, exact claim name, issuer, membership and requested/pinned selector. Authentication and authorization are separate. |
 | `Unauthorized` on save/batch | Every ownership property must equal the selected claim value; no record in a rejected batch is committed. |
 | `InvalidRequest` on a typed write | Envelope identity/version, registered serializer/runtime allowlist, encryption context and payload shape. |
+| `InvalidRequest` for a reserved physical key | Use logical keys in the approved scope. Tenant and change-journal namespaces cannot be accessed through an unrestricted TCP session. |
+| `LimitExceeded` before storage | Reduce the batch/frame size or respect the store/partition key capacity. A proven pre-commit rejection leaves the session usable and commits no partial batch. |
 | Lookup is empty | Confirm the approved tenant. The same logical key in a different partition is not visible; do not retry with unrestricted access. |
 | `Busy` | Another storage session holds the same alias/scope lease; dispose short-lived operations and apply the normal bounded retry policy. |
 | `OutcomeUnknown` after a write | Reconcile committed state before retrying; a transport/storage failure is different from a preflight policy denial. |
@@ -369,3 +405,14 @@ receipts using the matching commercial source and its private integration guide.
 For a minimal integration, test two members of one tenant, a member of another tenant, a forged
 ownership field and a reconnect under a changed selection. Existing regression coverage and
 measured costs are recorded in [production validation](access-policy-production-20261028.md).
+
+Provider authors may use `EncodedStoreRequestRejectedException` only when validation proves
+that no mutation could commit. It supports `InvalidRequest` and `LimitExceeded`; the host does
+not publish a change hint for this result. Ordinary exceptions, timeouts and failures after a
+commit attempt still require reconciliation. A generic `RemoteStoreException` carrying either
+code is not proof that nothing committed.
+
+The scope view is applied at the TCP host boundary, independently of the physical provider.
+Direct in-process access to a raw provider is trusted storage access, not an authenticated data
+policy endpoint. Its physical enumeration remains available to server-side version migration
+and validation so upgrades retain every tenant's records and revision clocks.

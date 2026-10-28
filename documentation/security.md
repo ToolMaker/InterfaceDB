@@ -5,21 +5,33 @@ InterfaceDB can encrypt complete envelopes or selected contract properties. Encr
 ## Authentication, authorization and data boundaries
 
 The optional transport authenticates connections with TLS and the configured JWT/certificate
-mode. `AuthorizeIdentity` / `AuthorizeClient` control access to the store and operations.
+mode. `AuthorizeIdentity` controls store and operation admission in JWT modes;
+`AuthorizeClient` controls certificate admission to an alias in certificate modes.
 `IDataAccessPolicy` separately authorizes and selects user, tenant or group data. A valid token
 does not by itself grant all data in a database. These features are opt-in composition at the
 server; embedded local repositories continue to operate without authentication.
 
-The current source's tenant/claim policy API is an **preview.13 change**. See the
+The current source's tenant/claim policy API is a **preview.13 change**. See the
 [data-access policy guide](data-access-policies.md) for DI, `[StorageAccessClaim("tenant_id")]`,
 automatic exact indexes, server-side ownership checks, group selection and migration. The
 [JWT guide](jwt-authentication.md) covers token validation and providers. JWT scopes/roles,
 data membership and encryption perform different jobs and must be configured independently.
 
+The built-in subject, claim and contract policies require JWT identity, including when mutual TLS
+is also enabled. Certificate-only hosts still authenticate and authorize certificates for aliases,
+but `DataAccessContext` contains neither JWT identity nor a client certificate in that mode.
+They can use unrestricted access or an identity-independent custom policy; certificate-specific
+data authorization is not exposed by the current policy context.
+
 Policy-derived partitions isolate storage operations and notifications. The optional contract
 policy checks ownership fields before writes; read selection does not authorize arbitrary
 predicates against each row. The bounded partition index stores key metadata, never permission
 grants. Policy checks continue on operations and notifications after an index hit.
+
+Unrestricted access means the unpartitioned dataset, not an administrator bypass of tenant
+partitions. Use a consistent policy model for each physical store. Administrators who need tenant
+data must be authorized for an explicit tenant scope; missing claims must not fall back to
+unrestricted access. Existing local and unpartitioned shared-dataset use remains supported.
 
 Server enforcement does not control direct access to local files or data already downloaded into
 an offline client. Cache scope approval prevents accidental cross-account reuse; it does not
@@ -27,6 +39,14 @@ turn an untrusted device into a trusted authority. Protect local data with the a
 device/access controls and configured encryption. Membership changes take effect according to
 token lifetime and the authentication integration; the database does not poll Keycloak groups
 or introduce token introspection. Immediate revocation of previously downloaded data is not promised.
+
+The typed TCP repository uses JWT authentication. Explicit authorization denials, certificate
+validation errors and malformed protocol responses are not offline-fallback signals. A silent
+connection close before any TLS response is an availability failure, not proof of authorization.
+Raw mutual-TLS integrations must also allow for platform-dependent socket resets when the server
+rejects a client certificate: a reset alone cannot distinguish that rejection from downtime.
+Remote admission remains denied; custom offline-cache decisions must not treat availability as
+a new permission grant.
 
 ## Encryption boundary
 

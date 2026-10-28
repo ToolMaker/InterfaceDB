@@ -114,7 +114,7 @@ public sealed class SegmentCoreEncodedStoreTests
         var readError = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
             await store.ExecuteAsync(new() { Command = EncodedStoreCommand.GetMany, Keys = ["a", "b", "c"] }));
         Assert.AreEqual(RemoteErrorCode.LimitExceeded, readError.Code);
-        var writeError = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+        var writeError = await Assert.ThrowsExactlyAsync<EncodedStoreRequestRejectedException>(async () =>
             await store.ApplyBatchAsync([new("a", new byte[6500]), new("b", new byte[6500]), new("new", new byte[6500])]));
         Assert.AreEqual(RemoteErrorCode.LimitExceeded, writeError.Code);
         Assert.IsNull(await store.GetAsync("new"));
@@ -127,7 +127,7 @@ public sealed class SegmentCoreEncodedStoreTests
         await store.PutAsync("a", [1]);
         await store.PutAsync("b", [2]);
         Assert.HasCount(2, (await store.EnumerateAsync(10)).Records!);
-        var error = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await store.PutAsync("c", [3]));
+        var error = await Assert.ThrowsExactlyAsync<EncodedStoreRequestRejectedException>(async () => await store.PutAsync("c", [3]));
         Assert.AreEqual(RemoteErrorCode.LimitExceeded, error.Code);
         Assert.IsNull(await store.GetAsync("c"));
         await store.PutAsync("a", [4]);
@@ -147,7 +147,7 @@ public sealed class SegmentCoreEncodedStoreTests
         await store.ExecuteAsync(Put("a.", "one", 1));
         await store.ExecuteAsync(Put("a.", "two", 2));
 
-        var rejected = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+        var rejected = await Assert.ThrowsExactlyAsync<EncodedStoreRequestRejectedException>(async () =>
             await store.ExecuteAsync(Put("a.", "three", 3)));
 
         Assert.AreEqual(RemoteErrorCode.LimitExceeded, rejected.Code);
@@ -171,7 +171,7 @@ public sealed class SegmentCoreEncodedStoreTests
         await store.ExecuteAsync(Delete("a."));
         await store.ExecuteAsync(Delete("b."));
 
-        var rejected = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+        var rejected = await Assert.ThrowsExactlyAsync<EncodedStoreRequestRejectedException>(async () =>
             await store.ExecuteAsync(Delete("c.")));
 
         Assert.AreEqual(RemoteErrorCode.LimitExceeded, rejected.Code);
