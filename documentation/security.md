@@ -2,7 +2,33 @@
 
 InterfaceDB can encrypt complete envelopes or selected contract properties. Encryption is opt-in; the default `EncryptionNone` provider writes plaintext `IDB6` payloads. In preview.9, AES-GCM repositories write context-bound `IDBE` version 3 frames.
 
-## Security Boundary
+## Authentication, authorization and data boundaries
+
+The optional transport authenticates connections with TLS and the configured JWT/certificate
+mode. `AuthorizeIdentity` / `AuthorizeClient` control access to the store and operations.
+`IDataAccessPolicy` separately authorizes and selects user, tenant or group data. A valid token
+does not by itself grant all data in a database. These features are opt-in composition at the
+server; embedded local repositories continue to operate without authentication.
+
+The current source's tenant/claim policy API is an **preview.13 change**. See the
+[data-access policy guide](data-access-policies.md) for DI, `[StorageAccessClaim("tenant_id")]`,
+automatic exact indexes, server-side ownership checks, group selection and migration. The
+[JWT guide](jwt-authentication.md) covers token validation and providers. JWT scopes/roles,
+data membership and encryption perform different jobs and must be configured independently.
+
+Policy-derived partitions isolate storage operations and notifications. The optional contract
+policy checks ownership fields before writes; read selection does not authorize arbitrary
+predicates against each row. The bounded partition index stores key metadata, never permission
+grants. Policy checks continue on operations and notifications after an index hit.
+
+Server enforcement does not control direct access to local files or data already downloaded into
+an offline client. Cache scope approval prevents accidental cross-account reuse; it does not
+turn an untrusted device into a trusted authority. Protect local data with the application's
+device/access controls and configured encryption. Membership changes take effect according to
+token lifetime and the authentication integration; the database does not poll Keycloak groups
+or introduce token introspection. Immediate revocation of previously downloaded data is not promised.
+
+## Encryption boundary
 
 The implemented controls protect persisted payload contents against offline inspection and detect ciphertext/header modification when AES-GCM is configured. Version 3 also rejects ciphertext presented under a different authenticated storage context. They do not provide:
 
@@ -10,7 +36,7 @@ The implemented controls protect persisted payload contents against offline insp
 - protection after an attacker can execute code in the application process;
 - secure deletion from SSDs, backups, snapshots, or synchronized copies;
 - encrypted filenames, directory names, file sizes, or modification times;
-- distributed authorization, audit logging, or remote access control;
+- remote authorization by encryption alone (configure the transport/access-policy layers above), or a complete security audit trail;
 - automatic key escrow or recovery;
 - same-key anti-rollback for an older valid ciphertext at the same physical record key;
 - a formal third-party cryptographic audit.
@@ -205,6 +231,12 @@ The current source tests cover:
 - SegmentCore restore manifest, file-count, byte, duration and free-space limits;
 - link/reparse and unknown-manifest-path rejection;
 - Windows Credential Manager active and historical keys.
+
+The access-policy tests additionally cover tenant separation and sharing, exact claim selection,
+forged ownership rejection before any batch or clock write, encrypted ownership checks, scoped
+notifications, cache identity, and invalidation/rebuild of derived indexes. See the
+[production validation report](access-policy-production-20261028.md) for current counts,
+benchmarks and untested deployment conditions.
 
 Re-run dependency advisories, Windows and Linux tests, clean-package consumption, old-store upgrade, and package-boundary checks before publication:
 

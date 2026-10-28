@@ -8,7 +8,9 @@ client with neither a token nor configured credentials receives no storage acces
 The optional MIT `InterfaceDB.Authentication` package uses namespace `Idb.Authentication`.
 It is introduced in preview.11; see the [release status](preview11-release-notes.md). InterfaceDB's public embedded core remains
 authentication-agnostic. The [TCP guide](tcp-transport.md) describes storage and retry
-semantics; this guide describes identity and access.
+semantics; this guide describes identity and access. Tenant/group selection and ownership-field
+validation are documented in [data access policies](data-access-policies.md). That policy API is
+a preview.13 change and is not included in the published preview.12 package.
 
 ## Host configuration
 
@@ -156,12 +158,42 @@ modes and refuses an unauthenticated or expired result. Dispose the validator on
 has stopped and drained work.
 
 The sample policy requires its exact configured alias and **every configured scope word** in the
-validated `scope` claim. That scope grants the complete configured store's operations, including
-writes. This is an explicit whole-store service policy. Tenant/family/device ownership, record-level
-permissions and domain invariants need an application authorization policy or domain gateway.
+validated `scope` claim. This admits the configured store's operations, including writes; the
+separately registered `IDataAccessPolicy` determines which data that caller may access. With no
+data policy, admission grants the entire alias dataset. For tenant/family separation, register
+`ClaimDataAccessPolicy("tenant_id")` or `ClaimDataAccessPolicy("groups")`. To enforce matching
+ownership fields on saves, use `ContractDataAccessPolicy<T>` and interface declarations.
+Additional domain invariants and per-record authorship rules remain application policy.
 Client-provided aliases, keys, manifests and payloads never establish permission.
 For atomic batches the operation authorization mask always includes `AtomicBatch`, plus `Write`
 when any entry is an upsert and `Delete` when any entry is a deletion.
+
+### Tenant and group claims
+
+The following is an illustrative decoded access-token payload, not a credential:
+
+```json
+{
+  "iss": "https://identity.example.com/realms/interfacedb",
+  "sub": "member-123",
+  "aud": "interfacedb-storage",
+  "scope": "interfacedb.storage",
+  "tenant_id": "tenant-a",
+  "groups": ["family-a", "club-b"]
+}
+```
+
+The real signed token must also satisfy the configured lifetime/type checks. Configure the
+identity-provider integration to emit the chosen stable membership claim in its access token.
+InterfaceDB consumes validated claims; it does not query group membership from Keycloak.
+`ClaimDataAccessPolicy("tenant_id")` selects `tenant-a`; a `groups` policy would require an
+authorized `RequestedScope` selection here because two groups are present. Pick the policy
+appropriate to the dataset rather than treating all claims as simultaneous grants.
+
+For `[StorageAccessClaim("tenant_id")] string TenantId`, the contract policy also rejects a save
+whose field differs from `tenant-a`. A role can allow writing while the tenant policy still limits
+where that write goes. Multiple criteria, inheritance, keyed DI and trusted composite memberships
+are covered in the [policy integration guide](data-access-policies.md#declaring-ownership-on-the-stored-interface).
 
 ## Validation, key refresh and bounds
 
@@ -201,8 +233,8 @@ negotiated operational frame and payload limits.
 The host limits idle waiting to the token's remaining life and the storage-session admission lifetime,
 checks expiration before starting each operation and closes expired sessions. Activity and ping do
 not extend that lifetime. In-flight work is cancelled at the boundary and retains its lease until
-the store observes cancellation or completes. With subject isolation enabled, unrelated validated subjects use
-independent session leases; a second session for the same subject receives `Busy`. There is no
+the store observes cancellation or completes. Policy-partitioned stores use independent leases
+for different resolved data scopes; a second session for the same scope receives `Busy`. There is no
 in-session token replacement. Obtain a fresh
 token and explicitly open a new session. Reusing the service token provider supplies a cached valid
 token or obtains a fresh one as needed.

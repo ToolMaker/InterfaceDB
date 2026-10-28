@@ -10,7 +10,8 @@ Trusted application / service
   -> envelope serialization
   -> TcpEncodedEnvelopeStore
   -> TLS over TCP + JWT access token
-  -> TcpStoreHost: token validation + alias/capability authorization + compatibility
+  -> TcpStoreHost: authentication + alias/operation permission + data policy + compatibility
+  -> optional typed ownership validation before writes
   -> SegmentCoreEncodedEnvelopeStore
   -> SegmentCore files on a persistent volume
 ```
@@ -25,7 +26,7 @@ The transport and authentication packages are introduced in preview.11; see the 
 | Decision | Reason and deferred work |
 | --- | --- |
 | Shared opaque storage operations | Keeps domain serialization at the trusted application and storage independent of the wire protocol. The typed repository now uses this seam; domain RPC remains separate application work. |
-| Bounded storage leases | Non-isolated stores retain one session per alias. Subject-isolated JWT stores lease independently per validated issuer/subject, while serializing physical operations. The typed wrapper opens a short session per operation; subscriptions hold no storage lease. |
+| Bounded storage leases | Unrestricted stores retain one session per alias. Policy-partitioned stores lease independently per authorized user/tenant/group scope, while serializing physical operations. The typed wrapper opens a short session per operation; subscriptions hold no storage lease. |
 | Atomic mutation batches | Gives one-store atomicity without leaving a transaction open across network round trips or client disconnects. |
 | Explicit unknown mutation outcome | A missing acknowledgement can follow a successful commit. Callers reconcile durable state; blind transport retries could repeat effects. |
 | Bounded current-state pages | Supports restart reads with explicit memory/response ceilings. A separate current-state delta API uses bounded durable sequence cursors; expired cursors require a fresh snapshot. |
@@ -39,7 +40,7 @@ client messages cannot name host filesystem paths. SegmentCore uses its durable 
 configuration. Mutation success is returned after the underlying operation completes.
 
 The host grants **one active storage session per alias** for non-isolated stores, and one per validated
-issuer/subject for subject-isolated JWT stores. A competing session for the same lease receives `Busy`.
+data scope for policy-partitioned stores. A competing session for the same lease receives `Busy`.
 Every storage lease stops admitting operations at its maximum lifetime (five minutes by default),
 which ping cannot extend.
 Client requests are serialized within a session. One process must own a physical
@@ -48,22 +49,20 @@ can be hosted by the library, while the sample deliberately configures one store
 
 `EncodedEnvelopeSerializer<TContract>` reuses InterfaceDB's existing object serializer and checks
 that the physical key matches the envelope key. Its caller supplies the prepared envelope and
-stable authenticated encryption associated data. An unversioned host does not need the domain contract DLL merely to save or retrieve these bytes. A versioned host deploys trusted validation/migration code and its dependencies; clients never supply executable migration code.
+stable authenticated encryption associated data. An unversioned opaque host does not need the domain contract DLL merely to save or retrieve these bytes. A host using `ContractDataAccessPolicy<T>` deploys the contract, allowed implementations and configured serializer to validate ownership fields before writes. A versioned host also deploys trusted validation/migration code and its dependencies; clients never supply executable migration code.
 
 The [typed repository](tcp-repository.md) connects this seam to `IRepository<TContract>`.
 Each operation takes a short exclusive session, refreshes a bounded snapshot and preserves strict
-revisions. `IsolateBySubject` partitions keys by validated issuer/subject. Disposable change hints
+revisions. An injected `IDataAccessPolicy` resolves the server-owned data partition. Disposable change hints
 and current-state deltas are available. The connector has no persistent client database or offline
 write queue. It does not implement distributed conflict resolution or general request deduplication.
 
-The source update after preview.11 adds `TcpStoreRegistration.AccessMode` per alias:
-`SubjectIsolated` partitions by JWT subject; `Shared` uses an explicitly authorized shared dataset.
-Null retains the host's existing `IsolateBySubject` behavior. Both explicit modes require JWT.
-The host never advertises subject isolation for a shared store. Typed shared clients explicitly
-request `EncodedStoreCapabilities.SharedDataset`; isolated remains their default. See the
-[shared-dataset setup and authorization contract](tcp-repository.md#shared-datasets-source-update-after-preview11).
-Register independent stores for independent memberships. Configuration is fixed at host startup;
-stop/restart the host to change registrations. The stock one-store sample has no dynamic group registry.
+The preview.13 access-policy update replaces the old subject/shared modes with
+`TcpStoreRegistration.AccessPolicy` and an optional host `DefaultAccessPolicy`. Configure subject,
+claim-based tenant/group, interface-declared ownership, unrestricted or custom policies through DI. The server authorizes selectors and
+returns an opaque scope identity; typed clients bind caches and subscriptions to it. The wire protocol
+is version 3 and intentionally rejects old peers. See [data policies and upgrade steps](data-access-policies.md).
+Register independent stores for independent aliases; restart the host to change registrations.
 
 ## Authentication
 
@@ -232,24 +231,27 @@ The host authenticates and authorizes the session and verifies the complete mani
 admitting payload operations and chooses the lower client/server limits. Manifest equality checks
 compatibility only; a caller's claimed schema/build hash does not prove what code it is executing.
 
-The wire format is version 2. Version 1 frames are rejected; upgrade client and host together.
+The current preview.13 source uses wire format version 3. Versions 1 and 2 are rejected; upgrade
+client and host together. Published preview.12 uses the preceding protocol/API.
 A frame has a 44-byte header followed by one MessagePack value:
 
 | Bytes | Meaning |
 | --- | --- |
 | 0–3 | ASCII `IDBT` |
-| 4 | Wire version, currently `2` |
+| 4 | Wire version, currently `3` |
 | 5–7 | Reserved, must be zero |
 | 8–11 | Unsigned big-endian MessagePack body length |
 | 12–43 | SHA-256 of the body |
 
 The checksum detects damaged frames; TLS provides authentication and confidentiality. The body
 uses explicit fixed-length arrays for its message, manifest, limits, request and response shapes.
-The root array has 12 fields: kind, correlation ID, alias, manifest, limits, capabilities, request,
-response, error, timeout milliseconds, access token and authentication mode. Only the storage hello or subscription hello can
-contain an access token; it is never echoed in a reply. Authentication mode is exchanged only in
-hello/subscribe/hello-result. The access token ceiling is 16 KiB and also counts toward the frame limit.
-There is no type-name resolver or domain-object deserialization at the host. The decoder rejects
+The root array has 14 fields: kind, correlation ID, alias, manifest, limits, capabilities, request,
+response, error, timeout milliseconds, access token, authentication mode, requested scope and scope
+identity. Only admission messages (hello, subscription or discovery) can contain an access token;
+it is never echoed in a reply. The requested scope is an untrusted selector; the server's scope
+identity is an opaque approved boundary. The access token ceiling is 16 KiB and also counts toward
+the frame limit. The frame decoder never deserializes domain objects. An optional typed write policy
+decodes envelopes separately using the configured serializer and runtime allowlist. The decoder rejects
 unknown message/command values, unexpected fields, malformed/truncated frames, trailing data,
 bad sequence IDs and oversized lengths before unbounded allocation. The operation and shape
 definitions live in `EncodedStoreContracts.cs`, `TransportContracts.cs` and `MessagePackFrameCodec.cs`.
@@ -263,7 +265,7 @@ definitions live in `EncodedStoreContracts.cs`, `TransportContracts.cs` and `Mes
 | Batch keys/mutations | 64 |
 | Requested page records | 128 |
 | Host connections including handshakes | 16 |
-| Active storage sessions | 1 per alias, or 1 per issuer/subject when subject isolation is enabled |
+| Active storage sessions | 1 per unrestricted alias, or 1 per resolved policy scope |
 | Long-lived subscriptions | Half of MaximumConnections (8 by default); configurable with MaximumSubscriptions |
 | Handshake/connect timeout | 15 seconds |
 | Client operation / host maximum operation | 30 seconds |
@@ -271,7 +273,9 @@ definitions live in `EncodedStoreContracts.cs`, `TransportContracts.cs` and `Mes
 | Storage session admission lifetime | 5 minutes; configurable up to 10 minutes |
 | Subscription lifetime | Until disposal, connection failure, JWT expiry or authorization failure; no storage polling |
 | SegmentCore total record capacity | 100,000 by default; enforced before commit |
-| SegmentCore subject capacity | 10,000 by default; cannot exceed total capacity |
+| SegmentCore partition capacity | 10,000 by default; cannot exceed total capacity |
+| Requested data selector | 1,024 UTF-8 bytes |
+| Lazy partition index | 10,000 retained keys, 16 partitions, 8 MiB estimated metadata per store |
 
 Aggregate batches must also fit the frame budget; 64 individually legal payloads are not necessarily
 one legal batch. Enumeration limits response bytes as well as record count. Get-many can fail when
@@ -285,9 +289,12 @@ an oversized legacy record can therefore allocate up to the engine's 256 MiB com
 before `LimitExceeded` is returned. Qualify existing data as trusted and within the configured limits.
 The transport payload cap is not a pre-read disk-allocation ceiling.
 
-Enumeration is ordinal keyset paging of current state. SegmentCore snapshots/sorts keys per page.
-New keys are admitted only while the configured total and authenticated-subject capacities remain
-available; overwrites and capacity-releasing deletes remain possible at the boundary. Subject
+Enumeration is ordinal keyset paging of current state. Policy partitions use a bounded lazy key
+index by default; first access, eviction and oversized partitions require a scan. Unrestricted
+enumeration and disabled indexing retain snapshot/sort selection. See [partition selection and
+diagnostics](data-access-policies.md#bounded-partition-selection) for DI, budgets and measured costs.
+New keys are admitted only while the configured total and authorized-partition capacities remain
+available; overwrites and capacity-releasing deletes remain possible at the boundary. Partition
 enumeration applies its ceiling after filtering to that authenticated partition. Pages do not form a durable
 snapshot or change feed; writes between pages can affect the result. The separate `ReadDeltaAsync` API uses durable current-state cursors. Larger datasets still require additional paging/query and capacity qualification before raising these bounds. Idle storage connections should be closed
 or send an explicit ping before the idle timeout; ping does not extend the session admission lifetime.

@@ -48,13 +48,16 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
         {
             try
             {
+                await _owner.EnsureScopeAsync(_stop.Token).ConfigureAwait(false);
                 await using var connection = await TcpEncodedEnvelopeStore.ConnectCoreAsync(_owner._options.Connection with
                 {
                     TokenProvider = _owner._tokens,
                     Telemetry = _owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
+                    ExpectedScopeIdentity = Volatile.Read(ref _owner._scopeIdentity) ?? _owner._options.Connection.ExpectedScopeIdentity,
                     RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
-                        | EncodedStoreCapabilities.DurableCommits | _owner._options.ScopeCapability
+                        | EncodedStoreCapabilities.DurableCommits
                 }, true, _stop.Token).ConfigureAwait(false);
+                _owner.BindScope(connection.ScopeIdentity);
                 _ready.TrySetResult();
                 // Acknowledge-before-snapshot ordering closes the registration/snapshot race.
                 _publisher.PublishChanged();

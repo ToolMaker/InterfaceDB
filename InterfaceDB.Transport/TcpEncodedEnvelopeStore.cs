@@ -33,12 +33,15 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     }
 
     public CompatibilityManifest RemoteManifest { get; private init; } = null!;
+    public string ScopeIdentity { get; private init; } = null!;
     public static async ValueTask<CompatibilityManifest> DiscoverAsync(TcpStoreClientOptions options, CancellationToken token = default)
+        => (await DiscoverStoreAsync(options, token).ConfigureAwait(false)).Manifest;
+
+    public static async ValueTask<TcpStoreDescriptor> DiscoverStoreAsync(TcpStoreClientOptions options, CancellationToken token = default)
     {
         await using var discovery = await ConnectCoreAsync(options with
-            { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits
-                | (options.RequiredCapabilities & TransportValidation.ScopeCapabilities) }, false, token, true).ConfigureAwait(false);
-        return discovery.RemoteManifest;
+            { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits }, false, token, true).ConfigureAwait(false);
+        return new(discovery.RemoteManifest, discovery.ScopeIdentity);
     }
     public TransportLimits Limits { get; }
     public EncodedStoreCapabilities Capabilities { get; }
@@ -72,6 +75,8 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
         if (!TransportValidation.RequiresToken(options.AuthenticationMode) && options.TokenProvider is not null)
             throw new ArgumentException("A token provider requires a JWT authentication mode.");
         TransportValidation.Alias(options.StoreAlias);
+        if (options.RequestedScope is not null) TransportValidation.ControlString(options.RequestedScope, false);
+        if (options.ExpectedScopeIdentity is not null) TransportValidation.ControlString(options.ExpectedScopeIdentity, false);
         options.Manifest.Validate();
         options.Limits.Validate();
         TransportValidation.Capabilities(options.RequiredCapabilities);
@@ -108,22 +113,23 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 Limits = options.Limits,
                 Capabilities = options.RequiredCapabilities,
                 AuthenticationMode = options.AuthenticationMode,
-                AccessToken = token?.Value
+                AccessToken = token?.Value, RequestedScope = options.RequestedScope, ScopeIdentity = options.ExpectedScopeIdentity
             }, options.Limits, deadline.Token).ConfigureAwait(false);
             var reply = await MessagePackFrameCodec.ReadAsync(stream, options.Limits, deadline.Token).ConfigureAwait(false)
                 ?? throw new EndOfStreamException("The server closed during compatibility negotiation.");
             if (reply.Kind != WireMessageKind.HelloResult || reply.CorrelationId != 1
                 || reply.Request is not null || reply.Response is not null || reply.StoreAlias is not null
-                || reply.TimeoutMilliseconds != 0 || reply.AccessToken is not null)
+                || reply.TimeoutMilliseconds != 0 || reply.AccessToken is not null || reply.RequestedScope is not null)
                 throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "Invalid handshake response.");
             ThrowRemoteError(reply.Error);
-            if (reply.AuthenticationMode != options.AuthenticationMode
+            if (string.IsNullOrWhiteSpace(reply.ScopeIdentity) || (options.ExpectedScopeIdentity is not null && options.ExpectedScopeIdentity != reply.ScopeIdentity)
+                || reply.AuthenticationMode != options.AuthenticationMode
                 || reply.Manifest is null || (!discovery && reply.Manifest != options.Manifest) || (discovery && reply.Manifest.ContractIdentity != options.Manifest.ContractIdentity) || reply.Limits is null
                 || reply.Capabilities != options.RequiredCapabilities
                 || reply.Limits != options.Limits.Intersect(reply.Limits))
                 throw new RemoteStoreException(RemoteErrorCode.IncompatibleManifest, "The host did not accept the requested compatibility and resource limits.");
             reply.Limits.Validate();
-            return new TcpEncodedEnvelopeStore(tcp, stream, options, reply.Limits, reply.Capabilities) { RemoteManifest = reply.Manifest };
+            return new TcpEncodedEnvelopeStore(tcp, stream, options, reply.Limits, reply.Capabilities) { RemoteManifest = reply.Manifest, ScopeIdentity = reply.ScopeIdentity };
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {

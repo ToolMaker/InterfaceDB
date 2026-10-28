@@ -4,14 +4,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB.Transport</PackageId>
-    <Version>1.0.0-preview.12</Version>
+    <Version>1.0.0-preview.13</Version>
     <Authors>ToolMaker</Authors>
     <Description>TLS TCP host and typed remote repository for InterfaceDB with configurable envelope serialization.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 12 establishes the reviewed storage and committed-cache baseline: corrected query/index/key behavior, compaction-safe scans, isolated committed cache reads and serializer-aware context work. Keep all InterfaceDB packages aligned. Read the compatibility and performance trade-offs at https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview12-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 13 adds DI-based user, tenant and group access policies, interface ownership validation and bounded partition indexing. Breaking TCP wire version 3 and cache identities require matching client/server updates. Storage durability and committed-read semantics are unchanged. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview13-release-notes.md</PackageReleaseNotes>
     <RootNamespace>Idb.Transport</RootNamespace>
   </PropertyGroup>
   <ItemGroup>

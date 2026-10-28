@@ -5,7 +5,7 @@ user's access token through `IDB_USER_ACCESS_TOKEN`. The application's identity 
 
 1. Build this project and `../InterfaceDB.TcpStore.Host` from this public source checkout.
 2. Copy the sample JSON files to a new deployment directory. Configure a valid server certificate,
-   Keycloak issuer/JWKS, database audience and scope. Keep `isolateBySubject: true` and the exact
+   Keycloak issuer/JWKS, database audience and scope. Keep `dataAccessPolicy: "subject"` and the exact
    `ExampleProfileConfig.Manifest`. Use a new data volume/directory and unused port.
 3. Supply the PFX password through the host's configured environment variable and the access token
    through the client's variable. Never put credentials in committed JSON or process arguments.

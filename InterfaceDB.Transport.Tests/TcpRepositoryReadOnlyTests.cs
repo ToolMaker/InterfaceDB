@@ -7,7 +7,7 @@ public sealed partial class TcpRepositoryTests {
     public async Task ReadOnlyCapabilitiesArePreservedAndMutationsAreDenied() {
         await using var store=await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
         bool readOnly=false;
-        const EncodedStoreCapabilities read=EncodedStoreCapabilities.Read|EncodedStoreCapabilities.GetMany|EncodedStoreCapabilities.Enumerate|EncodedStoreCapabilities.DurableCommits|EncodedStoreCapabilities.SubjectIsolation;
+        const EncodedStoreCapabilities read=EncodedStoreCapabilities.Read|EncodedStoreCapabilities.GetMany|EncodedStoreCapabilities.Enumerate|EncodedStoreCapabilities.DurableCommits;
         await using var host=await TcpStoreHost.StartAsync(HostOptions(store) with {AuthorizeIdentity=(_,alias,caps)=>alias=="people" && (!readOnly || (caps & ~read)==0)});
         await using(var writer=Client(host,"reader")) await writer.SaveAsync(new RemotePerson {Name="private",Score=3});
         readOnly=true;

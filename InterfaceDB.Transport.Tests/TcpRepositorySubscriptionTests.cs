@@ -36,7 +36,7 @@ public sealed partial class TcpRepositoryTests
         var options = Options(host, Token("parent-a")).Connection with
         {
             RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
-                | EncodedStoreCapabilities.DurableCommits | EncodedStoreCapabilities.SubjectIsolation | EncodedStoreCapabilities.Write
+                | EncodedStoreCapabilities.DurableCommits | EncodedStoreCapabilities.Write
         };
         await using var connection = await TcpEncodedEnvelopeStore.ConnectCoreAsync(options, true, default);
         await Assert.ThrowsAsync<IOException>(async () => await connection.PutAsync("forbidden", [1]));
@@ -162,7 +162,7 @@ public sealed partial class TcpRepositoryTests
         {
             AuthorizeIdentity = (identity, alias, capabilities) => options.AuthorizeIdentity!(identity, alias, capabilities)
                 && (capabilities != (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
-                    | EncodedStoreCapabilities.DurableCommits | EncodedStoreCapabilities.SubjectIsolation) || Volatile.Read(ref allowed) == 1)
+                    | EncodedStoreCapabilities.DurableCommits) || Volatile.Read(ref allowed) == 1)
         });
         await using var client = Client(host, "parent-a");
         int hints = 0;

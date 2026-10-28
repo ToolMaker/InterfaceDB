@@ -8,6 +8,24 @@ The setup uses a persistent named volume for database files and mounts the serve
 configuration read-only. The image contains only the Linux publish output. The client private key,
 certificate authority private key and PFX password are never added to the image.
 
+The host accepts an optional server-side `partitionIndex` object:
+
+```json
+"partitionIndex": {
+  "mode": "Lazy",
+  "maximumKeys": 10000,
+  "maximumPartitions": 16,
+  "maximumEstimatedBytes": 8388608
+}
+```
+
+These are the defaults. `Disabled` retains scanning; `Eager` warms a bounded index at open.
+The budget is per store and applies to estimated retained key metadata, not total process memory.
+This setting does not change authentication, policy or durability. The stock JSON host supports
+`dataAccessPolicy` values `none`, `subject` and `claim`. Interface-field ownership validation
+uses the typed `AddContractDataAccessPolicy<T>` composition API and a server-registered serializer;
+see [data access policies](../../../documentation/data-access-policies.md).
+
 ## Prepare and start
 
 Use Docker Desktop with Linux containers and the .NET 10 SDK. Run these commands from the public
@@ -45,7 +63,7 @@ belong to the deployment's secret-management process.
 
 The service logs `host listening` after it opens the persistent store and binds the port. This is
 startup evidence; a successful authenticated storage write/read establishes the application path.
-The host permits one storage session per non-isolated alias or per validated issuer/subject in a subject-isolated JWT store. Dispose test clients before reconnecting to the same lease. Storage sessions have a fixed admission lifetime (five minutes by default); Ping does not extend it. Passive push listeners hold no storage lease.
+The host permits one storage session per non-isolated alias or per resolved data scope in a policy-partitioned store. Dispose test clients before reconnecting to the same lease. Storage sessions have a fixed admission lifetime (five minutes by default); Ping does not extend it. Passive push listeners hold no storage lease.
 See the [transport guide](../../../documentation/tcp-transport.md) for client code,
 unknown-commit recovery and the complete operating limits.
 

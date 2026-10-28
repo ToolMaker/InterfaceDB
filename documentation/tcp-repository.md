@@ -1,8 +1,7 @@
 # Online TCP repository
 
 The optional MIT `InterfaceDB.Transport` package supplies `TcpRepository<TContract>` using
-the existing `IRepository<TContract>` API. Install version `1.0.0-preview.11` and keep all
-InterfaceDB package versions aligned. See the [release status and upgrade notes](preview11-release-notes.md).
+the existing `IRepository<TContract>` API. Keep all InterfaceDB package versions aligned. The access-policy API below is introduced in preview.13; use matching client/server versions. See [breaking changes and DI registration](data-access-policies.md).
 
 ```text
 Application -> TcpRepository<T> -> TLS TCP -> one server database -> persistent server files
@@ -18,65 +17,37 @@ migration code with the server.
 ## Supported behavior
 
 Each storage API call opens TLS TCP with the signed-in user's JWT. The server validates signature, exact
-issuer, audience, expiry and configured permissions. By default, the typed repository requires a
-partition derived from validated **issuer plus subject**. Client keys, cursors and claimed parent
-IDs cannot select another partition. The explicit shared-dataset option below uses one alias-wide dataset.
+issuer, audience, expiry and configured permissions. The server's access policy resolves a private-user,
+group/account or unrestricted dataset. Client selectors require authorization; the server returns an
+opaque scope identity which the client binds to its repository and cache.
 
-Under the host's exclusive subject lease, the client reads a bounded fresh snapshot, rebuilds indexes,
+Under the host's exclusive data-scope lease, the client reads a bounded fresh snapshot, rebuilds indexes,
 performs the operation and closes the session. Enumerations buffer results before yielding to
 application code. A second client sees completed changes on its next call.
 
-## Shared datasets (source update after preview.11)
+## Data access policies
 
-Authenticated members can access one shared server dataset using an explicit registration:
+Use `TcpStoreRegistration.AccessPolicy` to inject an `IDataAccessPolicy` for each registration.
+`SubjectDataAccessPolicy` isolates users; `ClaimDataAccessPolicy("groups")` shares a partition among
+members of one authorized group; `UnrestrictedDataAccessPolicy.Instance` shares the whole authorized
+alias. A null policy inherits `DefaultAccessPolicy`; if neither is supplied, there is no data partition.
+JWT/certificate authentication and alias admission continue to apply in every case.
 
-```csharp
-var registration = new TcpStoreRegistration("messages-family-123", manifest, store)
-{
-    AccessMode = TcpStoreAccessMode.Shared
-};
-var hostOptions = configuredJwtHostOptions with
-{
-    Stores = [registration],
-    IsolateBySubject = true, // Default for other registrations without an explicit mode.
-    AuthorizeIdentity = (identity, alias, capabilities) =>
-        serverMembershipPolicy.CanAccess(identity, alias, capabilities)
-};
-var sharedOptions = tcpOptions with
-{
-    Connection = tcpOptions.Connection with
-    {
-        StoreAlias = registration.Alias,
-        RequiredCapabilities = EncodedStoreCapabilities.All | EncodedStoreCapabilities.SharedDataset
-    }
-};
-await using var shared = new TcpRepository<IMyContract>(sharedOptions);
-```
+For tenants, use `ClaimDataAccessPolicy("tenant_id")`. When a stored `TenantId` must also match
+the token on saves, declare `[StorageAccessClaim("tenant_id")]` on that interface property and
+register `ContractDataAccessPolicy<T>` on the host using the configured serializer. This adds
+server write validation and automatic exact indexing, while reads use the approved partition.
+See [tenant ownership and DI](data-access-policies.md#declaring-ownership-on-the-stored-interface).
 
-The membership policy is an application-supplied server service using the validated JWT identity.
-Check membership in the requested alias and allowed operations; a valid token alone is insufficient.
-Use separate aliases and store instances for datasets with different memberships. Explicit access
-modes require JWT authentication. `SharedDataset` and `SubjectIsolation` are mutually exclusive;
-the host reports only its actual configured scope. A typed client without the explicit shared flag
-still demands subject isolation and fails against a shared alias. Legacy unscoped registrations
-do not implicitly advertise shared typed access. Discovery also checks an explicitly requested scope.
+Clients can set `RequestedScope` to select a group, while the server verifies membership. They no
+longer request subject/shared capability flags. See [the complete policy guide](data-access-policies.md)
+for DI examples, permissions, scope approval, offline composition and breaking-change migration.
 
-Shared storage uses one exclusive operation lease across all members of its alias. Every request
-is authorized again; batch permissions include its actual writes/deletes. Subscriptions use no
-write lease, send changes across authorized members of that alias, and recheck authorization before
-each delivery. Revoked listeners are disconnected before sending another hint. Dispose subscriptions
-on logout; recreate them after disconnection and refresh after registration. There is no data polling.
-
-Authorization is at dataset/operation level, not per record or per message author. A typed repository
-requires the complete operation set, so authorized members can change/delete shared records. Enforce
-stronger business rules through a trusted application service when required. Previously downloaded
-data cannot be remotely erased by revoking server access.
-
-Each repository instance and its cache identity remain bound to one account; shared and isolated
-identities differ. Do not reuse an existing physical dataset or local cache across a scope change:
-provide a new alias/store or explicitly migrate its contents and pending writes. Old clients do not
-support this new capability. Rebuild client and host from matching source; it is absent from the
-published preview.11 package. Local cache/offline synchronization remains a separate commercial feature.
+Disposable subscriptions are bound to the same resolved scope as storage operations. Policy and
+alias authorization are rechecked before notification delivery. The client owns reconnection and
+registration; there is no data polling. Different accounts retain separate local cache identities,
+even when their server data is shared. Policy changes never automatically reassign cache contents
+or queued writes to a different scope.
 
 Returned entities carry revisions. A later save reloads current state under a new lease and checks
 that exact revision. Two clients updating the same revision produce one success and one
@@ -92,7 +63,7 @@ the historical outcome. There is no automatic mutation replay or durable dedupli
 
 ## Application integration
 
-Reference `InterfaceDB.Transport/InterfaceDB.Transport.csproj` while the new package is unreleased. Preserve interface contracts, MessagePack implementations, indexes and normal
+Reference `InterfaceDB.Transport` version `1.0.0-preview.13`. Preserve interface contracts, MessagePack implementations, indexes and normal
 `IRepository<T>` calls. Supply an explicit runtime type allowlist.
 
 Adapt the application's existing signed-in user token store:
@@ -192,8 +163,8 @@ implementation is included in this change.
 ## Host and Keycloak
 
 Use the [typed sample](../samples/InterfaceDB.TcpRepository.Client/README.md) on a **new alias and
-volume/directory**. Both sides explicitly select `JwtBearer`. Set host `isolateBySubject: true`.
-The typed client requires `SubjectIsolation` and refuses an older/nonisolating host.
+volume/directory**. Both sides explicitly select `JwtBearer`. Set host `dataAccessPolicy: "subject"` for private user data, or select a claim policy for groups.
+The typed client binds to the scope approved by that server; client and host must use frame version 3.
 
 Issue user access tokens with the exact realm issuer, stable nonempty `sub`, a dedicated database
 audience (for example `interfacedb-storage`), approved scope (for example `interfacedb.storage`),
@@ -220,7 +191,7 @@ Revision-conflict guarantees apply to cooperating repository clients.
 ## Limits and deferred work
 
 - One host owns a physical volume. Non-isolated stores have one active session per alias;
-  subject-isolated JWT stores have one active session per validated issuer/subject. Every storage
+  policy-partitioned stores have one active session per resolved data scope. Every storage
   session stops admitting operations after five minutes by default; in-flight work is cancelled and
   must settle before its lease is released.
   Do not run independent writable instances over the same volume behind a load balancer.
@@ -228,12 +199,12 @@ Revision-conflict guarantees apply to cooperating repository clients.
   envelopes and 64 MiB encoded bytes including clock metadata. Materialized objects/indexes and
   transport buffers need additional memory. No throughput/mobile-device qualification is claimed.
 - Writes exceeding configured snapshot limits fail before dispatch. The host also rejects new keys
-  before the SegmentCore total capacity (100,000 by default) or authenticated-subject capacity
+  before the SegmentCore total capacity (100,000 by default) or authorized-partition capacity
   (10,000 by default) is crossed. Existing keys remain readable and overwrites/deletes remain
-  available at capacity. Keep client snapshot limits consistent with the server subject capacity.
+  available at capacity. Keep client snapshot limits consistent with the server partition capacity.
 - Default transport batches contain 64 items including one clock record: up to 63 entities.
   Negotiated smaller limits and frame/payload ceilings apply; batches are not silently split.
-  Subject prefixes consume 71 physical UTF-8 key bytes; the host advertises the remaining budget.
+  Policy partition prefixes consume 71 physical UTF-8 key bytes; the host advertises the remaining budget.
 - Only rejected `Busy` admission is retried. Predicates run while the lease is held: keep them fast
   and avoid nested calls to the same repository. `SubscribeChanges` supplies a separate disposable push listener.
 - Exact manifests/versions are required. Use `EnvelopeFormat = "IDB6-TCP-Repository-v1"` and align

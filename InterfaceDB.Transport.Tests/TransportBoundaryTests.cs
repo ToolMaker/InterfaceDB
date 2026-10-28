@@ -125,7 +125,7 @@ public sealed class TransportBoundaryTests
         var hello = await MessagePackFrameCodec.ReadAsync(stream, Limits, cancellationToken);
         await MessagePackFrameCodec.WriteAsync(stream, new()
         {
-            Kind = WireMessageKind.HelloResult, CorrelationId = 1, Manifest = hello!.Manifest,
+            Kind = WireMessageKind.HelloResult, ScopeIdentity = DataAccessScope.Unrestricted.Identity, CorrelationId = 1, Manifest = hello!.Manifest,
             Limits = Limits, Capabilities = hello.Capabilities
         }, Limits, cancellationToken);
         var request = await MessagePackFrameCodec.ReadAsync(stream, Limits, cancellationToken);

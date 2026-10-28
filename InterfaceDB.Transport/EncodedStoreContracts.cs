@@ -5,9 +5,6 @@ public enum EncodedStoreCapabilities
 {
     None = 0, Read = 1, Write = 2, Delete = 4, GetMany = 8, AtomicBatch = 16,
     Enumerate = 32, Checkpoint = 64, DurableCommits = 128,
-    SubjectIsolation = 256,
-    /// <summary>One dataset shared by identities authorized by the server for its alias. Mutually exclusive with SubjectIsolation.</summary>
-    SharedDataset = 512,
     All = Read | Write | Delete | GetMany | AtomicBatch | Enumerate | Checkpoint | DurableCommits
 }
 
@@ -67,6 +64,25 @@ public interface IEncodedEnvelopeStore : IAsyncDisposable
 {
     EncodedStoreCapabilities Capabilities { get; }
     ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional application endpoint that needs the authenticated caller when producing a response,
+/// for example a signed client setup. The host supplies this context; it is never decoded from payloads.
+/// Normal storage providers do not need to implement this interface.
+/// </summary>
+public interface IAccessContextEncodedStore : IEncodedEnvelopeStore
+{
+    ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request, DataAccessContext context,
+        CancellationToken cancellationToken = default);
+}
+
+internal sealed class AccessContextEncodedStore(IAccessContextEncodedStore inner, DataAccessContext context) : IEncodedEnvelopeStore
+{
+    public EncodedStoreCapabilities Capabilities => inner.Capabilities;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request, CancellationToken cancellationToken = default)
+        => inner.ExecuteAsync(request, context with { RequiredCapabilities = request.RequiredCapability }, cancellationToken);
 }
 
 public static class EncodedEnvelopeStoreExtensions

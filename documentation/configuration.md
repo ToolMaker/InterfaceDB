@@ -20,6 +20,26 @@ Every repository receives an `IDbContractConfigDto<TContract>`:
 
 Search indexes are declared with `[SearchIndex]` on contract types or members. There is no separate configured-index array.
 
+## Authentication and data policies — preview.13 source
+
+Local embedded repositories still require no token. For remote access, configure transport
+authentication separately from store/operation permission and tenant/group selection.
+`IDataAccessPolicy` belongs to each server registration, not the client storage configuration.
+The same interface may have several keyed registrations with different policies.
+
+Use `[StorageAccessClaim("tenant_id")]` on a readable string ownership property and
+`AddContractDataAccessPolicy` at the server composition root to enforce it. The attribute adds
+an exact query index; without the registered server policy it does not authorize anything.
+Register the configured `IObjectSerializer<T>` under the selected DI key. A client selector
+requests an existing membership; it cannot configure or override the server's policy.
+
+`AddPartitionKeyIndex` supplies a per-store factory with disabled/lazy/eager modes and bounded
+key, partition and estimated-byte budgets. In the stock host, the `partitionIndex` JSON object
+sets those budgets; typed ownership validation uses the typed DI API. See the complete
+[policy configuration, examples and upgrade guide](data-access-policies.md) and
+[JWT configuration](jwt-authentication.md). These changes require matching preview.13 client/server
+versions and are not part of preview.12.
+
 ## Stored Runtime Types
 
 Every repository uses a frozen `StoredRuntimeTypeAllowlist<TContract>` before constructing a

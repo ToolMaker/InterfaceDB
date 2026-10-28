@@ -65,9 +65,6 @@ public enum RemoteErrorCode
 
 public enum TcpStoreAuthenticationMode { MutualTls, JwtBearer, MutualTlsAndJwtBearer }
 
-/// <summary>Server-owned data scope for one authenticated store alias.</summary>
-public enum TcpStoreAccessMode { SubjectIsolated, Shared }
-
 public class RemoteStoreException : IOException
 {
     public RemoteStoreException(RemoteErrorCode code, string message, Exception? innerException = null)
@@ -82,12 +79,19 @@ public sealed class RemoteCommitOutcomeUnknownException : RemoteStoreException
         : base(RemoteErrorCode.OutcomeUnknown, "The remote mutation may have committed; its acknowledgement was not received. Reconcile before retrying.", innerException) { }
 }
 
+/// <summary>Public compatibility and opaque data boundary approved by the server.</summary>
+public sealed record TcpStoreDescriptor(CompatibilityManifest Manifest, string ScopeIdentity);
+
 public sealed record TcpStoreClientOptions
 {
     public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     public required string Host { get; init; }
     public required int Port { get; init; }
     public required string StoreAlias { get; init; }
+    /// <summary>Untrusted group/account selector, authorized by the server policy.</summary>
+    public string? RequestedScope { get; init; }
+    /// <summary>Optional opaque scope identity from a previous server approval; mismatch rejects the connection.</summary>
+    public string? ExpectedScopeIdentity { get; init; }
     public required CompatibilityManifest Manifest { get; init; }
     public X509Certificate2? ClientCertificate { get; init; }
     public TcpStoreAuthenticationMode AuthenticationMode { get; init; } = TcpStoreAuthenticationMode.MutualTls;
@@ -106,8 +110,8 @@ public sealed record TcpStoreClientOptions
 /// <summary>The host borrows the store; stop the host before disposing the store.</summary>
 public sealed record TcpStoreRegistration(string Alias, CompatibilityManifest Manifest, IEncodedEnvelopeStore Store)
 {
-    /// <summary>Null inherits the host's legacy IsolateBySubject setting. Explicit modes require JWT authorization.</summary>
-    public TcpStoreAccessMode? AccessMode { get; init; }
+    /// <summary>Server-owned policy; null inherits DefaultAccessPolicy. Use UnrestrictedDataAccessPolicy to explicitly opt out.</summary>
+    public IDataAccessPolicy? AccessPolicy { get; init; }
 }
 
 public sealed record TcpStoreHostOptions
@@ -122,8 +126,8 @@ public sealed record TcpStoreHostOptions
     public IAccessTokenValidator? TokenValidator { get; init; }
     /// <summary>Required in JWT modes: authorize the validated identity for this alias and requested capabilities.</summary>
     public Func<AuthenticatedIdentity, string, EncodedStoreCapabilities, bool>? AuthorizeIdentity { get; init; }
-    /// <summary>Default for registrations without AccessMode: partition keys by validated JWT issuer and subject.</summary>
-    public bool IsolateBySubject { get; init; }
+    /// <summary>Optional default data policy. Null leaves authenticated data unpartitioned; authentication still applies.</summary>
+    public IDataAccessPolicy? DefaultAccessPolicy { get; init; }
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
     /// <summary>Optional explicit client trust policy. Null uses platform chain validation.</summary>
     public RemoteCertificateValidationCallback? ClientCertificateValidation { get; init; }
@@ -180,13 +184,11 @@ internal static class TransportValidation
 
     internal static void Capabilities(EncodedStoreCapabilities capabilities)
     {
-        if ((capabilities & ~(EncodedStoreCapabilities.All | ScopeCapabilities)) != 0
-            || (capabilities & ScopeCapabilities) == ScopeCapabilities
+        if ((capabilities & ~EncodedStoreCapabilities.All) != 0
             || !capabilities.HasFlag(EncodedStoreCapabilities.DurableCommits))
             throw new ArgumentException("Known capabilities and durable commits are required.");
     }
 
-    internal const EncodedStoreCapabilities ScopeCapabilities = EncodedStoreCapabilities.SubjectIsolation | EncodedStoreCapabilities.SharedDataset;
 
     internal static void Request(EncodedStoreRequest request, TransportLimits limits)
     {
@@ -257,5 +259,7 @@ internal sealed record WireMessage
     public int TimeoutMilliseconds { get; init; }
     public string? AccessToken { get; init; }
     public TcpStoreAuthenticationMode AuthenticationMode { get; init; }
+    public string? RequestedScope { get; init; }
+    public string? ScopeIdentity { get; init; }
     public override string ToString() => $"WireMessage {{ Kind = {Kind}, CorrelationId = {CorrelationId} }}";
 }

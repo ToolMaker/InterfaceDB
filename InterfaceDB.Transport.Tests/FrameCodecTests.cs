@@ -188,7 +188,7 @@ public sealed class FrameCodecTests
     {
         var hugeString = MessageBody((ref MessagePackWriter writer) =>
         {
-            writer.WriteArrayHeader(12); writer.Write(1); writer.Write(0);
+            writer.WriteArrayHeader(14); writer.Write(1); writer.Write(0);
             writer.WriteRaw(new byte[] { 0xdb, 0x7f, 0xff, 0xff, 0xff });
         });
         await Reject(hugeString, RemoteErrorCode.ProtocolError);
@@ -385,19 +385,19 @@ public sealed class FrameCodecTests
 
     private static void Prefix(ref MessagePackWriter writer)
     {
-        writer.WriteArrayHeader(12); writer.Write((int)WireMessageKind.Request); writer.Write(1L);
+        writer.WriteArrayHeader(14); writer.Write((int)WireMessageKind.Request); writer.Write(1L);
         writer.WriteNil(); writer.WriteNil(); writer.WriteNil(); writer.Write(0);
     }
 
     private static void Suffix(ref MessagePackWriter writer)
     {
-        writer.WriteNil(); writer.Write(0); writer.Write(30_000); writer.WriteNil(); writer.Write(0);
+        writer.WriteNil(); writer.Write(0); writer.Write(30_000); writer.WriteNil(); writer.Write(0); writer.WriteNil(); writer.WriteNil();
     }
 
     private static byte[] Frame(byte[] body)
     {
         var frame = new byte[44 + body.Length];
-        "IDBT"u8.CopyTo(frame); frame[4] = 2;
+        "IDBT"u8.CopyTo(frame); frame[4] = 3;
         BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(8, 4), (uint)body.Length);
         SHA256.HashData(body, frame.AsSpan(12, 32)); body.CopyTo(frame, 44);
         return frame;

@@ -6,7 +6,7 @@
   "serverCertificatePath": "./server.pfx",
   "serverCertificatePasswordEnvironmentVariable": "IDB_SERVER_PFX_PASSWORD",
   "authenticationMode": "JwtBearer",
-  "isolateBySubject": true,
+  "dataAccessPolicy": "subject",
   "requiredTokenScopes": ["interfacedb.storage"],
   "jwtValidation": {
     "authorities": [{

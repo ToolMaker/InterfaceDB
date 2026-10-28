@@ -11,7 +11,7 @@ namespace Idb.Transport.Repositories;
 public sealed record TcpRepositoryOptions<TContract> where TContract : class, IStoredContract<TContract>
 {
     public const string EnvelopeFormat = "IDB6-TCP-Repository-v1";
-    /// <summary>Subject isolated by default. Explicitly include SharedDataset in RequiredCapabilities for a server-authorized shared alias.</summary>
+    /// <summary>The server access policy determines data scope. RequestedScope selects an authorized group/account when required.</summary>
     public required TcpStoreClientOptions Connection { get; init; }
     public required IDbContractConfigDto<TContract> Contract { get; init; }
     public required StoredRuntimeTypeAllowlist<TContract> RuntimeTypes { get; init; }
@@ -23,14 +23,15 @@ public sealed record TcpRepositoryOptions<TContract> where TContract : class, IS
     /// <summary>Explicit format identity for the selected serializer, checked against the server manifest.</summary>
     public string SerializerEnvelopeFormat { get; init; } = EnvelopeFormat;
     public IEnvelopeStorageIdentityFactory<TContract>? StorageIdentityFactory { get; init; }
+    /// <summary>Optional account-scoped metadata persistence for the last server-approved data boundary.
+    /// Enables offline cache startup after a process restart. This is not an authorization grant.
+    /// Reconnect always requires the server to approve this same boundary.</summary>
+    public Idb.Libraries.Repositories.IRepositoryCursorStore? ScopeApprovalStore { get; init; }
     public StoragePolicy StoragePolicy { get; init; } = StoragePolicy.Default;
     public int MaximumSnapshotRecords { get; init; } = 10_000;
     public long MaximumSnapshotBytes { get; init; } = 64 * 1024 * 1024;
     public TimeSpan AdmissionTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan BusyRetryDelay { get; init; } = TimeSpan.FromMilliseconds(50);
-
-    internal EncodedStoreCapabilities ScopeCapability => Connection.RequiredCapabilities.HasFlag(EncodedStoreCapabilities.SharedDataset)
-        ? EncodedStoreCapabilities.SharedDataset : EncodedStoreCapabilities.SubjectIsolation;
 
     internal void Validate()
     {

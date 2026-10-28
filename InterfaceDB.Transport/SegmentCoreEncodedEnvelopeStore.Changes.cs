@@ -59,6 +59,7 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore
         }
         await transaction.SaveAsync(FeedPrefix + partition, encoded, token).ConfigureAwait(false);
         await transaction.CommitAsync(token).ConfigureAwait(false);
+        _partitionIndex.ApplyCommitted(mutations);
         return new() { AffectedCount = affected };
     }
 

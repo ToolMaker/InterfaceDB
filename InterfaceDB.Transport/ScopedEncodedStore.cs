@@ -1,35 +1,21 @@
-using System.Security.Cryptography;
-using System.Text;
-using Idb.Authentication;
 
 namespace Idb.Transport;
 
 /// <summary>
-/// Borrowed view: the server derives a partition solely from validated issuer/subject claims.
+/// Borrowed view: the server derives a partition solely from the server-approved access policy.
 /// No client key, cursor, alias, payload or claimed parent identifier can escape that partition.
 /// </summary>
-internal sealed class SubjectScopedEncodedStore : IEncodedEnvelopeStore
+internal sealed class ScopedEncodedStore : IEncodedEnvelopeStore
 {
     internal const int PrefixBytes = 71;
     private readonly IEncodedEnvelopeStore _inner;
     private readonly string _prefix;
 
-    internal SubjectScopedEncodedStore(IEncodedEnvelopeStore inner, AuthenticatedIdentity identity)
+    internal ScopedEncodedStore(IEncodedEnvelopeStore inner, DataAccessScope scope)
     {
         _inner = inner;
-        _prefix = GetPrefix(identity);
-    }
-
-    internal static string GetPrefix(AuthenticatedIdentity identity)
-    {
-        if (!HasSubject(identity)) throw new ArgumentException("A unique validated issuer and subject are required.");
-        using var bytes = new MemoryStream();
-        using (var writer = new BinaryWriter(bytes, Encoding.UTF8, leaveOpen: true))
-        {
-            writer.Write(identity.Principal.FindFirst("iss")!.Value);
-            writer.Write(identity.Principal.FindFirst("sub")!.Value);
-        }
-        return "idbp1." + Convert.ToHexString(SHA256.HashData(bytes.ToArray())) + ".";
+        _prefix = scope.Partition;
+        if (_prefix.Length == 0) throw new ArgumentException("A partitioned scope is required.");
     }
 
     internal static bool TryGetPrefix(string physicalKey, out string prefix)
@@ -46,18 +32,7 @@ internal sealed class SubjectScopedEncodedStore : IEncodedEnvelopeStore
         return false;
     }
 
-    internal static bool HasSubject(AuthenticatedIdentity identity) =>
-        identity.Principal.Identity?.IsAuthenticated == true
-        && ValidClaim(identity, "iss") && ValidClaim(identity, "sub");
-
-    private static bool ValidClaim(AuthenticatedIdentity identity, string type)
-    {
-        var claims = identity.Principal.FindAll(type).ToArray();
-        return claims.Length == 1 && !string.IsNullOrWhiteSpace(claims[0].Value)
-            && Encoding.UTF8.GetByteCount(claims[0].Value) <= 4096;
-    }
-
-    public EncodedStoreCapabilities Capabilities => _inner.Capabilities | EncodedStoreCapabilities.SubjectIsolation;
+    public EncodedStoreCapabilities Capabilities => _inner.Capabilities;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private string Scope(string key) => _prefix + key;

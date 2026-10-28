@@ -31,13 +31,15 @@ internal static class SearchIndexDiscovery
         var scopeIndexed = ResolveScopeIndexed(type, inheritedIndexed);
         foreach (var member in GetPublicReadableMembers(type))
         {
+            var accessCriterion = member.GetCustomAttribute<StorageAccessClaimAttribute>();
             if (member.GetCustomAttribute<NotSearchIndexedAttribute>() is not null)
             {
+                if (accessCriterion is not null) throw new InvalidOperationException("An access criterion cannot disable its index.");
                 continue;
             }
 
             var memberIndex = member.GetCustomAttribute<SearchIndexAttribute>();
-            var memberIndexed = memberIndex is not null || scopeIndexed;
+            var memberIndexed = memberIndex is not null || scopeIndexed || accessCriterion is not null;
             if (!memberIndexed)
             {
                 continue;
@@ -47,7 +49,7 @@ internal static class SearchIndexDiscovery
             var path = string.IsNullOrWhiteSpace(prefix) ? member.Name : prefix + "." + member.Name;
             if (member.GetCustomAttribute<EncryptedStorageFieldAttribute>() is not null)
             {
-                if (memberIndex is not null)
+                if (memberIndex is not null || accessCriterion is not null)
                 {
                     throw new InvalidOperationException(
                         $"Encrypted storage field '{path}' cannot be search indexed because persistent indexes store searchable values in plaintext.");
@@ -63,7 +65,10 @@ internal static class SearchIndexDiscovery
 
             if (IsIndexableScalar(memberType))
             {
-                var mode = NormalizeMode(memberType, memberIndex?.Mode ?? SearchIndexMode.Default);
+                if (accessCriterion is not null && memberType != typeof(string))
+                    throw new InvalidOperationException("Access criteria must be string properties.");
+                var mode = NormalizeMode(memberType, memberIndex?.Mode ?? (accessCriterion is null ? SearchIndexMode.Default : SearchIndexMode.Exact));
+                if (accessCriterion is not null) mode |= SearchIndexMode.Exact;
                 if (mode is not SearchIndexMode.Default)
                 {
                     var valueType = Nullable.GetUnderlyingType(memberType) ?? memberType;
@@ -97,7 +102,16 @@ internal static class SearchIndexDiscovery
     private static IEnumerable<MemberInfo> GetPublicReadableMembers(Type type)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public;
-        foreach (var property in type.GetProperties(flags))
+        var properties = type.GetProperties(flags).AsEnumerable();
+        if (type.IsInterface)
+        {
+            var declarations = properties.Concat(type.GetInterfaces().SelectMany(parent => parent.GetProperties(flags))).Distinct().ToArray();
+            if (declarations.GroupBy(p => p.Name, StringComparer.Ordinal).Any(group => group.Count() > 1
+                && group.Any(p => p.GetCustomAttribute<StorageAccessClaimAttribute>() is not null)))
+                throw new InvalidOperationException("An access criterion cannot be shadowed by another interface property.");
+            properties = properties.Concat(declarations.Where(property => property.GetCustomAttribute<StorageAccessClaimAttribute>() is not null));
+        }
+        foreach (var property in properties.DistinctBy(property => (property.Name, property.PropertyType)))
         {
             if (property.GetMethod is not null && property.GetIndexParameters().Length == 0)
             {

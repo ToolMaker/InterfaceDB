@@ -1,0 +1,1120 @@
+{
+  "Complete": true,
+  "CapturedAtUtc": "2026-10-28T18:35:42.411057+00:00",
+  "Environment": {
+    "OS": "Microsoft Windows 10.0.19045",
+    "Runtime": ".NET 10.0.12",
+    "ProcessorCount": 32,
+    "TieredCompilation": "0",
+    "CoreMvid": "7a58f311-7326-497b-b254-66c4716f2582",
+    "TransportMvid": "d26f9d3f-e8e1-4ec4-bafc-6881274c85e9"
+  },
+  "Transport": "Loopback TLS \u002B RS256 JWT; production encoded-envelope operations",
+  "Durability": "Existing WriteThrough transport default",
+  "Reports": [
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 0,
+      "Mode": "Disabled",
+      "OpenMs": 90.5941,
+      "ConnectTlsJwtMs": 8.7437,
+      "ColdPageMs": 4.4749,
+      "Get": {
+        "MedianMs": 0.0993,
+        "P95Ms": 0.1713,
+        "AllocatedBytesPerOperation": 6770.64
+      },
+      "Page128": {
+        "MedianMs": 3.0851,
+        "P95Ms": 3.3811,
+        "AllocatedBytesPerOperation": 551783.4666666667
+      },
+      "FullTenant": {
+        "MedianMs": 245.4221,
+        "P95Ms": 248.0604,
+        "AllocatedBytesPerOperation": 43445523.2
+      },
+      "DurableUpdate": {
+        "MedianMs": 4.3035,
+        "P95Ms": 5.5927,
+        "AllocatedBytesPerOperation": 1588656.875
+      },
+      "DurableBatch": {
+        "MedianMs": 4.766,
+        "P95Ms": 6.3755,
+        "AllocatedBytesPerOperation": 2306088
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 0,
+      "Mode": "Lazy",
+      "OpenMs": 72.3215,
+      "ConnectTlsJwtMs": 7.1296,
+      "ColdPageMs": 4.613,
+      "Get": {
+        "MedianMs": 0.1015,
+        "P95Ms": 0.1735,
+        "AllocatedBytesPerOperation": 7125.12
+      },
+      "Page128": {
+        "MedianMs": 3.1921,
+        "P95Ms": 3.5508,
+        "AllocatedBytesPerOperation": 556402.6666666666
+      },
+      "FullTenant": {
+        "MedianMs": 247.6435,
+        "P95Ms": 248.0066,
+        "AllocatedBytesPerOperation": 43444457.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 3.8288,
+        "P95Ms": 4.9011,
+        "AllocatedBytesPerOperation": 1592131.125
+      },
+      "DurableBatch": {
+        "MedianMs": 4.7251,
+        "P95Ms": 5.0388,
+        "AllocatedBytesPerOperation": 2296229.6
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 1,
+      "Mode": "Lazy",
+      "OpenMs": 81.2121,
+      "ConnectTlsJwtMs": 6.8776,
+      "ColdPageMs": 4.0182,
+      "Get": {
+        "MedianMs": 0.1026,
+        "P95Ms": 0.1461,
+        "AllocatedBytesPerOperation": 7114.64
+      },
+      "Page128": {
+        "MedianMs": 3.4632,
+        "P95Ms": 3.9373,
+        "AllocatedBytesPerOperation": 556407.7333333333
+      },
+      "FullTenant": {
+        "MedianMs": 262.3084,
+        "P95Ms": 264.6249,
+        "AllocatedBytesPerOperation": 43444043.2
+      },
+      "DurableUpdate": {
+        "MedianMs": 4.1156,
+        "P95Ms": 5.3253,
+        "AllocatedBytesPerOperation": 1599233.25
+      },
+      "DurableBatch": {
+        "MedianMs": 5.0999,
+        "P95Ms": 6.2965,
+        "AllocatedBytesPerOperation": 2312961.6
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 1,
+      "Mode": "Disabled",
+      "OpenMs": 98.1744,
+      "ConnectTlsJwtMs": 6.8783,
+      "ColdPageMs": 3.9703,
+      "Get": {
+        "MedianMs": 0.0979,
+        "P95Ms": 0.135,
+        "AllocatedBytesPerOperation": 7146.72
+      },
+      "Page128": {
+        "MedianMs": 3.2119,
+        "P95Ms": 3.6093,
+        "AllocatedBytesPerOperation": 565432.2666666667
+      },
+      "FullTenant": {
+        "MedianMs": 256.7748,
+        "P95Ms": 258.6713,
+        "AllocatedBytesPerOperation": 43443830.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 4.0804,
+        "P95Ms": 5.1239,
+        "AllocatedBytesPerOperation": 1603534.125
+      },
+      "DurableBatch": {
+        "MedianMs": 4.4684,
+        "P95Ms": 5.7981,
+        "AllocatedBytesPerOperation": 2244040.8
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 2,
+      "Mode": "Disabled",
+      "OpenMs": 105.9463,
+      "ConnectTlsJwtMs": 6.584,
+      "ColdPageMs": 4.0712,
+      "Get": {
+        "MedianMs": 0.1014,
+        "P95Ms": 0.1345,
+        "AllocatedBytesPerOperation": 6769.36
+      },
+      "Page128": {
+        "MedianMs": 3.0188,
+        "P95Ms": 3.2934,
+        "AllocatedBytesPerOperation": 551771.2
+      },
+      "FullTenant": {
+        "MedianMs": 245.0457,
+        "P95Ms": 257.027,
+        "AllocatedBytesPerOperation": 43444318.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 3.8163,
+        "P95Ms": 4.998,
+        "AllocatedBytesPerOperation": 1599268
+      },
+      "DurableBatch": {
+        "MedianMs": 4.6699,
+        "P95Ms": 5.2032,
+        "AllocatedBytesPerOperation": 2291867.2
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "unrestricted-10k",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": false,
+      "Round": 2,
+      "Mode": "Lazy",
+      "OpenMs": 113.5128,
+      "ConnectTlsJwtMs": 6.429,
+      "ColdPageMs": 9.4402,
+      "Get": {
+        "MedianMs": 0.0961,
+        "P95Ms": 0.1549,
+        "AllocatedBytesPerOperation": 6769.36
+      },
+      "Page128": {
+        "MedianMs": 3.0633,
+        "P95Ms": 3.296,
+        "AllocatedBytesPerOperation": 556159.2
+      },
+      "FullTenant": {
+        "MedianMs": 244.9001,
+        "P95Ms": 248.476,
+        "AllocatedBytesPerOperation": 43445102.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 3.9663,
+        "P95Ms": 5.0536,
+        "AllocatedBytesPerOperation": 1587175.125
+      },
+      "DurableBatch": {
+        "MedianMs": 4.729,
+        "P95Ms": 5.2172,
+        "AllocatedBytesPerOperation": 2257374.4
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Disabled",
+      "OpenMs": 70.6202,
+      "ConnectTlsJwtMs": 6.7595,
+      "ColdPageMs": 6.4767,
+      "Get": {
+        "MedianMs": 0.1257,
+        "P95Ms": 0.166,
+        "AllocatedBytesPerOperation": 10044.88
+      },
+      "Page128": {
+        "MedianMs": 5.159,
+        "P95Ms": 5.9597,
+        "AllocatedBytesPerOperation": 566320.2666666667
+      },
+      "FullTenant": {
+        "MedianMs": 422.6909,
+        "P95Ms": 432.6189,
+        "AllocatedBytesPerOperation": 44598262.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 4.9284,
+        "P95Ms": 6.6802,
+        "AllocatedBytesPerOperation": 2586259.875
+      },
+      "DurableBatch": {
+        "MedianMs": 5.849,
+        "P95Ms": 7.1058,
+        "AllocatedBytesPerOperation": 3558942.4
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Lazy",
+      "OpenMs": 109.1069,
+      "ConnectTlsJwtMs": 11.3624,
+      "ColdPageMs": 15.4094,
+      "Get": {
+        "MedianMs": 0.1259,
+        "P95Ms": 0.2918,
+        "AllocatedBytesPerOperation": 10062.48
+      },
+      "Page128": {
+        "MedianMs": 0.8968,
+        "P95Ms": 1.0625,
+        "AllocatedBytesPerOperation": 409714.4
+      },
+      "FullTenant": {
+        "MedianMs": 63.2461,
+        "P95Ms": 64.6148,
+        "AllocatedBytesPerOperation": 32228694.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.3468,
+        "P95Ms": 7.0207,
+        "AllocatedBytesPerOperation": 2559561.25
+      },
+      "DurableBatch": {
+        "MedianMs": 6.3095,
+        "P95Ms": 6.6335,
+        "AllocatedBytesPerOperation": 3778372.8
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 445,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 10000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 2600398
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Lazy",
+      "OpenMs": 132.598,
+      "ConnectTlsJwtMs": 8.575,
+      "ColdPageMs": 8.4176,
+      "Get": {
+        "MedianMs": 0.1232,
+        "P95Ms": 0.2346,
+        "AllocatedBytesPerOperation": 10564.72
+      },
+      "Page128": {
+        "MedianMs": 0.87,
+        "P95Ms": 1.7054,
+        "AllocatedBytesPerOperation": 415581.86666666664
+      },
+      "FullTenant": {
+        "MedianMs": 75.6752,
+        "P95Ms": 79.218,
+        "AllocatedBytesPerOperation": 32239403.2
+      },
+      "DurableUpdate": {
+        "MedianMs": 7.6097,
+        "P95Ms": 9.2527,
+        "AllocatedBytesPerOperation": 2726950.125
+      },
+      "DurableBatch": {
+        "MedianMs": 7.3848,
+        "P95Ms": 7.7253,
+        "AllocatedBytesPerOperation": 3651769.6
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 445,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 10000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 2600398
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Disabled",
+      "OpenMs": 140.0538,
+      "ConnectTlsJwtMs": 7.7617,
+      "ColdPageMs": 6.7338,
+      "Get": {
+        "MedianMs": 0.1308,
+        "P95Ms": 0.2262,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 5.6109,
+        "P95Ms": 6.4303,
+        "AllocatedBytesPerOperation": 566310.1333333333
+      },
+      "FullTenant": {
+        "MedianMs": 440.007,
+        "P95Ms": 473.1374,
+        "AllocatedBytesPerOperation": 44598092.8
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.4649,
+        "P95Ms": 6.8476,
+        "AllocatedBytesPerOperation": 2557784.875
+      },
+      "DurableBatch": {
+        "MedianMs": 6.4934,
+        "P95Ms": 6.8487,
+        "AllocatedBytesPerOperation": 3696628.8
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Disabled",
+      "OpenMs": 161.1007,
+      "ConnectTlsJwtMs": 7.0274,
+      "ColdPageMs": 6.1535,
+      "Get": {
+        "MedianMs": 0.1263,
+        "P95Ms": 0.2363,
+        "AllocatedBytesPerOperation": 10062.48
+      },
+      "Page128": {
+        "MedianMs": 5.474,
+        "P95Ms": 6.3625,
+        "AllocatedBytesPerOperation": 566290.9333333333
+      },
+      "FullTenant": {
+        "MedianMs": 427.8443,
+        "P95Ms": 431.6168,
+        "AllocatedBytesPerOperation": 44598470.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.4532,
+        "P95Ms": 6.4361,
+        "AllocatedBytesPerOperation": 2586793.75
+      },
+      "DurableBatch": {
+        "MedianMs": 6.3503,
+        "P95Ms": 7.0789,
+        "AllocatedBytesPerOperation": 3704928.8
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-one",
+      "Rows": 10000,
+      "Tenants": 1,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Lazy",
+      "OpenMs": 177.3587,
+      "ConnectTlsJwtMs": 6.9183,
+      "ColdPageMs": 7.7758,
+      "Get": {
+        "MedianMs": 0.1223,
+        "P95Ms": 0.2024,
+        "AllocatedBytesPerOperation": 10062.48
+      },
+      "Page128": {
+        "MedianMs": 0.7103,
+        "P95Ms": 1.0853,
+        "AllocatedBytesPerOperation": 409785.3333333333
+      },
+      "FullTenant": {
+        "MedianMs": 62.1318,
+        "P95Ms": 62.461,
+        "AllocatedBytesPerOperation": 32229766.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.382,
+        "P95Ms": 6.752,
+        "AllocatedBytesPerOperation": 2538619.75
+      },
+      "DurableBatch": {
+        "MedianMs": 6.0169,
+        "P95Ms": 6.5735,
+        "AllocatedBytesPerOperation": 3490218.4
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 445,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 10000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 2600398
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Disabled",
+      "OpenMs": 75.3831,
+      "ConnectTlsJwtMs": 7.2225,
+      "ColdPageMs": 2.3543,
+      "Get": {
+        "MedianMs": 0.1186,
+        "P95Ms": 0.1655,
+        "AllocatedBytesPerOperation": 10221.36
+      },
+      "Page128": {
+        "MedianMs": 1.5055,
+        "P95Ms": 2.0709,
+        "AllocatedBytesPerOperation": 444211.4666666667
+      },
+      "FullTenant": {
+        "MedianMs": 1.6587,
+        "P95Ms": 1.6676,
+        "AllocatedBytesPerOperation": 429505.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 2.7751,
+        "P95Ms": 3.5895,
+        "AllocatedBytesPerOperation": 886324.125
+      },
+      "DurableBatch": {
+        "MedianMs": 4.3636,
+        "P95Ms": 5.1493,
+        "AllocatedBytesPerOperation": 2260592
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Lazy",
+      "OpenMs": 83.3806,
+      "ConnectTlsJwtMs": 7.3028,
+      "ColdPageMs": 2.3736,
+      "Get": {
+        "MedianMs": 0.1226,
+        "P95Ms": 0.2004,
+        "AllocatedBytesPerOperation": 10058
+      },
+      "Page128": {
+        "MedianMs": 0.6302,
+        "P95Ms": 0.7193,
+        "AllocatedBytesPerOperation": 350337.6
+      },
+      "FullTenant": {
+        "MedianMs": 0.6122,
+        "P95Ms": 0.6348,
+        "AllocatedBytesPerOperation": 350291.2
+      },
+      "DurableUpdate": {
+        "MedianMs": 4.609,
+        "P95Ms": 6.3645,
+        "AllocatedBytesPerOperation": 1916335.625
+      },
+      "DurableBatch": {
+        "MedianMs": 6.2273,
+        "P95Ms": 6.8682,
+        "AllocatedBytesPerOperation": 3575305.6
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 46,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 100,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 26398
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Lazy",
+      "OpenMs": 103.0368,
+      "ConnectTlsJwtMs": 7.7936,
+      "ColdPageMs": 2.3325,
+      "Get": {
+        "MedianMs": 0.1168,
+        "P95Ms": 0.1846,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 0.6216,
+        "P95Ms": 0.8974,
+        "AllocatedBytesPerOperation": 355593.3333333333
+      },
+      "FullTenant": {
+        "MedianMs": 0.5493,
+        "P95Ms": 0.5735,
+        "AllocatedBytesPerOperation": 350291.2
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.2855,
+        "P95Ms": 6.6159,
+        "AllocatedBytesPerOperation": 2670717.875
+      },
+      "DurableBatch": {
+        "MedianMs": 5.9938,
+        "P95Ms": 6.5483,
+        "AllocatedBytesPerOperation": 3732862.4
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 46,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 100,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 26398
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Disabled",
+      "OpenMs": 112.6317,
+      "ConnectTlsJwtMs": 7.2053,
+      "ColdPageMs": 2.1978,
+      "Get": {
+        "MedianMs": 0.1164,
+        "P95Ms": 0.1801,
+        "AllocatedBytesPerOperation": 11737.92
+      },
+      "Page128": {
+        "MedianMs": 1.357,
+        "P95Ms": 1.5724,
+        "AllocatedBytesPerOperation": 442484.5333333333
+      },
+      "FullTenant": {
+        "MedianMs": 1.2385,
+        "P95Ms": 1.324,
+        "AllocatedBytesPerOperation": 429433.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.252,
+        "P95Ms": 5.9762,
+        "AllocatedBytesPerOperation": 2770769.625
+      },
+      "DurableBatch": {
+        "MedianMs": 6.3272,
+        "P95Ms": 6.8398,
+        "AllocatedBytesPerOperation": 3660215.2
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Disabled",
+      "OpenMs": 133.9507,
+      "ConnectTlsJwtMs": 6.7846,
+      "ColdPageMs": 2.2394,
+      "Get": {
+        "MedianMs": 0.1168,
+        "P95Ms": 0.1478,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 1.2172,
+        "P95Ms": 1.5581,
+        "AllocatedBytesPerOperation": 429328.26666666666
+      },
+      "FullTenant": {
+        "MedianMs": 1.2554,
+        "P95Ms": 1.2605,
+        "AllocatedBytesPerOperation": 429273.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.2476,
+        "P95Ms": 6.2519,
+        "AllocatedBytesPerOperation": 2772132.375
+      },
+      "DurableBatch": {
+        "MedianMs": 6.2946,
+        "P95Ms": 7.9002,
+        "AllocatedBytesPerOperation": 3819479.2
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-10k-100",
+      "Rows": 10000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Lazy",
+      "OpenMs": 151.2982,
+      "ConnectTlsJwtMs": 7.5222,
+      "ColdPageMs": 2.2889,
+      "Get": {
+        "MedianMs": 0.1189,
+        "P95Ms": 0.2112,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 0.6906,
+        "P95Ms": 2.05,
+        "AllocatedBytesPerOperation": 354241.86666666664
+      },
+      "FullTenant": {
+        "MedianMs": 0.6779,
+        "P95Ms": 0.6824,
+        "AllocatedBytesPerOperation": 350345.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 5.1582,
+        "P95Ms": 5.9289,
+        "AllocatedBytesPerOperation": 2734356.125
+      },
+      "DurableBatch": {
+        "MedianMs": 6.6045,
+        "P95Ms": 7.0873,
+        "AllocatedBytesPerOperation": 3596488.8
+      },
+      "BatchItems": 100,
+      "Index": {
+        "Hits": 46,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 100,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 26398
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Disabled",
+      "OpenMs": 770.9811,
+      "ConnectTlsJwtMs": 6.7657,
+      "ColdPageMs": 10.8217,
+      "Get": {
+        "MedianMs": 0.1139,
+        "P95Ms": 0.2015,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 9.8009,
+        "P95Ms": 10.2062,
+        "AllocatedBytesPerOperation": 1215048.2666666666
+      },
+      "FullTenant": {
+        "MedianMs": 81.5048,
+        "P95Ms": 82.5471,
+        "AllocatedBytesPerOperation": 9688512
+      },
+      "DurableUpdate": {
+        "MedianMs": 31.5163,
+        "P95Ms": 37.3842,
+        "AllocatedBytesPerOperation": 8037284.5
+      },
+      "DurableBatch": {
+        "MedianMs": 24.206,
+        "P95Ms": 27.7404,
+        "AllocatedBytesPerOperation": 10510652
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 0,
+      "Mode": "Lazy",
+      "OpenMs": 809.9482,
+      "ConnectTlsJwtMs": 10.5853,
+      "ColdPageMs": 13.0714,
+      "Get": {
+        "MedianMs": 0.1219,
+        "P95Ms": 0.2762,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 0.799,
+        "P95Ms": 1.0092,
+        "AllocatedBytesPerOperation": 409714.4
+      },
+      "FullTenant": {
+        "MedianMs": 7.4589,
+        "P95Ms": 7.5548,
+        "AllocatedBytesPerOperation": 3244878.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 22.6484,
+        "P95Ms": 37.2867,
+        "AllocatedBytesPerOperation": 9206496
+      },
+      "DurableBatch": {
+        "MedianMs": 23.6988,
+        "P95Ms": 25.8942,
+        "AllocatedBytesPerOperation": 10862440
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 81,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 1000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 260398
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Lazy",
+      "OpenMs": 820.2382,
+      "ConnectTlsJwtMs": 7.1975,
+      "ColdPageMs": 11.4766,
+      "Get": {
+        "MedianMs": 0.123,
+        "P95Ms": 0.2258,
+        "AllocatedBytesPerOperation": 10054.48
+      },
+      "Page128": {
+        "MedianMs": 0.7219,
+        "P95Ms": 0.8996,
+        "AllocatedBytesPerOperation": 409670.6666666667
+      },
+      "FullTenant": {
+        "MedianMs": 6.6529,
+        "P95Ms": 6.7129,
+        "AllocatedBytesPerOperation": 3245273.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 20.9185,
+        "P95Ms": 34.867,
+        "AllocatedBytesPerOperation": 9436726.875
+      },
+      "DurableBatch": {
+        "MedianMs": 21.8153,
+        "P95Ms": 22.7742,
+        "AllocatedBytesPerOperation": 10788305.6
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 81,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 1000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 260398
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 1,
+      "Mode": "Disabled",
+      "OpenMs": 789.1656,
+      "ConnectTlsJwtMs": 6.582,
+      "ColdPageMs": 10.6765,
+      "Get": {
+        "MedianMs": 0.116,
+        "P95Ms": 0.2365,
+        "AllocatedBytesPerOperation": 10055.04
+      },
+      "Page128": {
+        "MedianMs": 9.7774,
+        "P95Ms": 10.6062,
+        "AllocatedBytesPerOperation": 1215048.2666666666
+      },
+      "FullTenant": {
+        "MedianMs": 79.1211,
+        "P95Ms": 79.8595,
+        "AllocatedBytesPerOperation": 9688542.4
+      },
+      "DurableUpdate": {
+        "MedianMs": 20.8376,
+        "P95Ms": 25.1637,
+        "AllocatedBytesPerOperation": 9447225.25
+      },
+      "DurableBatch": {
+        "MedianMs": 22.5819,
+        "P95Ms": 23.2383,
+        "AllocatedBytesPerOperation": 10885995.2
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Disabled",
+      "OpenMs": 830.6434,
+      "ConnectTlsJwtMs": 7.3138,
+      "ColdPageMs": 10.6638,
+      "Get": {
+        "MedianMs": 0.1219,
+        "P95Ms": 0.2118,
+        "AllocatedBytesPerOperation": 10049.36
+      },
+      "Page128": {
+        "MedianMs": 10.2498,
+        "P95Ms": 10.7705,
+        "AllocatedBytesPerOperation": 1215092
+      },
+      "FullTenant": {
+        "MedianMs": 84.0393,
+        "P95Ms": 84.4704,
+        "AllocatedBytesPerOperation": 10326444.8
+      },
+      "DurableUpdate": {
+        "MedianMs": 20.8397,
+        "P95Ms": 23.3556,
+        "AllocatedBytesPerOperation": 9376163.125
+      },
+      "DurableBatch": {
+        "MedianMs": 21.9482,
+        "P95Ms": 23.6937,
+        "AllocatedBytesPerOperation": 10597040
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 0,
+        "Misses": 0,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 0,
+        "CachedPartitions": 0,
+        "EstimatedBytes": 0
+      }
+    },
+    {
+      "Name": "criteria-100k-100",
+      "Rows": 100000,
+      "Tenants": 100,
+      "Criteria": true,
+      "Round": 2,
+      "Mode": "Lazy",
+      "OpenMs": 907.9732,
+      "ConnectTlsJwtMs": 7.5655,
+      "ColdPageMs": 11.6245,
+      "Get": {
+        "MedianMs": 0.1156,
+        "P95Ms": 0.2275,
+        "AllocatedBytesPerOperation": 10058
+      },
+      "Page128": {
+        "MedianMs": 0.7449,
+        "P95Ms": 0.879,
+        "AllocatedBytesPerOperation": 409793.6
+      },
+      "FullTenant": {
+        "MedianMs": 6.4444,
+        "P95Ms": 6.7793,
+        "AllocatedBytesPerOperation": 3245569.6
+      },
+      "DurableUpdate": {
+        "MedianMs": 21.1034,
+        "P95Ms": 32.7168,
+        "AllocatedBytesPerOperation": 9458319.5
+      },
+      "DurableBatch": {
+        "MedianMs": 21.3644,
+        "P95Ms": 24.9151,
+        "AllocatedBytesPerOperation": 10735144.8
+      },
+      "BatchItems": 128,
+      "Index": {
+        "Hits": 81,
+        "Misses": 1,
+        "Evictions": 0,
+        "Fallbacks": 0,
+        "CachedKeys": 1000,
+        "CachedPartitions": 1,
+        "EstimatedBytes": 260398
+      }
+    }
+  ]
+}

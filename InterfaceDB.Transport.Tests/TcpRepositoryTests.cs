@@ -168,13 +168,15 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
-    public async Task TypedRepositoryRefusesHostWithoutSubjectIsolation()
+    public async Task TypedRepositoryUsesUnrestrictedDataWhenNoPolicyIsConfigured()
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { IsolateBySubject = false });
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { DefaultAccessPolicy = null });
         await using var repository = Client(host, "parent-a");
-        var error = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await repository.InitializeAsync());
-        Assert.AreEqual(RemoteErrorCode.UnsupportedCapability, error.Code);
+        await repository.InitializeAsync();
+        await Seed(repository, "unrestricted", 1);
+        await using var second = Client(host, "parent-b");
+        Assert.AreEqual(1, (await second.QuerySingleAsync(_ => true)).Score);
     }
 
     [TestMethod]
@@ -274,7 +276,7 @@ public sealed partial class TcpRepositoryTests
     {
         ListenEndPoint = new(IPAddress.Loopback, 0), ServerCertificate = _certificates.Server,
         Stores = [new("people", Manifest(), store)], AuthenticationMode = TcpStoreAuthenticationMode.JwtBearer,
-        TokenValidator = _validator, IsolateBySubject = true,
+        TokenValidator = _validator, DefaultAccessPolicy = new SubjectDataAccessPolicy(),
         AuthorizeIdentity = (identity, alias, _) => alias == "people"
             && identity.Principal.FindAll("scope").SelectMany(claim => claim.Value.Split(' ')).Contains("interfacedb.storage"),
         HandshakeTimeout = TimeSpan.FromSeconds(5), MaximumOperationTimeout = TimeSpan.FromSeconds(5)
@@ -299,7 +301,7 @@ public sealed partial class TcpRepositoryTests
         ContractVersion = "1.0.0", ContractSchemaHash = "person-v1", ImplementationManifestHash = "person-types-v1",
         IndexDefinitionHash = "name-score-v1"
     };
-    private string Token(string subject, string? defect = null)
+    private string Token(string subject, string? defect = null, Dictionary<string, object>? additionalClaims = null)
     {
         var now = DateTimeOffset.UtcNow;
         var claims = new Dictionary<string, object>
@@ -309,6 +311,7 @@ public sealed partial class TcpRepositoryTests
             ["nbf"] = now.AddMinutes(-1).ToUnixTimeSeconds(),
             ["exp"] = (defect == "expired" ? now.AddSeconds(-1) : now.AddMinutes(5)).ToUnixTimeSeconds()
         };
+        if (additionalClaims is not null) foreach (var claim in additionalClaims) claims[claim.Key] = claim.Value;
         if (defect == "missing-audience") claims.Remove("aud");
         if (defect == "missing-scope") claims.Remove("scope");
         static string Encode(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');

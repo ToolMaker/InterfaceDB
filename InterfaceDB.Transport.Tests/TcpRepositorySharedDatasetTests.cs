@@ -10,7 +10,7 @@ public sealed partial class TcpRepositoryTests
     {
         var options = Options(host, Token(subject));
         return options with { Connection = options.Connection with
-        { StoreAlias = alias, RequiredCapabilities = EncodedStoreCapabilities.All | EncodedStoreCapabilities.SharedDataset } };
+        { StoreAlias = alias, RequiredCapabilities = EncodedStoreCapabilities.All } };
     }
 
     private TcpStoreHostOptions SharedHostOptions(IEncodedEnvelopeStore store)
@@ -18,7 +18,7 @@ public sealed partial class TcpRepositoryTests
         var options = HostOptions(store);
         return options with
         {
-            Stores = [new("people", Manifest(), store) { AccessMode = TcpStoreAccessMode.Shared }],
+            Stores = [new("people", Manifest(), store) { AccessPolicy = UnrestrictedDataAccessPolicy.Instance }],
             AuthorizeIdentity = (identity, alias, capabilities) => options.AuthorizeIdentity!(identity, alias, capabilities)
                 && identity.Principal.FindFirst("sub")?.Value is "parent-a" or "parent-b"
         };
@@ -55,42 +55,30 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
-    public async Task SharedDataset_RequiresExplicitScopeAndDoesNotAdvertiseIsolation()
+    public async Task SharedDataset_ServerApprovesScopeAndCachesRemainAccountBound()
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
         await using var host = await TcpStoreHost.StartAsync(SharedHostOptions(store));
-        await using var isolated = Client(host, "parent-a");
-        var failure = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await isolated.InitializeAsync());
-        Assert.AreEqual(RemoteErrorCode.UnsupportedCapability, failure.Code);
         var options = SharedOptions(host, "parent-a");
-        await using (var raw = await TcpEncodedEnvelopeStore.ConnectAsync(options.Connection))
-        {
-            Assert.IsTrue(raw.Capabilities.HasFlag(EncodedStoreCapabilities.SharedDataset));
-            Assert.IsFalse(raw.Capabilities.HasFlag(EncodedStoreCapabilities.SubjectIsolation));
-        }
-        Assert.AreEqual(Manifest(), await TcpEncodedEnvelopeStore.DiscoverAsync(options.Connection));
-        var wrongDiscovery = options.Connection with { RequiredCapabilities = EncodedStoreCapabilities.All | EncodedStoreCapabilities.SubjectIsolation };
-        Assert.AreEqual(RemoteErrorCode.UnsupportedCapability,
-            (await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await TcpEncodedEnvelopeStore.DiscoverAsync(wrongDiscovery))).Code);
-        Assert.ThrowsExactly<ArgumentException>(() => new TcpRepository<IRemotePerson>(options with
-        { Connection = options.Connection with { RequiredCapabilities = options.Connection.RequiredCapabilities | EncodedStoreCapabilities.SubjectIsolation } }));
+        var descriptor = await TcpEncodedEnvelopeStore.DiscoverStoreAsync(options.Connection);
+        Assert.AreEqual(DataAccessScope.Unrestricted.Identity, descriptor.ScopeIdentity);
+        Assert.AreEqual(Manifest(), descriptor.Manifest);
+        var wrong = options.Connection with { ExpectedScopeIdentity = "wrong-scope" };
+        Assert.AreEqual(RemoteErrorCode.Unauthorized,
+            (await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await TcpEncodedEnvelopeStore.DiscoverAsync(wrong))).Code);
         await using var a = new TcpRepository<IRemotePerson>(options);
-        Assert.AreNotEqual(await isolated.GetCacheIdentityAsync(), await a.GetCacheIdentityAsync());
         await using var b = new TcpRepository<IRemotePerson>(SharedOptions(host, "parent-b"));
         Assert.AreNotEqual(await a.GetCacheIdentityAsync(), await b.GetCacheIdentityAsync());
     }
 
     [TestMethod]
-    public async Task SharedDataset_OptInCannotDowngradeIsolatedOrLegacyUnscopedHost()
+    public async Task SharedDataset_ClientCannotOverrideServerScope()
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        foreach (var isolated in new[] { true, false })
-        {
-            await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { IsolateBySubject = isolated });
-            await using var repository = new TcpRepository<IRemotePerson>(SharedOptions(host, "parent-a"));
-            Assert.AreEqual(RemoteErrorCode.UnsupportedCapability,
-                (await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await repository.InitializeAsync())).Code);
-        }
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(store));
+        var options = SharedOptions(host, "parent-a").Connection with { ExpectedScopeIdentity = DataAccessScope.Unrestricted.Identity };
+        Assert.AreEqual(RemoteErrorCode.Unauthorized,
+            (await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () => await TcpEncodedEnvelopeStore.DiscoverAsync(options))).Code);
     }
 
     [TestMethod]
@@ -164,9 +152,9 @@ public sealed partial class TcpRepositoryTests
         await using var other = await SegmentCoreEncodedEnvelopeStore.OpenAsync(Path.Combine(_root, "other"));
         await using var host = await TcpStoreHost.StartAsync(SharedHostOptions(shared) with
         {
-            Stores = [new("people", Manifest(), shared) { AccessMode = TcpStoreAccessMode.Shared },
-                new("private", Manifest(), isolated) { AccessMode = TcpStoreAccessMode.SubjectIsolated },
-                new("other", Manifest(), other) { AccessMode = TcpStoreAccessMode.Shared }],
+            Stores = [new("people", Manifest(), shared) { AccessPolicy = UnrestrictedDataAccessPolicy.Instance },
+                new("private", Manifest(), isolated) { AccessPolicy = new SubjectDataAccessPolicy() },
+                new("other", Manifest(), other) { AccessPolicy = UnrestrictedDataAccessPolicy.Instance }],
             AuthorizeIdentity = (identity, alias, _) => identity.Principal.FindFirst("sub")?.Value is "parent-a" or "parent-b"
                 && alias is "people" or "private" or "other"
         });

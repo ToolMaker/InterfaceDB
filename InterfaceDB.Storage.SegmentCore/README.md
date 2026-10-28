@@ -1,10 +1,14 @@
 # InterfaceDB.Storage.SegmentCore
 
-## Preview.12 baseline
+## Preview.13 release
+
+Tenant/group policies and ownership checks are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview13-release-notes.md). Update all four public packages together; TCP clients and servers must use wire version 3. Embedded local use remains authentication-agnostic.
+
+## Inherited preview.12 storage baseline
 
 File and SegmentCore reads return independent committed copies, including strong/weak caches. Unsaved edits stay private until a successful save. Correctness fixes cover indexed predicates, key identity, index failure visibility, transactions and compaction-safe scans. Serializer-aware context handling removes unused work without changing encryption or durability defaults.
 
-Cached selective searches improve, while copied large results and scans cost more. See the [preview.12 upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview12-release-notes.md) and [measured trade-offs](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/performance-proposal-review-20261020.md). Update all InterfaceDB packages together and rebuild.
+Cached selective searches improve, while copied large results and scans cost more. See the [preview.12 upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview12-release-notes.md) and [measured trade-offs](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/performance-proposal-review-20261020.md). Update all InterfaceDB packages together and rebuild.
 
 The optional **MIT-licensed append-only storage provider for InterfaceDB on .NET 10**. Use the same `IRepository<T>` contracts, object serialization, indexes and encryption as the file provider, with store-local atomic batches, a mutation WAL, checkpoints, integrity checking, backup/restore and compaction.
 
@@ -14,22 +18,22 @@ The optional **MIT-licensed append-only storage provider for InterfaceDB on .NET
 
 Optional `InterfaceDB.Transport` and `InterfaceDB.Authentication` packages add TLS TCP access, JWT validation and disposable pub/sub for one remote database. The TCP client has no persistent local database or offline queue.
 
-Storage and TCP can share the registered revision-aware envelope serializer, including contextual encryption wrappers. TCP metadata acknowledgements reuse materialized records. Default MessagePack and encrypted envelope formats are unchanged. See the [preview.11 upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview11-release-notes.md) and [serializer configuration](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/serializer-configuration.md).
+Storage and TCP can share the registered revision-aware envelope serializer, including contextual encryption wrappers. TCP metadata acknowledgements reuse materialized records. Default MessagePack and encrypted envelope formats are unchanged. See the [preview.11 upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview11-release-notes.md) and [serializer configuration](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/serializer-configuration.md).
 
 ## Install and register
 
 ```powershell
-dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.12
+dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.13
 dotnet add package Microsoft.Extensions.DependencyInjection
 ```
 
-The package depends on InterfaceDB preview.12. Configure your contract, data root and storage policy, then register with `AddSegmentCoreRepository<TContract>`. Follow the [complete registration example](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/segment-core-storage-provider.md#install-and-register) and [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/getting-started.md).
+The package depends on InterfaceDB preview.12. Configure your contract, data root and storage policy, then register with `AddSegmentCoreRepository<TContract>`. Follow the [complete registration example](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/segment-core-storage-provider.md#install-and-register) and [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/getting-started.md).
 
 ## Inherited from preview.10
 
-Native migration restores encrypted fields before the first `Up()`, validates each canonical source version and preserves supported metadata/revisions. Failed migrations leave the source intact; earlier batches may already exist in the separate target. Inspect failures and verify the target before cutover. See [migration setup](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/migrations.md).
+Native migration restores encrypted fields before the first `Up()`, validates each canonical source version and preserves supported metadata/revisions. Failed migrations leave the source intact; earlier batches may already exist in the separate target. Inspect failures and verify the target before cutover. See [migration setup](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/migrations.md).
 
-Shared APIs now expose `IRepository<T>.RunningVersion` and `IRepositorySubscription.Ready`. Await each subscription's readiness before an initial query. See [preview.10 release and API compatibility notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview10-release-notes.md).
+Shared APIs now expose `IRepository<T>.RunningVersion` and `IRepositorySubscription.Ready`. Await each subscription's readiness before an initial query. See [preview.10 release and API compatibility notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview10-release-notes.md).
 
 ## Security hardening inherited from preview.9
 
@@ -53,7 +57,7 @@ Shared APIs now expose `IRepository<T>.RunningVersion` and `IRepositorySubscript
 | Shared I/O budgets and summaries | Limit supported copy work across stores; inspect estimates, deferral, reclaimed space and partial failures separately from entity events |
 | Write, recovery and read optimizations | Single-record atomic appends, reuse of validated recovery scans, lower-allocation bulk reads and faster complete-object scan metadata handling |
 
-The [InterfaceDB package overview](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.12) explains these shared features with save/conflict, notification and editing examples.
+The [InterfaceDB package overview](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.13) explains these shared features with save/conflict, notification and editing examples.
 
 ## Choosing maintenance behavior
 
@@ -85,13 +89,13 @@ Both compaction modes require the mutation-WAL protocol, selected by the reposit
 
 `ICompactionMaintenance<T>` exposes advisory estimates and manual execution. Policies can use explicit activity/window hints; budgets can be shared between stores on the same volume. Manual work still obeys retention, reader and free-space safety. Checkpoint/publication/retirement pauses remain, and some metadata I/O is outside the copy-byte budget.
 
-Maintenance summaries report physical work rather than logical entity changes. Moving a record does not advance its revision or emit Created/Changed/Deleted. Reclaimed bytes mean observed net reduction, not simply all deleted-file bytes; concurrent growth and retained history affect the result. Failed retirement is observable and may leave a partial cleanup. [Full maintenance configuration and recovery rules](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/compaction-maintenance.md).
+Maintenance summaries report physical work rather than logical entity changes. Moving a record does not advance its revision or emit Created/Changed/Deleted. Reclaimed bytes mean observed net reduction, not simply all deleted-file bytes; concurrent growth and retained history affect the result. Failed retirement is observable and may leave a partial cleanup. [Full maintenance configuration and recovery rules](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/compaction-maintenance.md).
 
 ## Durability, performance and ownership
 
 Ordinary single saves/deletes use the owning stripe's atomic append and still wait for the configured durability policy. `SaveManyAsync` and explicit transactions retain coordinated atomic commit, including batches containing one item. Single-write transaction counters therefore differ from explicit-transaction counters.
 
-Recovery reuses validated stripe results while keeping exclusive ownership. Bulk reads and scans reduce allocations and repeated metadata work while preserving checksums, complete-object materialization and guarded cache publication. These are workload-dependent improvements, not a universal SQLite ranking or a guarantee of zero GC/maintenance latency. [Fast-path details](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/storage-fast-paths.md).
+Recovery reuses validated stripe results while keeping exclusive ownership. Bulk reads and scans reduce allocations and repeated metadata work while preserving checksums, complete-object materialization and guarded cache publication. These are workload-dependent improvements, not a universal SQLite ranking or a guarantee of zero GC/maintenance latency. [Fast-path details](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/storage-fast-paths.md).
 
 One owning process is allowed per live store root. Transactions cover one contract store, not multiple stores or machines. Notifications are local observations through one repository owner, not a durable feed. Retained edit handles expire and do not survive close/restart; backups cover current/recovery state, not resumable editing sessions.
 
@@ -128,11 +132,11 @@ Legacy non-`IDB` typeless payloads are disabled by default and need an explicit 
 
 Preview.7 historically passed Windows/Linux CI, clean-package consumption and upgrade/backup/restore validation. Preview.9 adds targeted tests for context binding, encrypted-catalog isolation, registration order, oversized payloads, restore quotas, unknown manifest paths, and Windows link/reparse rejection. Final package publication still requires the release workflow and clean-package gates. Platform-specific handle-pinned namespace-swap hardening, Windows/Linux adversarial-filesystem qualification, physical power-cut evidence and Apple-device runtime qualification remain outstanding before corresponding stable claims.
 
-- [Complete provider guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/segment-core-storage-provider.md)
-- [Revision and metadata operations](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/envelope-revisions.md)
-- [Retained editing and strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/retained-editing.md)
-- [Notification semantics and limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/repository-notifications.md)
-- [Preview.10 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview10-release-notes.md)
-- [Preview.9 security and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview9-release-notes.md)
-- [Preview.8 documentation notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.12/documentation/preview8-release-notes.md)
+- [Complete provider guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/segment-core-storage-provider.md)
+- [Revision and metadata operations](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/envelope-revisions.md)
+- [Retained editing and strategy examples](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/retained-editing.md)
+- [Notification semantics and limits](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/repository-notifications.md)
+- [Preview.10 release notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview10-release-notes.md)
+- [Preview.9 security and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview9-release-notes.md)
+- [Preview.8 documentation notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview8-release-notes.md)
 - [Report an issue](https://github.com/ToolMaker/InterfaceDB/issues)

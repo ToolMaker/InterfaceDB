@@ -2,6 +2,11 @@
 
 InterfaceDB is designed so the repository and envelope model can run on more than one storage engine. The current storage engine is file-backed and object-oriented.
 
+For the preview.13 remote policy features, see
+[choosing an access policy for performance](data-access-policies.md#choosing-a-policy-for-performance).
+It separates required user/group/tenant boundaries from index tuning, records ownership-check
+costs, and explains why raw scoped-read timings do not predict complete application latency.
+
 ## Current File Storage
 
 Current layout:

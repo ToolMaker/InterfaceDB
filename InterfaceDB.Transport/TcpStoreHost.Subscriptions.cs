@@ -14,18 +14,15 @@ public sealed partial class TcpStoreHost
     /// <summary>Current registered remote listeners; useful for health checks and shutdown verification.</summary>
     public int ActiveSubscriptions => _watches.Count;
 
-    private string Partition(string alias, AuthenticatedIdentity? identity) => _stores[alias].IsolateBySubject
-        ? SubjectScopedEncodedStore.GetPrefix(identity!) : string.Empty;
-
-    private void PublishChange(string alias, AuthenticatedIdentity? identity)
+    private void PublishChange(string alias, DataAccessScope scope)
     {
-        var partition = Partition(alias, identity);
+        var partition = scope.Partition;
         foreach (var watch in _watches.Values)
             if (watch.Alias == alias && watch.Partition == partition) watch.Queue.Writer.TryWrite(0);
     }
 
     private async Task ServeSubscriptionAsync(long id, SslStream stream, TransportLimits limits,
-        WireMessage hello, RegisteredStore store, AuthenticatedIdentity? identity, CancellationToken handshake)
+        WireMessage hello, RegisteredStore store, AuthenticatedIdentity? identity, DataAccessScope accessScope, CancellationToken handshake)
     {
         var queue = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
         { SingleReader = true, FullMode = BoundedChannelFullMode.DropWrite, AllowSynchronousContinuations = false });
@@ -33,7 +30,7 @@ public sealed partial class TcpStoreHost
         using var expiry = identity is null ? null : _options.TimeProvider.CreateTimer(_ => { try { stop.Cancel(); } catch (ObjectDisposedException) { } }, null,
             identity.ExpiresAt - _options.TimeProvider.GetUtcNow() is var remaining && remaining > TimeSpan.Zero
                 ? (remaining < TimeSpan.FromDays(30) ? remaining : TimeSpan.FromDays(30)) : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
-        _watches[id] = new(hello.StoreAlias!, Partition(hello.StoreAlias!, identity), queue);
+        _watches[id] = new(hello.StoreAlias!, accessScope.Partition, queue);
         DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Subscriptions, 1);
         DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Subscribe, log: true).Complete();
         Task<WireMessage?>? close = null;
@@ -44,7 +41,7 @@ public sealed partial class TcpStoreHost
             {
                 Kind = WireMessageKind.HelloResult, CorrelationId = 1,
                 Manifest = store.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
-                AuthenticationMode = _options.AuthenticationMode
+                AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope.Identity
             }, limits, handshake).ConfigureAwait(false);
             close = MessagePackFrameCodec.ReadAsync(stream, limits, stop.Token).AsTask();
             long sequence = 1;
@@ -63,6 +60,7 @@ public sealed partial class TcpStoreHost
                 }
                 if (!await pending.ConfigureAwait(false)) return;
                 queue.Reader.TryRead(out _);
+                if (ResolveScope(store, new(identity, hello.StoreAlias!, hello.RequestedScope, hello.Capabilities)) != accessScope) return;
                 if (identity is not null)
                 {
                     bool authorized;

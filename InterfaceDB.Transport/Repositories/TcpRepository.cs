@@ -28,6 +28,7 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
     private readonly IAccessTokenProvider _tokens;
     private readonly IObjectSerializer<TContract> _serializer;
     private int _disposed;
+    private string? _scopeIdentity;
 
     public TcpRepository(TcpRepositoryOptions<TContract> options)
     {
@@ -35,6 +36,7 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
         options.Validate();
         _serializer = options.ResolveSerializer();
         _tokens = new BoundTokenProvider(options.Connection.TokenProvider!);
+        _scopeIdentity = options.Connection.ExpectedScopeIdentity;
     }
 
     public ContractRepositoryType RepositoryType => ContractRepositoryType.Remote;
@@ -44,22 +46,35 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_options.AdmissionTimeout);
+        await EnsureScopeAsync(deadline.Token).ConfigureAwait(false);
         var connection = _options.Connection with
         {
             TokenProvider = _tokens,
             Telemetry = _options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry,
             // Preserve the requested capabilities so a read-only principal can open a typed repository.
-            RequiredCapabilities = _options.Connection.RequiredCapabilities | _options.ScopeCapability
+            RequiredCapabilities = _options.Connection.RequiredCapabilities,
+            ExpectedScopeIdentity = Volatile.Read(ref _scopeIdentity) ?? _options.Connection.ExpectedScopeIdentity
         };
         while (true)
         {
-            try { return await TcpEncodedEnvelopeStore.ConnectAsync(connection, deadline.Token).ConfigureAwait(false); }
+            try
+            {
+                var store = await TcpEncodedEnvelopeStore.ConnectAsync(connection, deadline.Token).ConfigureAwait(false);
+                try { BindScope(store.ScopeIdentity); return store; }
+                catch { await store.DisposeAsync().ConfigureAwait(false); throw; }
+            }
             catch (RemoteStoreException exception) when (exception.Code == RemoteErrorCode.Busy)
             {
                 // Only rejected session admission is retried. No operation has been dispatched.
                 await Task.Delay(_options.BusyRetryDelay, deadline.Token).ConfigureAwait(false);
             }
         }
+    }
+
+    private void BindScope(string identity)
+    {
+        if (Interlocked.CompareExchange(ref _scopeIdentity, identity, null) is { } prior && prior != identity)
+            throw new UnauthorizedAccessException("The server data scope changed. Create a new repository and cache for the newly approved scope.");
     }
 
     private ValueTask<TResult> WithRepositoryAsync<TResult>(

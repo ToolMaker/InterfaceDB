@@ -18,7 +18,7 @@ internal static class MessagePackFrameCodec
         limits.Validate();
         Validate(message, limits);
         var body = new BoundedBufferWriter(limits.MaximumFrameBytes - HeaderBytes);
-        body.Array(12);
+        body.Array(14);
         body.Integer((int)message.Kind);
         body.Integer(message.CorrelationId);
         body.String(message.StoreAlias, 128);
@@ -31,9 +31,11 @@ internal static class MessagePackFrameCodec
         body.Integer(message.TimeoutMilliseconds);
         body.String(message.AccessToken, TransportValidation.MaximumAccessTokenBytes);
         body.Integer((int)message.AuthenticationMode);
+        body.String(message.RequestedScope, TransportValidation.MaximumControlStringBytes);
+        body.String(message.ScopeIdentity, 128);
         var frame = new byte[HeaderBytes + body.WrittenCount];
         "IDBT"u8.CopyTo(frame);
-        frame[4] = 2;
+        frame[4] = 3;
         BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(8, 4), (uint)body.WrittenCount);
         body.WrittenSpan.CopyTo(frame.AsSpan(HeaderBytes));
         SHA256.HashData(body.WrittenSpan, frame.AsSpan(12, 32));
@@ -60,7 +62,7 @@ internal static class MessagePackFrameCodec
             throw new ArgumentOutOfRangeException(nameof(maximumTotalFrameBytes));
         var header = new byte[HeaderBytes];
         if (!await ReadExactlyAsync(stream, header, true, cancellationToken).ConfigureAwait(false)) return null;
-        if (!header.AsSpan(0, 4).SequenceEqual("IDBT"u8) || header[4] != 2
+        if (!header.AsSpan(0, 4).SequenceEqual("IDBT"u8) || header[4] != 3
             || header[5] != 0 || header[6] != 0 || header[7] != 0)
             throw Protocol("Unsupported transport frame header.");
         var length = BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(8, 4));
@@ -95,7 +97,7 @@ internal static class MessagePackFrameCodec
         try
         {
             var reader = new MessagePackReader(body);
-            Shape(ref reader, 12);
+            Shape(ref reader, 14);
             var message = new WireMessage
             {
                 Kind = (WireMessageKind)reader.ReadInt32(),
@@ -109,7 +111,9 @@ internal static class MessagePackFrameCodec
                 Error = (RemoteErrorCode)reader.ReadInt32(),
                 TimeoutMilliseconds = reader.ReadInt32(),
                 AccessToken = String(ref reader, TransportValidation.MaximumAccessTokenBytes),
-                AuthenticationMode = (TcpStoreAuthenticationMode)reader.ReadInt32()
+                AuthenticationMode = (TcpStoreAuthenticationMode)reader.ReadInt32(),
+                RequestedScope = String(ref reader, TransportValidation.MaximumControlStringBytes),
+                ScopeIdentity = String(ref reader, 128)
             };
             if (!reader.End) throw Protocol("Trailing transport message data.");
             Validate(message, limits);
@@ -127,12 +131,18 @@ internal static class MessagePackFrameCodec
         try
         {
             if (!Enum.IsDefined(message.Kind) || !Enum.IsDefined(message.Error) || !Enum.IsDefined(message.AuthenticationMode)
-                || (message.Capabilities & ~(EncodedStoreCapabilities.All | TransportValidation.ScopeCapabilities)) != 0
-                || (message.Capabilities & TransportValidation.ScopeCapabilities) == TransportValidation.ScopeCapabilities
+                || (message.Capabilities & ~EncodedStoreCapabilities.All) != 0
                 || message.CorrelationId < 0 || message.TimeoutMilliseconds < 0)
                 throw Protocol("Invalid transport message fields.");
             CheckString(message.StoreAlias, 128);
             CheckString(message.AccessToken, TransportValidation.MaximumAccessTokenBytes);
+            CheckString(message.RequestedScope, TransportValidation.MaximumControlStringBytes);
+            CheckString(message.ScopeIdentity, 128);
+            if (message.RequestedScope is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover)
+                || message.ScopeIdentity is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.HelloResult))
+                throw Protocol("Unexpected data scope fields.");
+            if (message.RequestedScope is not null) TransportValidation.ControlString(message.RequestedScope, false);
+            if (message.ScopeIdentity is not null) TransportValidation.ControlString(message.ScopeIdentity, false);
             if (message.AccessToken is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover)
                 || message.AuthenticationMode != TcpStoreAuthenticationMode.MutualTls
                     && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.HelloResult))

@@ -1,11 +1,13 @@
 # InterfaceDB
 
-**Preview.12 is published on NuGet:** the reviewed storage fixes, committed-value
-cache reads and serializer-context optimization passed release checks and a fresh
-public-feed installation. See the [upgrade notes](documentation/preview12-release-notes.md),
-[validation status](documentation/preview12-validation.md) and
-[performance trade-offs](documentation/performance-proposal-review-20261020.md).
-Update all four InterfaceDB packages together to `1.0.0-preview.12`.
+**Preview.13 release candidate:** tenant/group access policies, interface-declared ownership
+validation and bounded partition indexing are ready for the release checks. Update all four
+public packages together to `1.0.0-preview.13` after publication. TCP client/server upgrades
+must be coordinated; embedded storage durability and committed-read semantics are unchanged.
+See [upgrade notes](documentation/preview13-release-notes.md),
+[release validation](documentation/preview13-validation.md),
+[policy integration](documentation/data-access-policies.md) and
+[measured costs](documentation/access-policy-production-20261028.md).
 
 InterfaceDB is an interface-first object repository and embedded object database for .NET 10. Application code works with versioned interfaces and `IRepository<TContract>`; serialization, concrete types, storage providers, indexes, migrations, caching, concurrency, and encryption stay behind that boundary.
 
@@ -242,6 +244,8 @@ SegmentCore is not presented as a general SQLite replacement: SQLite has the low
 - [Feature Guide](documentation/features.md)
 - [Architecture](documentation/architecture.md)
 - [Security And Encryption](documentation/security.md)
+- [Tenant, Group And Data Access Policies](documentation/data-access-policies.md)
+- [JWT Authentication And Keycloak Configuration](documentation/jwt-authentication.md)
 - [Contract Versioning And Migrations](documentation/migrations.md)
 - [Storage, Indexing, And Performance](documentation/storage-indexing-performance.md)
 - [Query Planning](documentation/query-planning.md)
@@ -284,4 +288,4 @@ Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are int
 
 ## Project Status
 
-InterfaceDB, SegmentCore, Authentication and Transport `1.0.0-preview.12` are published and verified through a fresh NuGet.org installation as of 21 October 2026. The release workflow and Windows/Linux CI passed. See the [release validation](documentation/preview12-validation.md). Preview.12 adds reviewed storage corrections, committed-value cache isolation, serializer-context optimization and opt-in telemetry. It retains preview.11's public TCP/JWT packages and shared serializer support, the preview.10 fixes, and preview.9's runtime security hardening and `IDBE` ciphertext-format transition. Upgrades from older previews require the documented migration steps. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.
+The latest verified publication before this release candidate is `1.0.0-preview.12` (21 October 2026). Preview.13 publication is tracked in [its validation record](documentation/preview13-validation.md). The release workflow and Windows/Linux CI passed. See the [release validation](documentation/preview12-validation.md). Preview.12 adds reviewed storage corrections, committed-value cache isolation, serializer-context optimization and opt-in telemetry. It retains preview.11's public TCP/JWT packages and shared serializer support, the preview.10 fixes, and preview.9's runtime security hardening and `IDBE` ciphertext-format transition. Upgrades from older previews require the documented migration steps. APIs and storage formats can still change before stable 1.0.0. Actual acknowledged-write physical power-cut evidence, platform-specific handle-pinned filesystem hardening, Windows/Linux adversarial-filesystem qualification, and Apple-device runtime qualification remain outstanding. See the [preview.9 release notes](documentation/preview9-release-notes.md) for migration and rollback requirements.

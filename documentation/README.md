@@ -1,6 +1,15 @@
 # InterfaceDB Documentation
 
+Preview.13: [release and upgrade notes](preview13-release-notes.md) and
+[publication/validation status](preview13-validation.md).
+
 Start with these documents:
+
+For the **preview.13 tenant/security-policy update**, start with
+[authentication, permissions and data isolation](data-access-policies.md), then
+[JWT setup](jwt-authentication.md), [security boundaries](security.md) and
+[production validation and costs](access-policy-production-20261028.md). The guides distinguish
+these source changes from the published preview.12 packages.
 
 1. [Why InterfaceDB](why-interfacedb.md) explains the architectural purpose and when the model is a good fit.
 2. [Getting Started](getting-started.md) builds the smallest working repository.
@@ -31,6 +40,8 @@ Use the focused guides when needed:
 - [Envelope revisions](envelope-revisions.md): conditional writes, compatibility, metadata import, and storage ownership.
 - [Security And Encryption](security.md): threat boundaries, AES-GCM, encrypted fields, key storage, and rotation.
 - [Serializer registration](serializer-configuration.md): keyed envelope serializers, revision support and authenticated encryption wrappers; preview.11 support.
+- [Data access policies](data-access-policies.md): preview.13 DI-based user/tenant/group policies, interface ownership checks, automatic indexes, bounded selection, unrestricted mode and breaking-change migration.
+- [Choosing a policy for performance](data-access-policies.md#choosing-a-policy-for-performance): preserve required isolation and ownership guarantees; choose policy/index options using measured costs and workload limits.
 - [Configuration](configuration.md): repository options, storage policies, coordination, and multiple registrations.
 - [Repository Notifications](repository-notifications.md): free Created/Changed/Deleted subscriptions, property changes, filters, loop prevention, lifetimes and limits.
 - [Repository Notification Costs](repository-notifications-performance-20260905.md): disabled and subscribed measurements for File and Segment Core.
@@ -40,6 +51,8 @@ Use the focused guides when needed:
 - [Query Planning](query-planning.md): expression routing, cardinality estimates, intersections, unions, and residual predicates.
 - [Search Index Strategies](search-index-strategies.md): exact, range, prefix, suffix, and contains structures.
 - [Current Performance Results](performance-results.md): reproducible measurements and honest interpretation.
+- [Access-policy selection experiment — 28 October 2026](../experiments/AccessPolicySelection/README.md): isolated tenant-index trials, authorization invariants, cold/warm timings, memory and write costs.
+- [Access-policy production integration — 28 October 2026](access-policy-production-20261028.md): interface ownership criteria, bounded index integration, regression tests and production TCP/TLS/JWT measurements.
 - [SQL Performance Comparison — 20 October 2026](performance-sql-20261020.md): repeated full-repository SQLite/SQL Server comparison, before/current changes, ordinal string controls, and historical storage-core rerun.
 - [Review Follow-up — 20 October 2026](review-followup-20261020.md): regression-tested publication and notification fixes, the string-search analyzer, and controlled flush-strategy measurements.
 - [Committed Baseline Performance Check — 20 October 2026](performance-baseline-20261020.md): repeated before/current measurements after the final corrections, with reboot isolation, SQL controls, and a focused weak-cache follow-up.

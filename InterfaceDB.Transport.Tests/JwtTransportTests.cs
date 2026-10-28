@@ -257,7 +257,7 @@ public sealed class JwtTransportTests
         var backend = new CountingStore();
         await using var host = await TcpStoreHost.StartAsync(HostOptions(backend) with
         {
-            IsolateBySubject = true,
+            DefaultAccessPolicy = new SubjectDataAccessPolicy(),
             AuthorizeIdentity = (identity, alias, _) => identity.AuthorityId == "integration" && alias == Alias
         });
         await using var first = await TcpEncodedEnvelopeStore.ConnectAsync(

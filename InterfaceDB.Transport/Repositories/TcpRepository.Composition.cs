@@ -19,23 +19,57 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             await _tokens.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
             var identity = ((BoundTokenProvider)_tokens).Identity;
+            await EnsureScopeAsync(cancellationToken).ConfigureAwait(false);
             var fields = new[]
             {
                 _options.Connection.Host, _options.Connection.Port.ToString(CultureInfo.InvariantCulture),
                 _options.Connection.TargetHost, _options.Connection.StoreAlias,
                 _options.Connection.Manifest.ContractIdentity, _options.Connection.Manifest.ContractVersion,
-                identity.Issuer, identity.Subject
+                identity.Issuer, identity.Subject, "data-policy-v1", Volatile.Read(ref _scopeIdentity)
             };
             // Keep existing cache identities stable; new formats must not reuse their pending-write namespace.
             if (_options.SerializerEnvelopeFormat != TcpRepositoryOptions<TContract>.EnvelopeFormat)
                 fields = [.. fields, _options.SerializerEnvelopeFormat];
-            // Shared data still has an account-bound cache, separate from that account's isolated data.
-            if (_options.ScopeCapability == EncodedStoreCapabilities.SharedDataset)
-                fields = [.. fields, "shared-dataset-v1"];
             var descriptor = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(fields);
             return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(descriptor));
         }
         finally { _gate.Release(); }
+    }
+
+    private readonly SemaphoreSlim _scopeGate = new(1, 1);
+    private bool _scopeLoaded;
+
+    private async ValueTask EnsureScopeAsync(CancellationToken token)
+    {
+        await _scopeGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_scopeLoaded) return;
+            await _tokens.GetAccessTokenAsync(token).ConfigureAwait(false);
+            var actor = ((BoundTokenProvider)_tokens).Identity;
+            var keyBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new[] {
+                "scope-approval-v1", _options.Connection.Host, _options.Connection.Port.ToString(CultureInfo.InvariantCulture),
+                _options.Connection.TargetHost, _options.Connection.StoreAlias, _options.Connection.Manifest.ContractIdentity,
+                actor.Issuer, actor.Subject, _options.Connection.RequestedScope });
+            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(keyBytes));
+            var persistence = _options.ScopeApprovalStore;
+            if (persistence is not null && await persistence.ReadAsync(key, token).ConfigureAwait(false) is { } remembered)
+            {
+                if (remembered != DataAccessScope.Unrestricted.Identity
+                    && (!ScopedEncodedStore.TryGetPrefix(remembered + "x", out var prefix) || prefix != remembered))
+                    throw new InvalidDataException("Invalid stored data scope identity.");
+                BindScope(remembered);
+            }
+            if (Volatile.Read(ref _scopeIdentity) is null)
+            {
+                var approval = await TcpEncodedEnvelopeStore.DiscoverStoreAsync(_options.Connection with
+                    { TokenProvider = _tokens }, token).ConfigureAwait(false);
+                BindScope(approval.ScopeIdentity);
+            }
+            if (persistence is not null) await persistence.WriteAsync(key, _scopeIdentity!, token).ConfigureAwait(false);
+            _scopeLoaded = true;
+        }
+        finally { _scopeGate.Release(); }
     }
 
     public StorageDurabilityMode CommitDurability => StorageDurabilityMode.Durable;

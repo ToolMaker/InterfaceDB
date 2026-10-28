@@ -1,5 +1,6 @@
 using Idb.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Security;
 using System.Runtime.InteropServices;
@@ -28,10 +29,13 @@ try
             Converters =
             {
                 new JsonStringEnumConverter<TcpStoreAuthenticationMode>(allowIntegerValues: false),
-                new JsonStringEnumConverter<X509RevocationMode>(allowIntegerValues: false)
+                new JsonStringEnumConverter<X509RevocationMode>(allowIntegerValues: false),
+                new JsonStringEnumConverter<PartitionIndexMode>(allowIntegerValues: false)
             }
         }) ?? throw new ArgumentException("The host configuration is empty.");
     configuration.Validate();
+    using var services = new ServiceCollection().AddPartitionKeyIndex(configuration.PartitionIndex).BuildServiceProvider();
+    var partitionIndexFactory = services.GetRequiredService<IPartitionKeyIndexFactory>();
     await using var telemetry = configuration.TelemetryEnabled
         ? new DatabaseTelemetry(new() { TcpTraces = configuration.TelemetryTcpTraces,
             TraceSampleRatio = configuration.TelemetryTraceSampleRatio }, new HostTelemetryLogger()) : null;
@@ -73,14 +77,14 @@ try
             legacyStoreDirectory: configuration.LegacyStoreDirectory is { } legacy
                 ? Path.GetFullPath(legacy, configurationDirectory) : null,
             legacyManifest: configuration.Manifest,
-            maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry);
+            maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry, keyIndexFactory: partitionIndexFactory);
         owner = master; registration = master.Registration;
     }
     else
     {
         var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(
             Path.GetFullPath(configuration.DataDirectory, configurationDirectory), configuration.Limits,
-            configuration.MaximumEnumerationKeys, maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry);
+            configuration.MaximumEnumerationKeys, maximumPartitionKeys: configuration.MaximumSubjectKeys, telemetry: telemetry, keyIndexFactory: partitionIndexFactory);
         owner = store; registration = new(configuration.StoreAlias, configuration.Manifest, store);
     }
     await using var lifetime = new HostLifetime(owner);
@@ -94,9 +98,10 @@ try
         MaximumConnections = configuration.MaximumConnections,
         MaximumSessionLifetime = configuration.MaximumSessionLifetime,
         AuthenticationMode = configuration.AuthenticationMode,
-        IsolateBySubject = configuration.IsolateBySubject,
+        DefaultAccessPolicy = configuration.DataAccessPolicy switch
+        { "subject" => new SubjectDataAccessPolicy(), "claim" => new ClaimDataAccessPolicy(configuration.DataScopeClaim!, configuration.DataScope), _ => null },
         TokenValidator = tokenValidator,
-        // The configured scope grants store operations; IsolateBySubject additionally restricts all keys to the validated principal.
+        // Token scopes authorize the alias; the data policy separately resolves its record partition.
         // Applications requiring narrower operations/resources supply their own authorization policy.
         AuthorizeIdentity = tokenValidator is null ? null : (identity, alias, _) => string.Equals(alias, configuration.StoreAlias, StringComparison.Ordinal)
             && configuration.RequiredTokenScopes.All(required => identity.Principal.FindAll("scope")
@@ -187,7 +192,10 @@ internal sealed class HostConfiguration
     public string ServerCertificatePasswordEnvironmentVariable { get; init; } = "IDB_SERVER_PFX_PASSWORD";
     public string[] TrustedClientCertificateSha256 { get; init; } = [];
     public TcpStoreAuthenticationMode AuthenticationMode { get; init; } = TcpStoreAuthenticationMode.MutualTls;
-    public bool IsolateBySubject { get; init; }
+    public string DataAccessPolicy { get; init; } = "none";
+    public PartitionIndexOptions PartitionIndex { get; init; } = new();
+    public string? DataScopeClaim { get; init; }
+    public string? DataScope { get; init; }
     public JwtAccessTokenValidatorOptions? JwtValidation { get; init; }
     public string? IdentityProviderCaCertificatePath { get; init; }
     public X509RevocationMode PrivateCaRevocationMode { get; init; } = X509RevocationMode.Online;
@@ -217,8 +225,10 @@ internal sealed class HostConfiguration
             || MaximumSessionLifetime < TimeSpan.FromMilliseconds(1)
             || MaximumSessionLifetime > TimeSpan.FromMinutes(10))
             throw new ArgumentException("Invalid connection or enumeration limits.");
-        if (IsolateBySubject && AuthenticationMode == TcpStoreAuthenticationMode.MutualTls)
-            throw new ArgumentException("Subject isolation requires JWT authentication.");
+        if (DataAccessPolicy is not ("none" or "subject" or "claim")) throw new ArgumentException("Unknown data access policy.");
+        if (DataAccessPolicy != "none" && AuthenticationMode == TcpStoreAuthenticationMode.MutualTls)
+            throw new ArgumentException("The configured data policy requires JWT authentication.");
+        if (DataAccessPolicy == "claim") ArgumentException.ThrowIfNullOrWhiteSpace(DataScopeClaim);
         if (!Enum.IsDefined(AuthenticationMode)) throw new ArgumentException("The configured authentication mode is unknown.");
         if (AuthenticationMode == TcpStoreAuthenticationMode.MutualTls
             && (JwtValidation is not null || IdentityProviderCaCertificatePath is not null))

@@ -8,7 +8,7 @@ namespace Idb.Transport;
 /// Owns a durable SegmentCore store of opaque values. All access is serialized through this
 /// adapter. Enumeration is ordinal keyset pagination of current state, not a durable snapshot.
 /// </summary>
-public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeStore
+public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeStore, IPartitionIndexDiagnostics
 {
     // Covers the wire envelope, fixed response fields and continuation key. Per-record variable
     // UTF-8 key bytes and binary lengths are accounted separately below.
@@ -18,17 +18,19 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
     private readonly TransportLimits _limits;
     private readonly int _maximumEnumerationKeys;
     private readonly int _maximumPartitionKeys;
+    private readonly IPartitionKeyIndex _partitionIndex;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _disposeLock = new();
     private Task? _disposeTask;
     private int _disposed;
 
     private SegmentCoreEncodedEnvelopeStore(SegmentCoreStore store, TransportLimits limits,
-        int maximumEnumerationKeys, int maximumPartitionKeys)
-        => (_store, _limits, _maximumEnumerationKeys, _maximumPartitionKeys)
-            = (store, limits, maximumEnumerationKeys, maximumPartitionKeys);
+        int maximumEnumerationKeys, int maximumPartitionKeys, IPartitionKeyIndex partitionIndex)
+        => (_store, _limits, _maximumEnumerationKeys, _maximumPartitionKeys, _partitionIndex)
+            = (store, limits, maximumEnumerationKeys, maximumPartitionKeys, partitionIndex);
 
     public EncodedStoreCapabilities Capabilities => EncodedStoreCapabilities.All;
+    public PartitionIndexStatistics PartitionIndexStatistics => _partitionIndex.Statistics;
 
     /// <summary>Opens an exclusively owned store with durable writes; no relaxed durability override is exposed.</summary>
     // Preserve the original six-parameter method for already compiled consumers.
@@ -37,10 +39,18 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
         CancellationToken cancellationToken, int retainedChangeCount, int? maximumPartitionKeys)
         => OpenAsync(path, limits, maximumEnumerationKeys, cancellationToken, retainedChangeCount, maximumPartitionKeys, telemetry: null);
 
+    // Preserve the previous seven-parameter binary entry point.
+    public static ValueTask<SegmentCoreEncodedEnvelopeStore> OpenAsync(
+        string path, TransportLimits? limits, int maximumEnumerationKeys, CancellationToken cancellationToken,
+        int retainedChangeCount, int? maximumPartitionKeys, Idb.Diagnostics.IDatabaseTelemetry? telemetry)
+        => OpenAsync(path, limits, maximumEnumerationKeys, cancellationToken, retainedChangeCount,
+            maximumPartitionKeys, telemetry, keyIndexFactory: null);
+
     public static async ValueTask<SegmentCoreEncodedEnvelopeStore> OpenAsync(
         string path, TransportLimits? limits = null, int maximumEnumerationKeys = 100_000,
         CancellationToken cancellationToken = default, int retainedChangeCount = 2048,
-        int? maximumPartitionKeys = null, Idb.Diagnostics.IDatabaseTelemetry? telemetry = null)
+        int? maximumPartitionKeys = null, Idb.Diagnostics.IDatabaseTelemetry? telemetry = null,
+        IPartitionKeyIndexFactory? keyIndexFactory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         limits ??= new TransportLimits();
@@ -59,8 +69,15 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
                 DurabilityStrategy = ObjectLogDurabilityStrategy.WriteThrough
             }
         }, cancellationToken).ConfigureAwait(false);
-        return new SegmentCoreEncodedEnvelopeStore(store, limits, maximumEnumerationKeys, maximumPartitionKeys.Value)
-            { RetainedChangeCount = retainedChangeCount };
+        try
+        {
+            var index = (keyIndexFactory ?? BoundedPartitionKeyIndexFactory.Default).Create()
+                ?? throw new InvalidOperationException("The partition index factory returned no index.");
+            index.Initialize(store.GetKeysSnapshot, cancellationToken);
+            return new SegmentCoreEncodedEnvelopeStore(store, limits, maximumEnumerationKeys, maximumPartitionKeys.Value, index)
+                { RetainedChangeCount = retainedChangeCount };
+        }
+        catch { await store.DisposeAsync().ConfigureAwait(false); throw; }
     }
 
     public async ValueTask<EncodedStoreResponse> ExecuteAsync(
@@ -102,6 +119,7 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
                     throw new ArgumentException("Unknown storage command.", nameof(request));
             }
         }
+        catch { _partitionIndex.Invalidate(); throw; }
         finally { _gate.Release(); }
     }
 
@@ -110,7 +128,7 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
         TransportValidation.Request(request, _limits);
         static void ReservedPartition(string? key, string partition)
         {
-            if (key is not null && SubjectScopedEncodedStore.TryGetPrefix(key, out var prefix)
+            if (key is not null && ScopedEncodedStore.TryGetPrefix(key, out var prefix)
                 && !string.Equals(prefix, partition, StringComparison.Ordinal))
                 throw new ArgumentException("The subject partition namespace is reserved.");
         }
@@ -161,17 +179,37 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
     private async ValueTask<EncodedStoreResponse> EnumerateAsync(
         int pageSize, string? afterKey, string partition, CancellationToken token)
     {
-        // Exclusive ownership plus the adapter gate makes Count and snapshot one admission check.
-        // SegmentCore's built-in streaming scan also snapshots all locators, so it cannot remove
-        // this bound. Large datasets require a future persisted ordered cursor implementation.
-        var keys = _store.GetKeysSnapshot().Where(key => !key.StartsWith(FeedPrefix, StringComparison.Ordinal)
-            && (partition.Length == 0 || key.StartsWith(partition, StringComparison.Ordinal))).ToArray();
-        var ceiling = partition.Length == 0 ? _maximumEnumerationKeys : _maximumPartitionKeys;
-        if (keys.Length > ceiling)
-            throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
-        Array.Sort(keys, StringComparer.Ordinal);
-        var start = afterKey is null ? 0 : Array.BinarySearch(keys, afterKey, StringComparer.Ordinal);
-        if (afterKey is not null) start = start < 0 ? ~start : start + 1;
+        string[] keys;
+        int start;
+        var indexed = _partitionIndex.Select(partition, afterKey, pageSize + 1, _store.GetKeysSnapshot, token);
+        if (indexed is not null)
+        {
+            if (indexed.PartitionCount > _maximumPartitionKeys)
+                throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
+            keys = indexed.Keys.ToArray(); start = 0;
+            if (indexed.PartitionCount < keys.Length || keys.Length > pageSize + 1)
+                throw new InvalidDataException("Invalid partition index page.");
+            string? previous = afterKey;
+            foreach (var key in keys)
+            {
+                if (!key.StartsWith(partition, StringComparison.Ordinal)
+                    || (previous is not null && StringComparer.Ordinal.Compare(key, previous) <= 0))
+                    throw new InvalidDataException("The partition index returned an out-of-scope or unordered key.");
+                previous = key;
+            }
+        }
+        else
+        {
+            // Unrestricted access and providers without indexed selection retain the existing path.
+            keys = _store.GetKeysSnapshot().Where(key => !key.StartsWith(FeedPrefix, StringComparison.Ordinal)
+                && (partition.Length == 0 || key.StartsWith(partition, StringComparison.Ordinal))).ToArray();
+            var ceiling = partition.Length == 0 ? _maximumEnumerationKeys : _maximumPartitionKeys;
+            if (keys.Length > ceiling)
+                throw LimitExceeded("This store exceeds the configured enumeration key ceiling.");
+            Array.Sort(keys, StringComparer.Ordinal);
+            start = afterKey is null ? 0 : Array.BinarySearch(keys, afterKey, StringComparer.Ordinal);
+            if (afterKey is not null) start = start < 0 ? ~start : start + 1;
+        }
         var records = new List<EncodedRecord>(Math.Min(pageSize, keys.Length - start));
         long bytes = ResponseOverhead;
         var next = start;
@@ -229,6 +267,6 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
     {
         await _gate.WaitAsync().ConfigureAwait(false);
         try { await _store.DisposeAsync().ConfigureAwait(false); }
-        finally { _gate.Release(); }
+        finally { _partitionIndex.Invalidate(); _gate.Release(); }
     }
 }
