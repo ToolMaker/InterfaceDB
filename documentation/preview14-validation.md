@@ -9,7 +9,8 @@ tests with 10 Windows platform-specific skips. The earlier native-account work a
 Windows and Linux runtime tests; those historical results are documented separately in
 [native account validation](native-account-validation-20261029.md).
 
-The local release build passed with zero warnings/errors. The analyzer suite passed 31 tests,
+The local release build passed with no errors or analyzer compatibility failures. A full
+recompile retains eight existing MSTEST0032 warnings in SegmentCore compatibility tests. The analyzer suite passed 31 tests,
 SegmentCore passed 216 with 2 Windows skips, the integration harness passed all 50 cases,
 and the three object-materialization checks passed. Source and all four candidate-package
 boundaries passed.
