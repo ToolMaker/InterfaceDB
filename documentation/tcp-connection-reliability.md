@@ -88,5 +88,7 @@ The skipped core cases require Unix permissions or a case-sensitive volume. Test
 real TLS/JWT subscriptions, renewed/rejected/expired credentials, account-switch rejection,
 stale expiry hints, cancellation during Busy admission, redaction, bounded reason tags and
 actual host Busy logging. Existing isolation, conflict and uncertain-commit tests also pass.
-This run did not validate Linux or an Android device; Docker's Linux engine was unavailable.
-Passing local tests is separate from deploying these sources or publishing a package.
+The local run above did not validate Linux or an Android device; Docker's Linux engine was
+unavailable. Subsequent Windows/Linux CI, tag publication and fresh-feed package tests passed
+for preview.14; see the [release verification receipt](preview14-validation.md). Actual device
+testing remains a deployment follow-up.

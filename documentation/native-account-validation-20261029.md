@@ -1,5 +1,9 @@
 # Native account provider validation — 29 October 2026
 
+Publication update, 30 October 2026: native accounts are included in preview.14.
+See the [final release verification](preview14-validation.md). The dated source results below
+remain the implementation history.
+
 This is an unreleased source feature based on the published preview.13 code. No package version,
 release tag, deployment or existing account database was changed by this work.
 See the [configuration and integration guide](native-account-authentication.md).
