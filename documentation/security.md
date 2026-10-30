@@ -5,7 +5,8 @@ InterfaceDB can encrypt complete envelopes or selected contract properties. Encr
 ## Authentication, authorization and data boundaries
 
 The optional transport authenticates connections with TLS and the configured JWT/certificate
-mode. `AuthorizeIdentity` controls store and operation admission in JWT modes;
+mode, or the preview.14 [native account provider](native-account-authentication.md).
+`AuthorizeIdentity` controls store and operation admission in JWT/Provider modes;
 `AuthorizeClient` controls certificate admission to an alias in certificate modes.
 `IDataAccessPolicy` separately authorizes and selects user, tenant or group data. A valid token
 does not by itself grant all data in a database. These features are opt-in composition at the
@@ -17,8 +18,8 @@ automatic exact indexes, server-side ownership checks, group selection and migra
 [JWT guide](jwt-authentication.md) covers token validation and providers. JWT scopes/roles,
 data membership and encryption perform different jobs and must be configured independently.
 
-The built-in subject, claim and contract policies require JWT identity, including when mutual TLS
-is also enabled. Certificate-only hosts still authenticate and authorize certificates for aliases,
+The built-in subject, claim and contract policies require trusted identity claims, supplied by JWT
+validation or by `IAuthenticationProvider` in preview.14. Certificate-only hosts still authenticate and authorize certificates for aliases,
 but `DataAccessContext` contains neither JWT identity nor a client certificate in that mode.
 They can use unrestricted access or an identity-independent custom policy; certificate-specific
 data authorization is not exposed by the current policy context.
@@ -40,7 +41,7 @@ device/access controls and configured encryption. Membership changes take effect
 token lifetime and the authentication integration; the database does not poll Keycloak groups
 or introduce token introspection. Immediate revocation of previously downloaded data is not promised.
 
-The typed TCP repository uses JWT authentication. Explicit authorization denials, certificate
+The typed TCP repository supports JWT and the preview.14 Provider authentication mode. Explicit authorization denials, certificate
 validation errors and malformed protocol responses are not offline-fallback signals. A silent
 connection close before any TLS response is an availability failure, not proof of authorization.
 Raw mutual-TLS integrations must also allow for platform-dependent socket resets when the server

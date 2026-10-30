@@ -21,7 +21,7 @@ public sealed record ClientCredentialsTokenOptions
     public override string ToString() => "[REDACTED CLIENT CREDENTIALS OPTIONS]";
 }
 
-public enum TokenAcquisitionFailure { Metadata, Credentials, Http, TokenResponse, Timeout, Unavailable }
+public enum TokenAcquisitionFailure { Metadata, Credentials, Http, TokenResponse, Timeout, Unavailable, Network, Tls }
 
 /// <summary>Safe diagnostic classification; token endpoint bodies, credentials and underlying exception messages are omitted.</summary>
 public sealed class TokenAcquisitionException : System.Security.Authentication.AuthenticationException

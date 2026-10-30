@@ -24,7 +24,8 @@ public sealed record TcpRepositoryOptions<TContract> where TContract : class, IS
     public string SerializerEnvelopeFormat { get; init; } = EnvelopeFormat;
     public IEnvelopeStorageIdentityFactory<TContract>? StorageIdentityFactory { get; init; }
     /// <summary>Optional account-scoped metadata persistence for the last server-approved data boundary.
-    /// Enables offline cache startup after a process restart. This is not an authorization grant.
+    /// Enables offline cache startup after a process restart for JWT identities. Native Provider mode
+    /// first requires online account authentication. This is not an authorization grant.
     /// Reconnect always requires the server to approve this same boundary.</summary>
     public Idb.Libraries.Repositories.IRepositoryCursorStore? ScopeApprovalStore { get; init; }
     public StoragePolicy StoragePolicy { get; init; } = StoragePolicy.Default;
@@ -32,6 +33,8 @@ public sealed record TcpRepositoryOptions<TContract> where TContract : class, IS
     public long MaximumSnapshotBytes { get; init; } = 64 * 1024 * 1024;
     public TimeSpan AdmissionTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan BusyRetryDelay { get; init; } = TimeSpan.FromMilliseconds(50);
+    /// <summary>Borrowed admission-only retry policy; the total wait is bounded by AdmissionTimeout.</summary>
+    public ITcpAdmissionRetryPolicy AdmissionRetryPolicy { get; init; } = TcpAdmissionRetryPolicy.Instance;
 
     internal void Validate()
     {
@@ -46,10 +49,12 @@ public sealed record TcpRepositoryOptions<TContract> where TContract : class, IS
         ArgumentNullException.ThrowIfNull(RuntimeTypes);
         ArgumentNullException.ThrowIfNull(Encryptor);
         ArgumentNullException.ThrowIfNull(StoragePolicy);
+        ArgumentNullException.ThrowIfNull(AdmissionRetryPolicy);
         if (!typeof(TContract).IsInterface) throw new ArgumentException("The stored contract must be an interface.");
-        if (Connection.AuthenticationMode != TcpStoreAuthenticationMode.JwtBearer)
-            throw new ArgumentException("Typed repositories require the signed-in user's JWT over TLS.");
-        ArgumentNullException.ThrowIfNull(Connection.TokenProvider);
+        if (Connection.AuthenticationMode is not (TcpStoreAuthenticationMode.JwtBearer or TcpStoreAuthenticationMode.Provider))
+            throw new ArgumentException("Typed repositories require an authenticated account over TLS.");
+        if (Connection.AuthenticationMode == TcpStoreAuthenticationMode.Provider) ArgumentNullException.ThrowIfNull(Connection.CredentialsProvider);
+        else ArgumentNullException.ThrowIfNull(Connection.TokenProvider);
         TransportValidation.ControlString(SerializerEnvelopeFormat, false);
         if (Connection.Manifest.EnvelopeFormat != SerializerEnvelopeFormat)
             throw new ArgumentException("The manifest must match the selected serializer envelope format.");

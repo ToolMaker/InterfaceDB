@@ -66,6 +66,14 @@ Register independent stores for independent aliases; restart the host to change 
 
 ## Authentication
 
+Preview.14 adds explicit `Provider` mode for
+[native username/password accounts](native-account-authentication.md). TLS, alias permission and
+data policies remain required. New mode/message values extend the version-3 frame without
+changing existing JWT frames; old peers reject Provider mode. In this mode only, the handshake's
+credential slot carries bounded provider credentials and the successful reply carries a non-secret
+account-identity receipt. Account registration uses a separate bounded first-message operation;
+it cannot address the credential store as an application alias. Use matching new client/host builds.
+
 The selected deployment uses `AuthenticationMode = JwtBearer`: **every storage session requires a
 valid access token**. A configured client obtains its token before opening the TCP connection;
 a supplied token is also supported. Missing/invalid tokens never receive storage access. The host
@@ -231,7 +239,7 @@ The host authenticates and authorizes the session and verifies the complete mani
 admitting payload operations and chooses the lower client/server limits. Manifest equality checks
 compatibility only; a caller's claimed schema/build hash does not prove what code it is executing.
 
-The current preview.13 source uses wire format version 3. Versions 1 and 2 are rejected; upgrade
+Preview.14 uses wire format version 3. Versions 1 and 2 are rejected; upgrade
 client and host together. Published preview.12 uses the preceding protocol/API.
 A frame has a 44-byte header followed by one MessagePack value:
 

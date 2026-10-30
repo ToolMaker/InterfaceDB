@@ -41,7 +41,8 @@ public sealed partial class TcpStoreHost
             {
                 Kind = WireMessageKind.HelloResult, CorrelationId = 1,
                 Manifest = store.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
-                AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope.Identity
+                AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope.Identity,
+                AccessToken = ProviderAuthenticationWire.Receipt(_options.AuthenticationMode, identity)
             }, limits, handshake).ConfigureAwait(false);
             close = MessagePackFrameCodec.ReadAsync(stream, limits, stop.Token).AsTask();
             long sequence = 1;
@@ -64,7 +65,8 @@ public sealed partial class TcpStoreHost
                 if (identity is not null)
                 {
                     bool authorized;
-                    try { authorized = _options.AuthorizeIdentity!(identity, hello.StoreAlias!, hello.Capabilities); }
+                    try { authorized = await SessionValidAsync(identity, stop.Token).ConfigureAwait(false)
+                        && _options.AuthorizeIdentity!(identity, hello.StoreAlias!, hello.Capabilities); }
                     catch { authorized = false; }
                     if (!authorized || identity.ExpiresAt <= _options.TimeProvider.GetUtcNow()) return;
                 }

@@ -25,17 +25,19 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
 {
     private readonly TcpRepositoryOptions<TContract> _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly IAccessTokenProvider _tokens;
+    private readonly IAccessTokenProvider? _tokens;
     private readonly IObjectSerializer<TContract> _serializer;
     private int _disposed;
     private string? _scopeIdentity;
+    private AccountIdentity? _accountIdentity;
 
     public TcpRepository(TcpRepositoryOptions<TContract> options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         options.Validate();
         _serializer = options.ResolveSerializer();
-        _tokens = new BoundTokenProvider(options.Connection.TokenProvider!);
+        _tokens = options.Connection.AuthenticationMode == TcpStoreAuthenticationMode.Provider ? null : new BoundTokenProvider(options.Connection.TokenProvider!);
+        _accountIdentity = options.Connection.ExpectedAccountIdentity;
         _scopeIdentity = options.Connection.ExpectedScopeIdentity;
     }
 
@@ -50,23 +52,27 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
         var connection = _options.Connection with
         {
             TokenProvider = _tokens,
+            ExpectedAccountIdentity = Volatile.Read(ref _accountIdentity),
             Telemetry = _options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry,
             // Preserve the requested capabilities so a read-only principal can open a typed repository.
             RequiredCapabilities = _options.Connection.RequiredCapabilities,
             ExpectedScopeIdentity = Volatile.Read(ref _scopeIdentity) ?? _options.Connection.ExpectedScopeIdentity
         };
+        var rejectedAttempts = 0;
         while (true)
         {
             try
             {
                 var store = await TcpEncodedEnvelopeStore.ConnectAsync(connection, deadline.Token).ConfigureAwait(false);
-                try { BindScope(store.ScopeIdentity); return store; }
+                try { BindAccount(store.AccountIdentity); BindScope(store.ScopeIdentity); return store; }
                 catch { await store.DisposeAsync().ConfigureAwait(false); throw; }
             }
             catch (RemoteStoreException exception) when (exception.Code == RemoteErrorCode.Busy)
             {
                 // Only rejected session admission is retried. No operation has been dispatched.
-                await Task.Delay(_options.BusyRetryDelay, deadline.Token).ConfigureAwait(false);
+                var delay = _options.AdmissionRetryPolicy.GetDelay(++rejectedAttempts, _options.BusyRetryDelay);
+                TransportValidation.Duration(delay, nameof(ITcpAdmissionRetryPolicy));
+                await Task.Delay(delay, deadline.Token).ConfigureAwait(false);
             }
         }
     }
@@ -75,6 +81,14 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
     {
         if (Interlocked.CompareExchange(ref _scopeIdentity, identity, null) is { } prior && prior != identity)
             throw new UnauthorizedAccessException("The server data scope changed. Create a new repository and cache for the newly approved scope.");
+    }
+
+    private void BindAccount(AccountIdentity? identity)
+    {
+        if (_options.Connection.AuthenticationMode != TcpStoreAuthenticationMode.Provider) return;
+        if (identity is null) throw new UnauthorizedAccessException("A server-authenticated account is required.");
+        if (Interlocked.CompareExchange(ref _accountIdentity, identity, null) is { } prior && prior != identity)
+            throw new UnauthorizedAccessException("The repository belongs to another account. Create a new repository after switching accounts.");
     }
 
     private ValueTask<TResult> WithRepositoryAsync<TResult>(

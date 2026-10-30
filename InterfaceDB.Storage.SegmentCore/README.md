@@ -1,8 +1,8 @@
 # InterfaceDB.Storage.SegmentCore
 
-## Preview.13 release
+## Preview.14 release
 
-Tenant/group policies and ownership checks are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview13-release-notes.md). Update all four public packages together; TCP clients and servers must use wire version 3. Embedded local use remains authentication-agnostic.
+Connection recovery, safe transport diagnostics and optional native accounts are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/preview14-release-notes.md). Update all four public packages together. Existing JWT settings, isolation, committed reads and durability remain unchanged.
 
 ## Inherited preview.12 storage baseline
 

@@ -1,5 +1,7 @@
 # Online TCP repository
 
+For the preview.14 connection-recovery changes, see [TCP connection reliability](tcp-connection-reliability.md).
+
 The optional MIT `InterfaceDB.Transport` package supplies `TcpRepository<TContract>` using
 the existing `IRepository<TContract>` API. Keep all InterfaceDB package versions aligned. The access-policy API below is introduced in preview.13; use matching client/server versions. See [breaking changes and DI registration](data-access-policies.md).
 
@@ -16,6 +18,12 @@ migration code with the server.
 
 ## Supported behavior
 
+Preview.14 also accepts `AuthenticationMode.Provider` with an
+`IClientCredentialsProvider` for [native database accounts](native-account-authentication.md).
+Use matching new client/host builds. Password verification happens on each short connection;
+multi-account hosts require an explicit partitioning policy. Account/scope binding, committed
+copies, revisions and notification semantics remain unchanged.
+
 Each storage API call opens TLS TCP with the signed-in user's JWT. The server validates signature, exact
 issuer, audience, expiry and configured permissions. The server's access policy resolves a private-user,
 group/account or unrestricted dataset. Client selectors require authorization; the server returns an
@@ -24,6 +32,11 @@ opaque scope identity which the client binds to its repository and cache.
 Under the host's exclusive data-scope lease, the client reads a bounded fresh snapshot, rebuilds indexes,
 performs the operation and closes the session. Enumerations buffer results before yielding to
 application code. A second client sees completed changes on its next call.
+
+Connection reuse and pooling are not implemented. The [TCP connection reuse and optional pooling
+roadmap](roadmaps.md#proposed-tcp-connection-reuse-and-optional-pooling) compares the current lifecycle
+with a persistent connection and a bounded pool, subject to measured gains and unchanged isolation,
+authorization, snapshot and revision guarantees.
 
 ## Data access policies
 
@@ -63,7 +76,7 @@ the historical outcome. There is no automatic mutation replay or durable dedupli
 
 ## Application integration
 
-Reference `InterfaceDB.Transport` version `1.0.0-preview.13`. Preserve interface contracts, MessagePack implementations, indexes and normal
+Reference `InterfaceDB.Transport` version `1.0.0-preview.14`. Preserve interface contracts, MessagePack implementations, indexes and normal
 `IRepository<T>` calls. Supply an explicit runtime type allowlist.
 
 Adapt the application's existing signed-in user token store:

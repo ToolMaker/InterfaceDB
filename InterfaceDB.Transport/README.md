@@ -1,8 +1,8 @@
 # InterfaceDB.Transport
 
-## Preview.13 release
+## Preview.14 release
 
-Tenant/group policies and ownership checks are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.13/documentation/preview13-release-notes.md). Update all four public packages together; TCP clients and servers must use wire version 3. Embedded local use remains authentication-agnostic.
+Connection recovery, safe transport diagnostics and optional native accounts are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/preview14-release-notes.md). Update all four public packages together. Existing JWT settings, isolation, committed reads and durability remain unchanged.
 
 ## Preview.13: tenant and group policies
 
@@ -31,7 +31,7 @@ pub/sub hints, explicit compatibility manifests, and a runnable SegmentCore host
 envelope serializer remains MessagePack; a configured revision-aware serializer can be shared
 with storage. TCP control frames retain their MessagePack protocol.
 
-Install `InterfaceDB.Transport` version `1.0.0-preview.13`. Keep all InterfaceDB package versions aligned.
+Install `InterfaceDB.Transport` version `1.0.0-preview.14`. Keep all InterfaceDB package versions aligned.
 
 ```shell
 dotnet add package InterfaceDB.Transport --version 1.0.0-preview.13

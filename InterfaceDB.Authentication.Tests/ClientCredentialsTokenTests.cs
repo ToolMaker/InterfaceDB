@@ -13,6 +13,57 @@ public sealed class ClientCredentialsTokenTests
     private const string TestSecret = "test-secret:+ with spaces";
 
     [TestMethod]
+    public async Task UnexaminedDeepExceptionChainFailsClosed()
+    {
+        Exception nested = new System.Security.Authentication.AuthenticationException(TestSecret);
+        for (var i = 0; i < 9; i++) nested = new IOException(TestSecret, nested);
+        using var provider = new ClientCredentialsAccessTokenProvider(Options(), new MockHandler((_, _) =>
+            throw new HttpRequestException(HttpRequestError.ConnectionError, TestSecret, nested)));
+        var error = await Assert.ThrowsExactlyAsync<TokenAcquisitionException>(() => provider.GetAccessTokenAsync().AsTask());
+        Assert.AreEqual(TokenAcquisitionFailure.Unavailable, error.Failure);
+        Assert.IsNull(error.InnerException);
+    }
+
+    [TestMethod]
+    [DataRow(HttpRequestError.NameResolutionError, TokenAcquisitionFailure.Network)]
+    [DataRow(HttpRequestError.ConnectionError, TokenAcquisitionFailure.Network)]
+    [DataRow(HttpRequestError.SecureConnectionError, TokenAcquisitionFailure.Tls)]
+    [DataRow(HttpRequestError.InvalidResponse, TokenAcquisitionFailure.Unavailable)]
+    public async Task EndpointFailuresAreClassifiedBeforeSecretsAreRedacted(HttpRequestError category, TokenAcquisitionFailure expected)
+    {
+        var fail = true;
+        using var provider = new ClientCredentialsAccessTokenProvider(Options(), new MockHandler((request, _) =>
+        {
+            if (fail) throw new HttpRequestException(category, TestSecret);
+            return Result(request.Method == HttpMethod.Get ? Metadata() : Token());
+        }));
+        var error = await Assert.ThrowsExactlyAsync<TokenAcquisitionException>(() => provider.GetAccessTokenAsync().AsTask());
+        Assert.AreEqual(expected, error.Failure);
+        Assert.IsNull(error.InnerException);
+        Assert.IsFalse(error.ToString().Contains(TestSecret, StringComparison.Ordinal));
+        fail = false;
+        Assert.AreEqual("fixture.token", (await provider.GetAccessTokenAsync()).Value);
+    }
+
+    [TestMethod]
+    public async Task NestedTlsAndSecretSourceNetworkErrorsDoNotBecomeRetryableNetworkFailures()
+    {
+        using var tls = new ClientCredentialsAccessTokenProvider(Options(), new MockHandler((_, _) =>
+            throw new HttpRequestException(HttpRequestError.ConnectionError, TestSecret,
+                new System.Security.Authentication.AuthenticationException(TestSecret))));
+        Assert.AreEqual(TokenAcquisitionFailure.Tls,
+            (await Assert.ThrowsExactlyAsync<TokenAcquisitionException>(() => tls.GetAccessTokenAsync().AsTask())).Failure);
+        using var secret = new ClientCredentialsAccessTokenProvider(Options() with {
+            ClientSecretProvider = _ => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound)
+        }, new MockHandler((_, _) => Result(Metadata())));
+        Assert.AreEqual(TokenAcquisitionFailure.Credentials,
+            (await Assert.ThrowsExactlyAsync<TokenAcquisitionException>(() => secret.GetAccessTokenAsync().AsTask())).Failure);
+        using var unrelatedCancellation = new ClientCredentialsAccessTokenProvider(Options(), new MockHandler((_, _) => throw new OperationCanceledException(TestSecret)));
+        Assert.AreEqual(TokenAcquisitionFailure.Unavailable,
+            (await Assert.ThrowsExactlyAsync<TokenAcquisitionException>(() => unrelatedCancellation.GetAccessTokenAsync().AsTask())).Failure);
+    }
+
+    [TestMethod]
     public async Task BasicCredentialsAreFormEncodedAndOnlySentToDiscoveredTokenEndpoint()
     {
         var time = new ManualTimeProvider();

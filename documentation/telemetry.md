@@ -4,6 +4,9 @@ Implemented in source on 19 October 2026 and included in preview.12, published o
 Telemetry is opt-in and uses standard .NET `Meter`, `ActivitySource` and `ILogger` APIs. No
 external exporter, collector, account or paid service is enabled by the library.
 
+Preview.14 also preserves bounded transport reason codes and local connection IDs;
+see [TCP connection reliability](tcp-connection-reliability.md#diagnostics-and-bridges).
+
 ## Register and own one dispatcher
 
 ```csharp

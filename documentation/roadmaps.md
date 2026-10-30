@@ -7,6 +7,82 @@ disposable pub/sub subscriptions. Client requests use one remote database; local
 composition and offline synchronization are outside this connector. MessagePack remains open
 source. See [integration](tcp-repository.md) and [release notes](preview11-release-notes.md).
 
+## Proposed: TCP connection reuse and optional pooling
+
+Recorded 30 October 2026. **Status: performance investigation; not implemented or required.**
+Pooling is an optional transport optimization, not a requirement of InterfaceDB's storage model.
+No measured benefit has yet established a need for it. Keep the current behavior available;
+adopt a reuse mechanism only when representative measurements justify its complexity and cost.
+
+The [typed TCP wrapper](tcp-repository.md) currently opens a TCP/TLS connection, authenticates,
+acquires an exclusive data-scope storage lease, runs an operation against a bounded fresh snapshot,
+then closes the session. An established TCP connection can carry multiple requests, but TCP does
+not preserve a connection after the wrapper disposes it. Reuse could avoid repeated connection,
+TLS and authentication setup; it does not itself reduce snapshot reads or storage work.
+
+Evaluate these alternatives separately:
+
+| Alternative | Intended benefit and constraint |
+| --- | --- |
+| Connection per operation (current baseline) | Simple lifetime and isolation; pays connection setup on each operation. |
+| One persistent connection owned by a client/repository | Reuses setup for sequential operations without a pool. Must release the storage lease between operations. |
+| Optional bounded pool of authenticated connections | Borrows an idle compatible connection for an operation and returns a healthy connection afterward. Consider only when multiple independent callers benefit beyond the single-connection option. |
+
+The current repository serializes its operations. A larger pool alone does not add repository
+concurrency or remove contention between clients sharing one data scope. Storage-provider handle
+pooling is a separate provider concern; page-based storage is neither a prerequisite nor a reason
+to enable TCP pooling. Keep connection management independent of storage engines and serializers,
+using focused abstractions, composition and DI for acquisition, ownership and reuse policy.
+
+### Design and correctness requirements
+
+1. Separate authenticated connection lifetime from storage-operation lease lifetime before
+   reusing connections. An idle connection must hold no exclusive data-scope lease. Preserve the
+   complete snapshot/operation boundary; release ownership only after admitted work has settled,
+   including cancellation, timeout and disconnect. Do not release a lease while a commit is running.
+2. Bind reuse to the endpoint, TLS trust/credential identity, authenticated account, store alias,
+   server-approved data scope and negotiated protocol/serializer compatibility. Do not lend a
+   session across accounts or scopes, or place raw credentials in pool keys or diagnostics.
+3. Continue authorization checks for every operation. Enforce authentication expiry, account
+   switching, scope changes and server policy/version changes. Retire or securely reauthenticate
+   sessions as appropriate; pooling must not extend an authorization grant or enable offline access.
+4. Allow only one borrower and one active request sequence per connection unless a separately
+   designed multiplexing protocol is introduced. Return only clean, fully consumed sessions;
+   discard connections with pending replies, transport faults or uncertain mutation outcomes.
+   Preserve durable acknowledgements and reconciliation; never automatically replay an uncertain write.
+5. Bound total/idle connections, acquisition waits and idle/absolute lifetimes. Support cancellation,
+   disposal and host shutdown, and reserve capacity for ordinary operations alongside subscriptions.
+   Evaluate any intermediary tunnel limits too. Configure budgets from measured workloads rather
+   than removing admission safeguards or keeping unlimited idle sockets.
+6. Keep pub/sub connections under their explicit subscription ownership, separate from borrowed
+   operation connections. Preserve client-owned reconnect/resubscribe, change cursors and catch-up;
+   healthy sources must not start polling for data. Pooling does not fix idle-tunnel or token-renewal bugs.
+7. Negotiate any new lease/session behavior explicitly and test old/new peer combinations. Existing
+   peers must retain their supported behavior or receive a clear compatibility rejection; never
+   silently reinterpret a session that an older host still treats as an exclusive storage lease.
+
+### Measurement and adoption gate
+
+First capture a reproducible baseline, separating connection/TLS/authentication setup, admission
+wait, snapshot hydration and actual storage work. Compare the three alternatives with identical
+payloads, authorization, serializers, cache settings, durability and result validation. Include
+sequential operations, concurrent clients in the same and different scopes, persistent subscribers,
+direct TCP and a representative tunneled/latency-limited path. Measure both cold and warm behavior.
+
+Record p50/p95/p99 end-to-end latency, throughput, handshake/authentication counts, CPU, allocations,
+open/idle sockets, queue waits and rejections. Report regressions as well as gains, especially at
+low concurrency. Do not attribute changes in snapshot/query implementation to connection reuse.
+
+Require regression coverage for cross-account isolation, same-scope competing clients, policy and
+token changes, subscription delivery across reconnect, stale/broken pooled connections, cancellation,
+shutdown/drain, revision conflicts and lost acknowledgements. Compare committed values and reopen
+results, not merely operation counts. Set workload-specific acceptance targets before comparing runs.
+
+Choose the simplest option that meets those targets without weakening existing guarantees. If a
+single persistent connection is sufficient, do not add a pool. If no repeatable improvement justifies
+either option, retain the current lifecycle. Document the tested workload, resource trade-offs and
+compatibility requirements before enabling a new default; this proposal is not a release gate.
+
 ## Current Baseline
 
 The file-backed provider currently includes:

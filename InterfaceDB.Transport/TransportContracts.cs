@@ -63,7 +63,7 @@ public enum RemoteErrorCode
     AuthenticationRequired, AuthenticationExpired
 }
 
-public enum TcpStoreAuthenticationMode { MutualTls, JwtBearer, MutualTlsAndJwtBearer }
+public enum TcpStoreAuthenticationMode { MutualTls, JwtBearer, MutualTlsAndJwtBearer, Provider }
 
 public class RemoteStoreException : IOException
 {
@@ -80,7 +80,10 @@ public sealed class RemoteCommitOutcomeUnknownException : RemoteStoreException
 }
 
 /// <summary>Public compatibility and opaque data boundary approved by the server.</summary>
-public sealed record TcpStoreDescriptor(CompatibilityManifest Manifest, string ScopeIdentity);
+public sealed record TcpStoreDescriptor(CompatibilityManifest Manifest, string ScopeIdentity)
+{
+    public AccountIdentity? AccountIdentity { get; init; }
+}
 
 public sealed record TcpStoreClientOptions
 {
@@ -97,6 +100,10 @@ public sealed record TcpStoreClientOptions
     public TcpStoreAuthenticationMode AuthenticationMode { get; init; } = TcpStoreAuthenticationMode.MutualTls;
     /// <summary>Obtains a caller-supplied or identity-provider-issued token before connecting. Never replays storage operations.</summary>
     public IAccessTokenProvider? TokenProvider { get; init; }
+    /// <summary>Credentials for Provider mode. Sent only after TLS server authentication.</summary>
+    public IClientCredentialsProvider? CredentialsProvider { get; init; }
+    /// <summary>Optional stable account binding. A different server-authenticated account is rejected.</summary>
+    public AccountIdentity? ExpectedAccountIdentity { get; init; }
     public EncodedStoreCapabilities RequiredCapabilities { get; init; } = EncodedStoreCapabilities.All;
     public TransportLimits Limits { get; init; } = new();
     public TimeSpan ConnectTimeout { get; init; } = TimeSpan.FromSeconds(15);
@@ -124,7 +131,10 @@ public sealed record TcpStoreHostOptions
     public Func<X509Certificate2, string, bool>? AuthorizeClient { get; init; }
     public TcpStoreAuthenticationMode AuthenticationMode { get; init; } = TcpStoreAuthenticationMode.MutualTls;
     public IAccessTokenValidator? TokenValidator { get; init; }
-    /// <summary>Required in JWT modes: authorize the validated identity for this alias and requested capabilities.</summary>
+    public IAuthenticationProvider? AuthenticationProvider { get; init; }
+    /// <summary>Optional dedicated registration endpoint in Provider mode. Never exposes the credential repository.</summary>
+    public IDatabaseAccountManager? AccountManager { get; init; }
+    /// <summary>Required in JWT/Provider modes: authorize the validated identity for this alias and requested capabilities.</summary>
     public Func<AuthenticatedIdentity, string, EncodedStoreCapabilities, bool>? AuthorizeIdentity { get; init; }
     /// <summary>Optional default data policy. Null leaves authenticated data unpartitioned; authentication still applies.</summary>
     public IDataAccessPolicy? DefaultAccessPolicy { get; init; }
@@ -158,8 +168,8 @@ internal static partial class TransportValidation
     internal const int MaximumHelloFrameBytes = 64 * 1024;
     internal const int MaximumAccessTokenBytes = 16 * 1024;
     internal const int MaximumControlStringBytes = 1024;
-    internal static bool RequiresCertificate(TcpStoreAuthenticationMode mode) => mode != TcpStoreAuthenticationMode.JwtBearer;
-    internal static bool RequiresToken(TcpStoreAuthenticationMode mode) => mode != TcpStoreAuthenticationMode.MutualTls;
+    internal static bool RequiresCertificate(TcpStoreAuthenticationMode mode) => mode is TcpStoreAuthenticationMode.MutualTls or TcpStoreAuthenticationMode.MutualTlsAndJwtBearer;
+    internal static bool RequiresToken(TcpStoreAuthenticationMode mode) => mode is TcpStoreAuthenticationMode.JwtBearer or TcpStoreAuthenticationMode.MutualTlsAndJwtBearer;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     internal static void ControlString(string? value, bool nullable)
@@ -243,7 +253,7 @@ internal static partial class TransportValidation
     }
 }
 
-internal enum WireMessageKind { Hello = 1, HelloResult, Request, Response, Close, Subscribe, Changed, Discover }
+internal enum WireMessageKind { Hello = 1, HelloResult, Request, Response, Close, Subscribe, Changed, Discover, CreateAccount, AccountResult }
 
 internal sealed record WireMessage
 {

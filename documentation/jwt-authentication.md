@@ -1,5 +1,9 @@
 # JWT access for the TCP store
 
+This guide covers JWT modes. Preview.14 also supports a separate
+[native username/password provider](native-account-authentication.md), with no Keycloak dependency.
+Selecting it is explicit on both client and host; JWT configuration remains supported unchanged.
+
 The selected deployment uses **TLS plus a required JWT access token**, with local Keycloak as the
 first identity provider. Every admitted storage session authenticates first. A client with no token
 can use its configured service credentials to obtain one before opening the TCP connection; a
@@ -238,6 +242,11 @@ for different resolved data scopes; a second session for the same scope receives
 in-session token replacement. Obtain a fresh
 token and explicitly open a new session. Reusing the service token provider supplies a cached valid
 token or obtains a fresh one as needed.
+
+The preview.14 [connection-reliability changes](tcp-connection-reliability.md) let typed
+pub/sub subscriptions reauthenticate immediately after a known token expiry. They do not
+extend the old session's grant. The same guide distinguishes retryable token-endpoint
+timeouts/network failures from TLS, credential and policy failures.
 
 A mutation already admitted before expiration may complete durably. An expired token does not undo
 that work. Lost acknowledgements, disconnection and post-dispatch cancellation retain the existing

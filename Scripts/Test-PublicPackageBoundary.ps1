@@ -1,6 +1,6 @@
 param(
     [string] $PackageDirectory = 'artifacts/packages',
-    [string] $Version = '1.0.0-preview.13'
+    [string] $Version = '1.0.0-preview.14'
 )
 
 $ErrorActionPreference = 'Stop'

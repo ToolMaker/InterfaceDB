@@ -5,7 +5,8 @@ The server now selects data scope through `IDataAccessPolicy`. This replaces
 capability flags. Client and host must be upgraded together: transport frame version 3
 rejects older frames. See the [release status and verification](preview13-validation.md) before selecting package versions.
 
-Authentication remains independent. JWT modes still validate tokens and require the
+Authentication remains independent. The unreleased [native-account provider](native-account-authentication.md)
+also supplies server-validated account identities to these policies. JWT modes still validate tokens and require the
 host's `AuthorizeIdentity` callback for alias/operation admission. Certificate modes still
 validate and authorize client certificates. No data policy never means no transport authentication.
 Local File and SegmentCore repositories require no tokens or changes to their APIs.
@@ -16,14 +17,15 @@ These are separate decisions, applied on the server in this order:
 
 | Layer | Responsibility | Configuration |
 |---|---|---|
-| Transport authentication | Establish who connected; validate TLS and, in JWT modes, signature, issuer, audience and token lifetime. | `TokenValidator`, authentication mode and certificate trust. |
-| Store/operation authorization | Decide whether that identity may use this alias and the requested operations. Roles or application permissions belong here. | `AuthorizeIdentity` checks alias and operations in JWT modes; `AuthorizeClient` admits a certificate to an alias in certificate modes. Registered store capabilities also apply. |
-| Data authorization and selection | Check tenant/account/group membership and resolve one permitted data partition. | `IDataAccessPolicy` on the server registration; the built-in identity policies require JWT claims. |
+| Transport authentication | Establish who connected; validate TLS and the configured credential. JWT modes validate signature, issuer, audience and lifetime. | `TokenValidator` or the unreleased `IAuthenticationProvider`, authentication mode and certificate trust. |
+| Store/operation authorization | Decide whether that identity may use this alias and the requested operations. Roles or application permissions belong here. | `AuthorizeIdentity` checks alias and operations in JWT/Provider modes; `AuthorizeClient` admits a certificate to an alias in certificate modes. Registered store capabilities also apply. |
+| Data authorization and selection | Check tenant/account/group membership and resolve one permitted data partition. | `IDataAccessPolicy` on the server registration; built-in identity policies require trusted identity claims. |
 | Ownership on writes | Require declared record fields to match the authorized claim values before committing. | `ContractDataAccessPolicy<T>` and `[StorageAccessClaim]`. |
 | Encryption at rest | Protect persisted payload contents when configured. | The storage serializer/encryptor and key provider; independent of the access policy. |
 
 `SubjectDataAccessPolicy`, `ClaimDataAccessPolicy` and `ContractDataAccessPolicy<T>` require a
-validated JWT identity. Use `JwtBearer` or `MutualTlsAndJwtBearer` with these policies. In
+validated identity claims. Use `JwtBearer`, `MutualTlsAndJwtBearer`, or the unreleased `Provider`
+mode supplying an authenticated issuer/subject and any required membership claims. In
 certificate-only `MutualTls` mode, `DataAccessContext.Identity` is null and the context does not
 contain the validated client certificate; these identity policies therefore deny access.
 Certificate trust and `AuthorizeClient` still protect alias admission. Unrestricted access and

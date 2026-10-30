@@ -1,7 +1,7 @@
 # InterfaceDB Documentation
 
-Preview.13: [release and upgrade notes](preview13-release-notes.md) and
-[publication/validation status](preview13-validation.md).
+Preview.14: [release and upgrade notes](preview14-release-notes.md) and
+[publication/validation status](preview14-validation.md).
 
 Start with these documents:
 
@@ -27,7 +27,10 @@ Use the focused guides when needed:
 
 - [Online TCP repository](tcp-repository.md): direct remote access and disposable pub/sub, without a local client database; added in preview.11.
 - [TCP hosting](tcp-transport.md): TLS listener, persistent server storage, Docker and operating limits.
+- [TCP connection reliability](tcp-connection-reliability.md): preview.14; safe retry categories, subscription renewal, admission backoff and diagnostic reason codes.
+- [TCP connection reuse and optional pooling roadmap](roadmaps.md#proposed-tcp-connection-reuse-and-optional-pooling): proposed performance investigation; compares a persistent connection with a bounded pool while preserving operation leases and isolation.
 - [JWT authentication](jwt-authentication.md): supplied user tokens, service credentials and Keycloak configuration.
+- [Native username/password authentication](native-account-authentication.md): preview.14; single/multiple accounts, encrypted credential storage, registration policies and account isolation.
 - [Preview.11 Release Notes](preview11-release-notes.md): public TCP/authentication packages, serializer reuse and upgrade guidance.
 
 - [Public package overview](../Idb.Libraries/README.md): preview.12 behavior, examples, defaults and upgrade requirements.

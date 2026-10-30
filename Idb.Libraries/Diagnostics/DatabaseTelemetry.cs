@@ -91,7 +91,8 @@ public sealed class DatabaseTelemetry : IDatabaseTelemetry, IAsyncDisposable
     {
         var component = Label(observation.Component); var operation = Label(observation.Operation);
         var outcome = Label(observation.Outcome); var error = Label(observation.Error);
-        var tags = new TagList { { "component", component }, { "operation", operation }, { "outcome", outcome }, { "error.code", error } };
+        var reason = Label(observation.Reason);
+        var tags = new TagList { { "component", component }, { "operation", operation }, { "outcome", outcome }, { "error.code", error }, { "error.reason", reason } };
         if (_options.Metrics)
         {
             Safe(() => _completed.Add(1, tags));
@@ -107,7 +108,8 @@ public sealed class DatabaseTelemetry : IDatabaseTelemetry, IAsyncDisposable
                     : observation.Component == DatabaseComponent.TcpHost ? ActivityKind.Server : ActivityKind.Internal,
                 new ActivityContext(observation.ParentContext.TraceId, observation.ParentContext.SpanId, observation.ParentContext.TraceFlags),
                 tags: tags, startTime: observation.StartedAt));
-            Safe(() => { activity?.SetEndTime((observation.StartedAt + observation.Duration).UtcDateTime);
+            Safe(() => { if (observation.ConnectionId != Guid.Empty) activity?.SetTag("connection.id", observation.ConnectionId.ToString("N"));
+                activity?.SetEndTime((observation.StartedAt + observation.Duration).UtcDateTime);
                 if (observation.Outcome == DatabaseOutcome.Failure) activity?.SetStatus(ActivityStatusCode.Error); });
         }
         var level = observation.Recoverable || observation.Error is DatabaseError.Denied or DatabaseError.InvalidInput or DatabaseError.Conflict
@@ -115,9 +117,10 @@ public sealed class DatabaseTelemetry : IDatabaseTelemetry, IAsyncDisposable
         if (observation.Log && observation.Outcome == DatabaseOutcome.Failure && level >= _options.MinimumLogLevel)
             Safe(() => { if (_logger.IsEnabled(level)) _logger.Log(level,
                 new EventId(1001, "DatabaseOperation"),
-                "Database {Component} {Operation}: {Outcome}, {ErrorCode}, {DurationMs} ms; trace {TraceId}",
+                "Database {Component} {Operation}: {Outcome}, {ErrorCode}, {DurationMs} ms; trace {TraceId}; reason {ReasonCode}; connection {ConnectionId}",
                 component, operation, outcome, error, observation.Duration.TotalMilliseconds,
-                observation.ParentContext.TraceId == default ? null : observation.ParentContext.TraceId.ToHexString()); });
+                observation.ParentContext.TraceId == default ? null : observation.ParentContext.TraceId.ToHexString(), reason,
+                observation.ConnectionId == Guid.Empty ? null : observation.ConnectionId.ToString("N")); });
         Safe(() => activity?.Dispose());
         Activity.Current = null;
     }

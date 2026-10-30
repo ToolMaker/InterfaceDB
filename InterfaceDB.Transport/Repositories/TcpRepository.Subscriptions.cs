@@ -49,27 +49,45 @@ public sealed partial class TcpRepository<TContract> where TContract : class, IS
             try
             {
                 await _owner.EnsureScopeAsync(_stop.Token).ConfigureAwait(false);
-                await using var connection = await TcpEncodedEnvelopeStore.ConnectCoreAsync(_owner._options.Connection with
+                while (!_stop.IsCancellationRequested)
                 {
-                    TokenProvider = _owner._tokens,
-                    Telemetry = _owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
-                    ExpectedScopeIdentity = Volatile.Read(ref _owner._scopeIdentity) ?? _owner._options.Connection.ExpectedScopeIdentity,
-                    RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
-                        | EncodedStoreCapabilities.DurableCommits
-                }, true, _stop.Token).ConfigureAwait(false);
-                _owner.BindScope(connection.ScopeIdentity);
-                _ready.TrySetResult();
-                // Acknowledge-before-snapshot ordering closes the registration/snapshot race.
-                _publisher.PublishChanged();
-                var receive = connection.ReadChangesAsync(_publisher.PublishChanged, _stop.Token);
-                var completed = await Task.WhenAny(receive, _delivery.Completion).ConfigureAwait(false);
-                if (completed == _delivery.Completion)
-                {
-                    await _stop.CancelAsync().ConfigureAwait(false);
-                    try { await receive.ConfigureAwait(false); } catch (OperationCanceledException) { }
-                    await _delivery.Completion.ConfigureAwait(false);
+                    await using var connection = await TcpEncodedEnvelopeStore.ConnectCoreAsync(_owner._options.Connection with
+                    {
+                        TokenProvider = _owner._tokens,
+                        ExpectedAccountIdentity = Volatile.Read(ref _owner._accountIdentity),
+                        Telemetry = _owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
+                        ExpectedScopeIdentity = Volatile.Read(ref _owner._scopeIdentity) ?? _owner._options.Connection.ExpectedScopeIdentity,
+                        RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate
+                            | EncodedStoreCapabilities.DurableCommits
+                    }, true, _stop.Token).ConfigureAwait(false);
+                    _owner.BindAccount(connection.AccountIdentity);
+                    _owner.BindScope(connection.ScopeIdentity);
+                    _ready.TrySetResult();
+                    // Acknowledge-before-snapshot ordering closes the registration/snapshot race.
+                    _publisher.PublishChanged();
+                    var receive = connection.ReadChangesAsync(_publisher.PublishChanged, _stop.Token);
+                    var completed = await Task.WhenAny(receive, _delivery.Completion).ConfigureAwait(false);
+                    if (completed == _delivery.Completion)
+                    {
+                        await _stop.CancelAsync().ConfigureAwait(false);
+                        try { await receive.ConfigureAwait(false); } catch (OperationCanceledException) { }
+                        await _delivery.Completion.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        try { await receive.ConfigureAwait(false); }
+                        catch (TcpEncodedEnvelopeStore.SubscriptionTokenExpiredException)
+                        {
+                            // Reauthenticate and rebind the same identity/scope, then publish a catch-up hint.
+                            // An expired fixed credential, changed identity or denial still ends this subscription.
+                            DatabaseTelemetryScope.Start(_owner._options.Connection.Telemetry ?? _owner._options.StoragePolicy.Telemetry,
+                                DatabaseComponent.TcpRepository, DatabaseOperation.Subscribe)
+                                .CompleteWithReason(DatabaseFailureReason.Renewal, DatabaseOutcome.Success, DatabaseError.None);
+                            continue;
+                        }
+                    }
+                    break;
                 }
-                else await receive.ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { _ready.TrySetCanceled(); }
             catch (Exception exception)

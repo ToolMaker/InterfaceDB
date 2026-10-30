@@ -30,7 +30,9 @@ try
             {
                 new JsonStringEnumConverter<TcpStoreAuthenticationMode>(allowIntegerValues: false),
                 new JsonStringEnumConverter<X509RevocationMode>(allowIntegerValues: false),
-                new JsonStringEnumConverter<PartitionIndexMode>(allowIntegerValues: false)
+                new JsonStringEnumConverter<PartitionIndexMode>(allowIntegerValues: false),
+                new JsonStringEnumConverter<DatabaseAccountMode>(allowIntegerValues: false),
+                new JsonStringEnumConverter<AccountCreationMode>(allowIntegerValues: false)
             }
         }) ?? throw new ArgumentException("The host configuration is empty.");
     configuration.Validate();
@@ -45,7 +47,7 @@ try
         || !identityProviderCa.Extensions.OfType<X509BasicConstraintsExtension>().Any(extension => extension.CertificateAuthority)))
         throw new ArgumentException("The identity provider trust certificate must be a currently valid CA certificate.");
     // The validator outlives HostLifetime; disposal therefore happens only after host work drains.
-    using var tokenValidator = configuration.AuthenticationMode == TcpStoreAuthenticationMode.MutualTls
+    using var tokenValidator = configuration.AuthenticationMode is TcpStoreAuthenticationMode.MutualTls or TcpStoreAuthenticationMode.Provider
         ? null : new JwtAccessTokenValidator(configuration.JwtValidation!,
             identityProviderCa is null ? null : CertificateTrust.IdentityProviderHandler(identityProviderCa, configuration.PrivateCaRevocationMode));
     var trustedPins = configuration.TrustedClientCertificateSha256.Select(Convert.FromHexString).ToArray();
@@ -62,6 +64,10 @@ try
     bool IsTrustedClient(X509Certificate2 client) => CertificateTrust.IsCurrentlyValid(client)
         && CertificateTrust.HasUsage(client, CertificateTrust.ClientAuthentication)
         && trustedPins.Any(pin => CryptographicOperations.FixedTimeEquals(pin, client.GetCertHash(HashAlgorithmName.SHA256)));
+
+    // Created before application storage/listener; disposed after the host and its sessions drain.
+    await using var localAccounts = configuration.LocalAccounts is null ? null
+        : await configuration.LocalAccounts.OpenAsync(configurationDirectory, configuration.DataDirectory);
 
     IAsyncDisposable owner;
     TcpStoreRegistration registration;
@@ -101,9 +107,13 @@ try
         DefaultAccessPolicy = configuration.DataAccessPolicy switch
         { "subject" => new SubjectDataAccessPolicy(), "claim" => new ClaimDataAccessPolicy(configuration.DataScopeClaim!, configuration.DataScope), _ => null },
         TokenValidator = tokenValidator,
+        AuthenticationProvider = localAccounts?.Authentication,
+        AccountManager = localAccounts?.Accounts,
         // Token scopes authorize the alias; the data policy separately resolves its record partition.
         // Applications requiring narrower operations/resources supply their own authorization policy.
-        AuthorizeIdentity = tokenValidator is null ? null : (identity, alias, _) => string.Equals(alias, configuration.StoreAlias, StringComparison.Ordinal)
+        AuthorizeIdentity = localAccounts is not null
+            ? (identity, alias, _) => alias == configuration.StoreAlias && identity.Principal.IsInRole("database-user")
+            : tokenValidator is null ? null : (identity, alias, _) => string.Equals(alias, configuration.StoreAlias, StringComparison.Ordinal)
             && configuration.RequiredTokenScopes.All(required => identity.Principal.FindAll("scope")
                 .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
                 .Contains(required, StringComparer.Ordinal)),
@@ -197,6 +207,7 @@ internal sealed class HostConfiguration
     public string? DataScopeClaim { get; init; }
     public string? DataScope { get; init; }
     public JwtAccessTokenValidatorOptions? JwtValidation { get; init; }
+    public LocalAccountHostConfiguration? LocalAccounts { get; init; }
     public string? IdentityProviderCaCertificatePath { get; init; }
     public X509RevocationMode PrivateCaRevocationMode { get; init; } = X509RevocationMode.Online;
     public string[] RequiredTokenScopes { get; init; } = ["interfacedb.storage"];
@@ -227,9 +238,19 @@ internal sealed class HostConfiguration
             throw new ArgumentException("Invalid connection or enumeration limits.");
         if (DataAccessPolicy is not ("none" or "subject" or "claim")) throw new ArgumentException("Unknown data access policy.");
         if (DataAccessPolicy != "none" && AuthenticationMode == TcpStoreAuthenticationMode.MutualTls)
-            throw new ArgumentException("The configured data policy requires JWT authentication.");
+            throw new ArgumentException("The configured data policy requires JWT or Provider authentication.");
         if (DataAccessPolicy == "claim") ArgumentException.ThrowIfNullOrWhiteSpace(DataScopeClaim);
         if (!Enum.IsDefined(AuthenticationMode)) throw new ArgumentException("The configured authentication mode is unknown.");
+        if (AuthenticationMode == TcpStoreAuthenticationMode.Provider)
+        {
+            if (LocalAccounts is null) throw new ArgumentException("Provider mode requires localAccounts configuration in this sample.");
+            LocalAccounts.Validate();
+            if (JwtValidation is not null || IdentityProviderCaCertificatePath is not null)
+                throw new ArgumentException("Provider mode cannot also configure JWT authorities.");
+            if (LocalAccounts.Accounts.AccountMode == DatabaseAccountMode.MultipleAccounts && DataAccessPolicy == "none")
+                throw new ArgumentException("Multi-account mode requires an explicit data policy.");
+        }
+        else if (LocalAccounts is not null) throw new ArgumentException("Local accounts require Provider mode.");
         if (AuthenticationMode == TcpStoreAuthenticationMode.MutualTls
             && (JwtValidation is not null || IdentityProviderCaCertificatePath is not null))
             throw new ArgumentException("JWT validation settings require JwtBearer or MutualTlsAndJwtBearer authentication mode.");
@@ -238,10 +259,10 @@ internal sealed class HostConfiguration
         if (PrivateCaRevocationMode is not (X509RevocationMode.Online or X509RevocationMode.NoCheck))
             throw new ArgumentException("Private CA revocation mode must be Online or NoCheck.");
         if (TrustedClientCertificateSha256 is null
-            || (AuthenticationMode != TcpStoreAuthenticationMode.JwtBearer && TrustedClientCertificateSha256.Length == 0)
+            || (AuthenticationMode is TcpStoreAuthenticationMode.MutualTls or TcpStoreAuthenticationMode.MutualTlsAndJwtBearer && TrustedClientCertificateSha256.Length == 0)
             || TrustedClientCertificateSha256.Any(pin => pin is null || pin.Length != 64 || pin.Any(c => !Uri.IsHexDigit(c))))
             throw new ArgumentException("At least one trusted client certificate SHA-256 fingerprint is required, using exactly 64 hexadecimal characters per certificate.");
-        if (AuthenticationMode != TcpStoreAuthenticationMode.MutualTls)
+        if (AuthenticationMode is TcpStoreAuthenticationMode.JwtBearer or TcpStoreAuthenticationMode.MutualTlsAndJwtBearer)
         {
             if (JwtValidation?.Authorities is not { Count: > 0 })
                 throw new ArgumentException("JWT authentication requires explicitly configured trusted authorities.");

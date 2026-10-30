@@ -1,4 +1,5 @@
 using Idb.Diagnostics;
+using Idb.Authentication;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -20,6 +21,8 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     private long _correlationId = 1;
     private int _disposed;
     private int _broken;
+    private Guid DiagnosticConnectionId { get; init; }
+    private DateTimeOffset? SubscriptionTokenExpiry { get; init; }
 
     private TcpEncodedEnvelopeStore(TcpClient tcp, SslStream stream, TcpStoreClientOptions options,
         TransportLimits limits, EncodedStoreCapabilities capabilities)
@@ -34,6 +37,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
 
     public CompatibilityManifest RemoteManifest { get; private init; } = null!;
     public string ScopeIdentity { get; private init; } = null!;
+    public AccountIdentity? AccountIdentity { get; private init; }
     public static async ValueTask<CompatibilityManifest> DiscoverAsync(TcpStoreClientOptions options, CancellationToken token = default)
         => (await DiscoverStoreAsync(options, token).ConfigureAwait(false)).Manifest;
 
@@ -41,7 +45,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     {
         await using var discovery = await ConnectCoreAsync(options with
             { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits }, false, token, true).ConfigureAwait(false);
-        return new(discovery.RemoteManifest, discovery.ScopeIdentity);
+        return new(discovery.RemoteManifest, discovery.ScopeIdentity) { AccountIdentity = discovery.AccountIdentity };
     }
     public TransportLimits Limits { get; }
     public EncodedStoreCapabilities Capabilities { get; }
@@ -57,11 +61,14 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
 
     private static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncObserved(TcpStoreClientOptions options,
         bool subscription, CancellationToken cancellationToken, bool discovery = false)
-        => TransportTelemetry.ObserveAsync(options.Telemetry, DatabaseComponent.TcpClient, DatabaseOperation.Connect,
-                () => ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery), log: true, bytes: 0);
+    {
+        var id = Guid.NewGuid();
+        return TransportTelemetry.ObserveAsync(options.Telemetry, DatabaseComponent.TcpClient, DatabaseOperation.Connect,
+                () => ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery, id), log: true, connectionId: id);
+    }
 
     private static async ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncUnobserved(TcpStoreClientOptions options,
-        bool subscription, CancellationToken cancellationToken, bool discovery = false)
+        bool subscription, CancellationToken cancellationToken, bool discovery = false, Guid diagnosticId = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Host);
@@ -74,6 +81,9 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
         if (options.ClientCertificate is { HasPrivateKey: false }) throw new ArgumentException("The client certificate requires a private key.");
         if (!TransportValidation.RequiresToken(options.AuthenticationMode) && options.TokenProvider is not null)
             throw new ArgumentException("A token provider requires a JWT authentication mode.");
+        if (options.AuthenticationMode == TcpStoreAuthenticationMode.Provider) ArgumentNullException.ThrowIfNull(options.CredentialsProvider);
+        else if (options.CredentialsProvider is not null || options.ExpectedAccountIdentity is not null)
+            throw new ArgumentException("Provider credentials and account binding require Provider mode.");
         TransportValidation.Alias(options.StoreAlias);
         if (options.RequestedScope is not null) TransportValidation.ControlString(options.RequestedScope, false);
         if (options.ExpectedScopeIdentity is not null) TransportValidation.ControlString(options.ExpectedScopeIdentity, false);
@@ -117,6 +127,8 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 throw new EndOfStreamException("The server closed before sending a TLS response.", exception);
             }
             transport.CompleteHandshake();
+            var authenticationData = options.AuthenticationMode == TcpStoreAuthenticationMode.Provider
+                ? ProviderAuthenticationWire.Encode(await options.CredentialsProvider!.GetCredentialsAsync(deadline.Token).ConfigureAwait(false)) : token?.Value;
             await MessagePackFrameCodec.WriteAsync(stream, new WireMessage
             {
                 Kind = discovery ? WireMessageKind.Discover : subscription ? WireMessageKind.Subscribe : WireMessageKind.Hello,
@@ -126,13 +138,13 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 Limits = options.Limits,
                 Capabilities = options.RequiredCapabilities,
                 AuthenticationMode = options.AuthenticationMode,
-                AccessToken = token?.Value, RequestedScope = options.RequestedScope, ScopeIdentity = options.ExpectedScopeIdentity
+                AccessToken = authenticationData, RequestedScope = options.RequestedScope, ScopeIdentity = options.ExpectedScopeIdentity
             }, options.Limits, deadline.Token).ConfigureAwait(false);
             var reply = await MessagePackFrameCodec.ReadAsync(stream, options.Limits, deadline.Token).ConfigureAwait(false)
                 ?? throw new EndOfStreamException("The server closed during compatibility negotiation.");
             if (reply.Kind != WireMessageKind.HelloResult || reply.CorrelationId != 1
                 || reply.Request is not null || reply.Response is not null || reply.StoreAlias is not null
-                || reply.TimeoutMilliseconds != 0 || reply.AccessToken is not null || reply.RequestedScope is not null)
+                || reply.TimeoutMilliseconds != 0 || (reply.AccessToken is not null && options.AuthenticationMode != TcpStoreAuthenticationMode.Provider) || reply.RequestedScope is not null)
                 throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "Invalid handshake response.");
             ThrowRemoteError(reply.Error);
             if (string.IsNullOrWhiteSpace(reply.ScopeIdentity) || (options.ExpectedScopeIdentity is not null && options.ExpectedScopeIdentity != reply.ScopeIdentity)
@@ -142,7 +154,12 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 || reply.Limits != options.Limits.Intersect(reply.Limits))
                 throw new RemoteStoreException(RemoteErrorCode.IncompatibleManifest, "The host did not accept the requested compatibility and resource limits.");
             reply.Limits.Validate();
-            return new TcpEncodedEnvelopeStore(tcp, stream, options, reply.Limits, reply.Capabilities) { RemoteManifest = reply.Manifest, ScopeIdentity = reply.ScopeIdentity };
+            var account = options.AuthenticationMode == TcpStoreAuthenticationMode.Provider ? ProviderAuthenticationWire.ReadReceipt(reply.AccessToken) : null;
+            if (options.ExpectedAccountIdentity is not null && options.ExpectedAccountIdentity != account)
+                throw new UnauthorizedAccessException("The connection authenticated a different account.");
+            return new TcpEncodedEnvelopeStore(tcp, stream, options, reply.Limits, reply.Capabilities)
+                { RemoteManifest = reply.Manifest, ScopeIdentity = reply.ScopeIdentity, AccountIdentity = account,
+                    DiagnosticConnectionId = diagnosticId, SubscriptionTokenExpiry = subscription ? SubscriptionExpiry(token) : null };
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -161,7 +178,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
     public async ValueTask<EncodedStoreResponse> ExecuteAsync(EncodedStoreRequest request,
         CancellationToken cancellationToken = default)
     {
-        var telemetry = DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.TcpClient, request is null ? DatabaseOperation.Unknown : TransportTelemetry.Operation(request.Command), log: true);
+        var telemetry = DatabaseTelemetryScope.Start(_telemetry, DatabaseComponent.TcpClient, request is null ? DatabaseOperation.Unknown : TransportTelemetry.Operation(request.Command), log: true).WithConnection(DiagnosticConnectionId);
         try
         {
         ThrowIfUnavailable();

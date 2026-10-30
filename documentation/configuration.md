@@ -20,7 +20,7 @@ Every repository receives an `IDbContractConfigDto<TContract>`:
 
 Search indexes are declared with `[SearchIndex]` on contract types or members. There is no separate configured-index array.
 
-## Authentication and data policies — preview.13 source
+## Authentication and data policies — preview.14
 
 Local embedded repositories still require no token. For remote access, configure transport
 authentication separately from store/operation permission and tenant/group selection.
@@ -39,6 +39,12 @@ sets those budgets; typed ownership validation uses the typed DI API. See the co
 [policy configuration, examples and upgrade guide](data-access-policies.md) and
 [JWT configuration](jwt-authentication.md). These changes require matching preview.13 client/server
 versions and are not part of preview.12.
+
+For native database usernames/passwords, preview.14 adds `Provider` transport
+mode and `localAccounts` settings in the sample host. Configure single/multiple accounts,
+credential encryption and account-creation permissions separately from the data policy.
+See the [complete native-account configuration](native-account-authentication.md). This is
+included in preview.14 and is not available in preview.13.
 
 ## Stored Runtime Types
 

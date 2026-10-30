@@ -117,8 +117,8 @@ public sealed class ClientCredentialsAccessTokenProvider : IAccessTokenProvider,
         }
         catch (OperationCanceledException)
         {
-            throw new TokenAcquisitionException(Volatile.Read(ref _disposed) != 0
-                ? TokenAcquisitionFailure.Unavailable : TokenAcquisitionFailure.Timeout);
+            throw new TokenAcquisitionException(Volatile.Read(ref _disposed) == 0 && deadline.IsCancellationRequested
+                ? TokenAcquisitionFailure.Timeout : TokenAcquisitionFailure.Unavailable);
         }
         catch (Exception)
         {
@@ -174,7 +174,7 @@ public sealed class ClientCredentialsAccessTokenProvider : IAccessTokenProvider,
     private async ValueTask<JsonDocument> ReadDocumentAsync(HttpRequestMessage request, CancellationToken token)
     {
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        using var response = await SendAsync(request, token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode || response.RequestMessage?.RequestUri is { } final && final != request.RequestUri
             || response.Content.Headers.ContentLength > _options.MaximumDocumentBytes)
             throw new TokenAcquisitionException(TokenAcquisitionFailure.Http);
@@ -184,7 +184,7 @@ public sealed class ClientCredentialsAccessTokenProvider : IAccessTokenProvider,
         while (true)
         {
             var remaining = _options.MaximumDocumentBytes - checked((int)body.Length);
-            var read = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)), token).ConfigureAwait(false);
+            var read = await ReadAsync(stream, buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)), token).ConfigureAwait(false);
             if (read == 0) break;
             if (read > remaining) throw new TokenAcquisitionException(TokenAcquisitionFailure.Http);
             body.Write(buffer, 0, read);
@@ -199,6 +199,44 @@ public sealed class ClientCredentialsAccessTokenProvider : IAccessTokenProvider,
             return document;
         }
         catch (JsonException) { throw new TokenAcquisitionException(TokenAcquisitionFailure.Http); }
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+    {
+        try { return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false); }
+        catch (Exception error) when (error is HttpRequestException or IOException or System.Security.Authentication.AuthenticationException)
+        { throw new TokenAcquisitionException(EndpointFailure(error)); }
+    }
+
+    private static async ValueTask<int> ReadAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
+    {
+        try { return await stream.ReadAsync(buffer, token).ConfigureAwait(false); }
+        catch (Exception error) when (error is HttpRequestException or IOException or System.Security.Authentication.AuthenticationException)
+        { throw new TokenAcquisitionException(EndpointFailure(error)); }
+    }
+
+    // Classify only at the HTTP boundary, before redaction. A secret provider's exception must
+    // never be mistaken for a transport outage, and no original exception is retained.
+    private static TokenAcquisitionFailure EndpointFailure(Exception error)
+    {
+        var result = TokenAcquisitionFailure.Unavailable;
+        for (var depth = 0; error is not null && depth < 8; error = error.InnerException!, depth++)
+        {
+            if (error is System.Security.Authentication.AuthenticationException
+                || error is HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError })
+                return TokenAcquisitionFailure.Tls;
+            if (error is HttpRequestException { StatusCode: not null }) return TokenAcquisitionFailure.Http;
+            if (error is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError })
+                result = TokenAcquisitionFailure.Network;
+            if (error is System.Net.Sockets.SocketException socket && socket.SocketErrorCode is
+                System.Net.Sockets.SocketError.HostNotFound or System.Net.Sockets.SocketError.TryAgain
+                or System.Net.Sockets.SocketError.NoData or System.Net.Sockets.SocketError.TimedOut
+                or System.Net.Sockets.SocketError.ConnectionRefused or System.Net.Sockets.SocketError.ConnectionReset
+                or System.Net.Sockets.SocketError.ConnectionAborted or System.Net.Sockets.SocketError.NetworkDown
+                or System.Net.Sockets.SocketError.NetworkUnreachable or System.Net.Sockets.SocketError.HostUnreachable)
+                result = TokenAcquisitionFailure.Network;
+        }
+        return error is null ? result : TokenAcquisitionFailure.Unavailable;
     }
 
     private static bool Supports(JsonElement root, string name, string expected, bool absentDefault)

@@ -27,6 +27,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     }
 
     private readonly TcpStoreHostOptions _options;
+    private readonly IAuthenticationProvider? _authentication;
     private readonly Dictionary<string, RegisteredStore> _stores;
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _shutdown = new();
@@ -41,6 +42,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     private TcpStoreHost(TcpStoreHostOptions options)
     {
         _options = options;
+        _authentication = options.AuthenticationProvider ?? (options.TokenValidator is null ? null : new JwtAuthenticationProvider(options.TokenValidator, options.TimeProvider));
         _stores = new(StringComparer.Ordinal);
         foreach (var registration in options.Stores)
         {
@@ -51,6 +53,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             registration.Manifest.Validate();
             TransportValidation.Capabilities(registration.Store.Capabilities);
             var policy = registration.AccessPolicy ?? options.DefaultAccessPolicy ?? UnrestrictedDataAccessPolicy.Instance;
+            if (_authentication?.RequiresDataIsolation == true && policy is UnrestrictedDataAccessPolicy)
+                throw new ArgumentException("Multi-account authentication requires an explicit partitioning data access policy for every store.");
             if (_stores.Values.Any(existing => ReferenceEquals(existing.Registration.Store, registration.Store)))
                 throw new ArgumentException("A physical store can be registered under only one alias.");
             _stores.Add(registration.Alias, new(registration, new(1, 1), new(StringComparer.Ordinal), policy));
@@ -68,7 +72,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     public IPEndPoint LocalEndPoint { get; }
     public Task Completion => _acceptLoop;
 
-    public static ValueTask<TcpStoreHost> StartAsync(TcpStoreHostOptions options, CancellationToken cancellationToken = default)
+    public static async ValueTask<TcpStoreHost> StartAsync(TcpStoreHostOptions options, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(options);
@@ -83,8 +87,16 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             ArgumentNullException.ThrowIfNull(options.TokenValidator);
             ArgumentNullException.ThrowIfNull(options.AuthorizeIdentity);
         }
+        else if (options.AuthenticationMode == TcpStoreAuthenticationMode.Provider)
+        {
+            ArgumentNullException.ThrowIfNull(options.AuthenticationProvider);
+            ArgumentNullException.ThrowIfNull(options.AuthorizeIdentity);
+            if (options.TokenValidator is not null) throw new ArgumentException("Provider mode cannot also configure TokenValidator.");
+        }
         else if (options.TokenValidator is not null || options.AuthorizeIdentity is not null)
             throw new ArgumentException("Token validation and identity authorization require a JWT authentication mode.");
+        if (options.AuthenticationMode != TcpStoreAuthenticationMode.Provider && (options.AuthenticationProvider is not null || options.AccountManager is not null))
+            throw new ArgumentException("An authentication provider or account manager requires Provider mode.");
         ArgumentNullException.ThrowIfNull(options.Limits);
         if (!options.ServerCertificate.HasPrivateKey) throw new ArgumentException("The server certificate requires a private key.");
         if (options.MaximumConnections is < 1 or > 1024) throw new ArgumentOutOfRangeException(nameof(options.MaximumConnections));
@@ -95,7 +107,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         TransportValidation.Duration(options.IdleTimeout, nameof(options.IdleTimeout));
         TransportValidation.Duration(options.MaximumSessionLifetime, nameof(options.MaximumSessionLifetime));
         TransportValidation.Duration(options.MaximumOperationTimeout, nameof(options.MaximumOperationTimeout));
-        return ValueTask.FromResult(new TcpStoreHost(options));
+        if (options.AuthenticationProvider is not null) await options.AuthenticationProvider.ValidateConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        return new TcpStoreHost(options);
     }
 
     private async Task AcceptLoopAsync()
@@ -129,7 +142,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     {
         DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Connections, 1);
         var handshakeSettled = false;
-        var connectionTelemetry = DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Connect, log: true);
+        var diagnosticId = DatabaseTelemetryOperation.IsEnabled(_options.Telemetry) ? Guid.NewGuid() : Guid.Empty;
+        var connectionTelemetry = DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Connect, log: true).WithConnection(diagnosticId);
         RegisteredStore? lease = null;
         RegisteredStore? selected = null;
         string? scopeLease = null;
@@ -155,29 +169,37 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     Math.Min(TransportValidation.MaximumHelloFrameBytes, _options.Limits.MaximumFrameBytes),
                     handshake.Token).ConfigureAwait(false);
                 if (hello is null) return;
+                if (hello.Kind == WireMessageKind.CreateAccount)
+                {
+                    await ServeAccountCreationAsync(stream, hello, handshake.Token).ConfigureAwait(false);
+                    return;
+                }
                 var rejection = ValidateHello(hello);
                 AuthenticatedIdentity? identity = null;
                 DataAccessScope? accessScope = null;
                 if (rejection == RemoteErrorCode.None && hello.AuthenticationMode != _options.AuthenticationMode)
                     rejection = RemoteErrorCode.AuthenticationRequired;
-                if (rejection == RemoteErrorCode.None && TransportValidation.RequiresToken(_options.AuthenticationMode))
+                if (rejection == RemoteErrorCode.None && _authentication is not null)
                 {
                     if (string.IsNullOrWhiteSpace(hello.AccessToken)) rejection = RemoteErrorCode.AuthenticationRequired;
                     else
                     {
                         try
                         {
-                            identity = await _options.TokenValidator!.ValidateAsync(hello.AccessToken, handshake.Token).ConfigureAwait(false);
+                            var credentials = _options.AuthenticationMode == TcpStoreAuthenticationMode.Provider
+                                ? ProviderAuthenticationWire.Decode(hello.AccessToken) : new AuthenticationCredentials("jwt", hello.AccessToken);
+                            identity = await _authentication.AuthenticateAsync(credentials, handshake.Token).ConfigureAwait(false);
                             if (identity?.Principal.Identity?.IsAuthenticated != true
                                 || identity.ExpiresAt <= _options.TimeProvider.GetUtcNow()) rejection = RemoteErrorCode.Unauthorized;
-                            else if (!_options.AuthorizeIdentity!(identity, hello.StoreAlias!, hello.Capabilities))
+                            else if (!await SessionValidAsync(identity, handshake.Token).ConfigureAwait(false)
+                                || !_options.AuthorizeIdentity!(identity, hello.StoreAlias!, hello.Capabilities))
                                 rejection = RemoteErrorCode.Unauthorized;
                         }
                         catch (OperationCanceledException) when (handshake.IsCancellationRequested) { throw; }
                         catch (Exception)
                         {
                             // Validation libraries/custom validators can include credentials in exception details.
-                            Report(new AuthenticationException("Access token validation or authorization failed."));
+                            Report(new AuthenticationException("Authentication or authorization failed."));
                             rejection = RemoteErrorCode.Unauthorized;
                         }
                     }
@@ -229,7 +251,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 }
                 if (rejection != RemoteErrorCode.None)
                 {
-                    connectionTelemetry.Complete(outcome: DatabaseOutcome.Failure, error: TransportTelemetry.Error(rejection));
+                    connectionTelemetry.CompleteWithReason(TransportTelemetry.Reason(rejection), DatabaseOutcome.Failure,
+                        TransportTelemetry.Error(rejection), recoverable: rejection == RemoteErrorCode.Busy);
                     connectionTelemetry = default;
                 handshakeSettled = true;
                     await MessagePackFrameCodec.WriteAsync(stream, new()
@@ -251,7 +274,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     {
                         Kind = WireMessageKind.HelloResult, CorrelationId = 1,
                         Manifest = selected!.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
-                        AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope!.Identity
+                        AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope!.Identity,
+                        AccessToken = ProviderAuthenticationWire.Receipt(_options.AuthenticationMode, identity)
                     }, limits, handshake.Token).ConfigureAwait(false);
                     return;
                 }
@@ -265,7 +289,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 {
                     Kind = WireMessageKind.HelloResult, CorrelationId = hello.CorrelationId,
                     Manifest = lease!.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
-                    AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope!.Identity
+                    AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope!.Identity,
+                    AccessToken = ProviderAuthenticationWire.Receipt(_options.AuthenticationMode, identity)
                 }, limits, handshake.Token).ConfigureAwait(false);
                 IEncodedEnvelopeStore endpoint = lease.Registration.Store is IAccessContextEncodedStore contextual
                     ? new AccessContextEncodedStore(contextual, new(identity, hello.StoreAlias!, hello.RequestedScope, hello.Capabilities))
@@ -278,14 +303,14 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or AuthenticationException or OperationCanceledException or SocketException or ObjectDisposedException)
         {
-            connectionTelemetry.Fail(ex);
+            TransportTelemetry.Fail(connectionTelemetry, ex);
             if (!_shutdown.IsCancellationRequested && ex is not OperationCanceledException) Report(ex, record: handshakeSettled);
         }
-        catch (Exception ex) { connectionTelemetry.Fail(ex); Report(ex, record: handshakeSettled); }
+        catch (Exception ex) { TransportTelemetry.Fail(connectionTelemetry, ex); Report(ex, record: handshakeSettled); }
         finally
         {
             DatabaseTelemetryScope.Gauge(_options.Telemetry, DatabaseGauge.Connections, -1);
-            DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Disconnect, log: true).Complete();
+            DatabaseTelemetryScope.Start(_options.Telemetry, DatabaseComponent.TcpHost, DatabaseOperation.Disconnect, log: true).WithConnection(diagnosticId).Complete();
             if (lease is not null)
             {
                 if (scopeLease is null) lease.SessionGate.Release();
@@ -298,10 +323,20 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         }
     }
 
-    private static DataAccessScope? ResolveScope(RegisteredStore store, DataAccessContext context)
+    private DataAccessScope? ResolveScope(RegisteredStore store, DataAccessContext context)
     {
-        try { return store.Policy.Authorize(context); }
+        try
+        {
+            var scope = store.Policy.Authorize(context);
+            return _authentication?.RequiresDataIsolation == true && scope?.Partition.Length == 0 ? null : scope;
+        }
         catch { return null; } // Policy failures are denials; never fall back to an unrestricted store.
+    }
+
+    private async ValueTask<bool> SessionValidAsync(AuthenticatedIdentity identity, CancellationToken token)
+    {
+        try { return _authentication is not null && await _authentication.IsSessionValidAsync(identity, token).ConfigureAwait(false); }
+        catch { return false; } // Credential-store faults and custom provider exceptions fail closed.
     }
 
     private static RemoteErrorCode ValidateHello(WireMessage hello)
@@ -372,7 +407,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             if (identity is not null)
             {
                 bool authorized;
-                try { authorized = _options.AuthorizeIdentity!(identity, alias, request.RequiredCapability); }
+                try { authorized = await SessionValidAsync(identity, idle.Token).ConfigureAwait(false)
+                    && _options.AuthorizeIdentity!(identity, alias, request.RequiredCapability); }
                 catch { authorized = false; }
                 if (!authorized)
                 {
@@ -485,7 +521,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         try
         {
             await stream.WriteAsync(frame, deadline.Token).ConfigureAwait(false);
-            telemetry.Complete(frame.Length, error == RemoteErrorCode.None ? DatabaseOutcome.Success : DatabaseOutcome.Failure, TransportTelemetry.Error(error));
+            telemetry.CompleteWithReason(TransportTelemetry.Reason(error), error == RemoteErrorCode.None ? DatabaseOutcome.Success : DatabaseOutcome.Failure,
+                TransportTelemetry.Error(error), frame.Length, recoverable: error == RemoteErrorCode.Busy);
         }
         catch (Exception exception) { TransportTelemetry.Fail(telemetry, exception); throw; }
     }

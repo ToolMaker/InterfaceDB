@@ -13,6 +13,29 @@ namespace InterfaceDB.Transport.Tests;
 public sealed class DatabaseTelemetryTests
 {
     [TestMethod]
+    public async Task SafeReasonAndConnectionIdReachLogsButIdsNeverBecomeMetricLabels()
+    {
+        var tags = new ConcurrentQueue<string>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, owner) =>
+        { if (instrument.Meter.Name == DatabaseTelemetry.SourceName) owner.EnableMeasurementEvents(instrument); };
+        listener.SetMeasurementEventCallback<long>((_, _, labels, _) => { foreach (var label in labels) tags.Enqueue(label.Key); });
+        listener.SetMeasurementEventCallback<double>((_, _, labels, _) => { foreach (var label in labels) tags.Enqueue(label.Key); });
+        listener.Start();
+        var logger = new CollectingLogger();
+        var id = Guid.NewGuid();
+        await using var telemetry = new DatabaseTelemetry(new() { Traces = false }, logger);
+        TransportTelemetry.Fail(DatabaseTelemetryScope.Start(telemetry, DatabaseComponent.TcpClient, DatabaseOperation.Connect, log: true).WithConnection(id),
+            new RemoteStoreException(RemoteErrorCode.Busy, "secret"));
+        await telemetry.DisposeAsync();
+        StringAssert.Contains(logger.Messages.Single(), "Busy");
+        StringAssert.Contains(logger.Messages.Single(), id.ToString("N"));
+        Assert.IsFalse(logger.Messages.Single().Contains("secret", StringComparison.Ordinal));
+        Assert.IsNull(logger.Exception);
+        Assert.IsTrue(tags.Contains("error.reason"));
+        Assert.IsFalse(tags.Contains("connection.id"));
+    }
+    [TestMethod]
     [DataRow(false)] [DataRow(true)]
     public async Task DefaultTraceBoundaryIsRepositoryAndTcpRequiresOptIn(bool tcp)
     {
@@ -277,6 +300,14 @@ public sealed class DatabaseTelemetryTests
             }))
             {
                 await client.PutAsync("private-record-key", [1, 2, 3]);
+                var rejected = await Assert.ThrowsExactlyAsync<RemoteStoreException>(() => TcpEncodedEnvelopeStore.ConnectAsync(new() {
+                    Host = "127.0.0.1", Port = host.LocalEndPoint.Port, TargetHost = "localhost",
+                    ClientCertificate = certs.Client, ServerCertificateValidation = certs.ValidateServer,
+                    StoreAlias = "private-alias", Manifest = manifest, Telemetry = telemetry
+                }).AsTask());
+                Assert.AreEqual(RemoteErrorCode.Busy, rejected.Code);
+                Assert.IsTrue(telemetry.Records.Any(record => record.Component == DatabaseComponent.TcpHost
+                    && record.Reason == DatabaseFailureReason.Busy && record.ConnectionId != Guid.Empty && record.Recoverable));
                 CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, await client.GetAsync("private-record-key"));
                 await client.DeleteAsync("private-record-key");
                 Assert.IsNull(await client.GetAsync("private-record-key"));

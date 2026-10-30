@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Idb.Transport;
+using Idb.Authentication;
 
 namespace InterfaceDB.Transport.Tests;
 
@@ -149,6 +150,94 @@ public sealed class HostProcessTests
         finally { await KillIfRunningAsync(process); }
     }
 
+    [TestMethod]
+    public async Task NativePasswordConfigurationBootstrapsPersistsAndDoesNotResetAccountsOnRestart()
+    {
+        using var certificates = new TestCertificates();
+        var pfxPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        var password = "native-host-process-password-123";
+        Directory.CreateDirectory(Path.Combine(_temporaryDirectory, "secrets"));
+        await File.WriteAllBytesAsync(Path.Combine(_temporaryDirectory, "secrets", "server.pfx"), CreateServerPfx(certificates.Root, pfxPassword));
+        var port = AvailablePort(); var path = await WriteNativeConfiguration(port);
+        var environment = new Dictionary<string, string> { ["IDB_TEST_NATIVE_KEY"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            ["IDB_TEST_NATIVE_PASSWORD"] = password };
+        for (var run = 0; run < 2; run++)
+        {
+            using var process = StartHost(path, pfxPassword, environment);
+            var errors = process.StandardError.ReadToEndAsync();
+            try
+            {
+                var first = await process.StandardOutput.ReadLineAsync().WaitAsync(Deadline);
+                if (first is null) Assert.Fail(await errors);
+                StringAssert.Contains(first, "host listening");
+                var output = process.StandardOutput.ReadToEndAsync();
+                var options = new TcpStoreClientOptions { Host = "127.0.0.1", Port = port, TargetHost = "localhost", StoreAlias = "process-test", Manifest = Manifest(),
+                    AuthenticationMode = TcpStoreAuthenticationMode.Provider, ServerCertificateValidation = certificates.ValidateServer,
+                    CredentialsProvider = new UsernamePasswordCredentialsProvider("admin", _ => ValueTask.FromResult(password)) };
+                await using (var session = await TcpEncodedEnvelopeStore.ConnectAsync(options))
+                {
+                    if (run == 0) await session.PutAsync("persisted", [8, 2]);
+                    CollectionAssert.AreEqual(new byte[] { 8, 2 }, await session.GetAsync("persisted"));
+                }
+                await process.StandardInput.WriteLineAsync("stop"); await process.StandardInput.FlushAsync();
+                await process.WaitForExitAsync().WaitAsync(Deadline);
+                Assert.AreEqual(0, process.ExitCode, await errors);
+                Assert.IsFalse((await output).Contains(password, StringComparison.Ordinal));
+                Assert.IsFalse((await errors).Contains(password, StringComparison.Ordinal));
+                // A changed bootstrap environment must never overwrite an already created account.
+                environment["IDB_TEST_NATIVE_PASSWORD"] = "different-unused-bootstrap-password";
+            }
+            finally { await KillIfRunningAsync(process); }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("encryption")]
+    [DataRow("key")]
+    [DataRow("policy")]
+    [DataRow("storage")]
+    public async Task NativePasswordConfigurationRejectsMissingProtectionBeforeListening(string defect)
+    {
+        using var certificates = new TestCertificates();
+        var pfxPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        Directory.CreateDirectory(Path.Combine(_temporaryDirectory, "secrets"));
+        await File.WriteAllBytesAsync(Path.Combine(_temporaryDirectory, "secrets", "server.pfx"), CreateServerPfx(certificates.Root, pfxPassword));
+        var port = AvailablePort(); var path = await WriteNativeConfiguration(port);
+        var config = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        if (defect == "encryption") config["localAccounts"]!["encryptionMethod"] = "None";
+        if (defect == "policy") config["dataAccessPolicy"] = "none";
+        if (defect == "storage") config["localAccounts"]!["storageDirectory"] = "database";
+        await File.WriteAllTextAsync(path, config.ToJsonString());
+        var environment = new Dictionary<string, string> { ["IDB_TEST_NATIVE_KEY"] = defect == "key" ? "" : Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            ["IDB_TEST_NATIVE_PASSWORD"] = "process-test-native-password" };
+        using var process = StartHost(path, pfxPassword, environment);
+        var output = process.StandardOutput.ReadToEndAsync(); var errors = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync().WaitAsync(Deadline);
+            Assert.AreEqual(1, process.ExitCode);
+            Assert.IsFalse((await output).Contains("listening", StringComparison.Ordinal));
+            Assert.IsFalse(Directory.Exists(Path.Combine(_temporaryDirectory, "database")));
+            using var listener = new TcpListener(IPAddress.Loopback, port); listener.Start();
+            Assert.IsFalse((await errors).Contains(environment["IDB_TEST_NATIVE_PASSWORD"], StringComparison.Ordinal));
+        }
+        finally { await KillIfRunningAsync(process); }
+    }
+
+    private async Task<string> WriteNativeConfiguration(int port)
+    {
+        var path = await WriteConfigurationAsync(port, new string('0', 64));
+        var config = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        config["authenticationMode"] = "Provider"; config["trustedClientCertificateSha256"] = new JsonArray(); config["dataAccessPolicy"] = "subject";
+        config["localAccounts"] = JsonNode.Parse("""
+            {"accounts":{"authority":"idb-local:process-test","accountMode":"MultipleAccounts","creationMode":"Administrators"},
+             "storageProvider":"SegmentCore","storageDirectory":"credentials","encryptionMethod":"AesGcm",
+             "encryptionKeyEnvironmentVariable":"IDB_TEST_NATIVE_KEY","passwordHashingMethod":"Pbkdf2Sha256",
+             "bootstrapUsername":"admin","bootstrapPasswordEnvironmentVariable":"IDB_TEST_NATIVE_PASSWORD"}
+            """);
+        await File.WriteAllTextAsync(path, config.ToJsonString()); return path;
+    }
+
     private async Task<string> WriteConfigurationAsync(int port, string pin)
     {
         var path = Path.Combine(_temporaryDirectory, "hostsettings.json");
@@ -162,7 +251,7 @@ public sealed class HostProcessTests
         return path;
     }
 
-    private static Process StartHost(string configuration, string password)
+    private static Process StartHost(string configuration, string password, Dictionary<string, string>? environment = null)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "InterfaceDB.sln")))
@@ -183,6 +272,7 @@ public sealed class HostProcessTests
         start.ArgumentList.Add(configuration);
         start.ArgumentList.Add("--console");
         start.Environment["IDB_PROCESS_TEST_PFX_PASSWORD"] = password;
+        if (environment is not null) foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
         return Process.Start(start) ?? throw new InvalidOperationException("Failed to start the host process.");
     }
 

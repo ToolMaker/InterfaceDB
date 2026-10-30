@@ -1,11 +1,11 @@
 # InterfaceDB
 
-**Preview.13:** tenant/group access policies, interface-declared ownership validation and bounded
-partition indexing, including reviewed isolation, paging and reconnect corrections. This release
-uses `1.0.0-preview.13` for all four public packages. TCP client/server upgrades
-must be coordinated; embedded storage durability and committed-read semantics are unchanged.
-See [upgrade notes](documentation/preview13-release-notes.md),
-[release validation](documentation/preview13-validation.md),
+**Preview.14:** connection recovery, safe transport diagnostics and an optional native
+username/password authentication provider. All four public packages use `1.0.0-preview.14`.
+Update clients and hosts together; authentication defaults, data isolation, storage durability
+and committed-read semantics are unchanged.
+See [upgrade notes](documentation/preview14-release-notes.md),
+[release validation](documentation/preview14-validation.md),
 [policy integration](documentation/data-access-policies.md) and
 [measured costs](documentation/access-policy-production-20261028.md).
 
@@ -41,6 +41,10 @@ and has no offline fallback or queued writes. The server owns its database files
 `InterfaceDB.Authentication` provides the optional JWT/OIDC services; embedded users need neither package.
 Preview.11 adds these optional packages. See the [release notes](documentation/preview11-release-notes.md) and [validation status](documentation/preview11-validation.md).
 See [online TCP integration](documentation/tcp-repository.md) and [hosting](documentation/tcp-transport.md).
+
+Preview.14 also includes [native database username/password authentication](documentation/native-account-authentication.md),
+with single/multiple accounts, encrypted credential storage and explicit account-creation/data policies.
+This is opt-in; existing JWT and certificate configurations retain their behavior.
 
 ## The Programming Model
 
