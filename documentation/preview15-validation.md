@@ -1,85 +1,72 @@
-# Preview.15 candidate validation — 31 October 2026
+# Preview.15 release validation — 31 October 2026
 
-Status: **Windows source verified; immutable CI and current package validation pending**.
-Preview.14 remains the published NuGet baseline. Server-owned remote revisions and staged
-context-bound field encryption are now implemented. Follow the coordinated upgrade instructions
-in [release notes](preview15-release-notes.md); the older local packages below do not contain them.
+Status: **all four `1.0.0-preview.15` packages are published on NuGet.org and verified by an isolated consumer**.
+Runtime commit: `1efe046b76324d774a8cc149042e7cf770a0e5c2`, tagged `v1.0.0-preview.15`.
+NuGet accepted the uploads at approximately 01:04 UTC on 31 October 2026.
+All four packages were available in the public restore feed by 01:14 UTC.
 
-## 31 October source verification
+## Immutable release checks
 
-Current Windows Release results: core 415 passed / 10 platform skips; SegmentCore 222 / 2;
-transport 287 / 0; authentication 84 / 0. The final core suite includes the requirement that
-custom encrypted-field lifecycles receive an explicit repository context. Six focused TCP
-field/clock cases also passed after that final change; these are included in the transport count,
-not additional suite coverage.
-The independent source review identified a conflict-validator materialization edge case. A new
-regression reproduced it before the ordering correction and passes in the final core suite.
-Scoped clock mutation rejection, explicit far-future import/restart, detached encrypted edits,
-legacy field conversion and strict reopen have focused regression coverage.
+[Windows/Linux CI](https://github.com/ToolMaker/InterfaceDB/actions/runs/41152423887) and the
+[NuGet publication workflow](https://github.com/ToolMaker/InterfaceDB/actions/runs/41153177444)
+passed for the same release commit. Publication used trusted publishing with a temporary
+credential. All four uploads succeeded; no duplicate-package skip was used.
 
-Linux validation remains blocked: `wsl.exe -d Ubuntu -- sh -c 'uname -s; dotnet --version'`
-failed before starting Linux with `Wsl/Service/CreateInstance/CreateVm/HCS/ERROR_NO_SYSTEM_RESOURCES`.
-The release will use the existing GitHub-hosted Linux correctness job for the immutable public
-source snapshot. Local WSL failure does not count as a Linux test result.
-No Linux, Android, physical power-cut or live Keycloak qualification is claimed for this change.
-No new performance comparison has been run. The TCP reservation adds one request/response per
-write batch; its clock is committed atomically with the records, without a second durable flush.
-Public source boundary validation passed for 29 projects. Final immutable CI and fresh package
-consumer verification are still release steps.
-
-## Historical 30 October verification (before the final protections)
-
-### Source verification
-
-The source fixes passed the following Windows Release suites before the version-only packaging
-change. This table counts each suite once, not focused reruns as additional coverage.
-
-| Suite | Passed | Platform-specific skips |
+| Suite | Windows CI passed | Linux tag workflow passed |
 | --- | ---: | ---: |
-| Core | 403 | 10 |
-| SegmentCore | 220 | 2 |
-| Authentication | 84 | 0 |
-| Transport | 281 | 0 |
-| Analyzers | 31 | 0 |
+| Core | 415 | 423 |
+| Analyzers | 31 | 31 |
+| SegmentCore | 224 | 224 |
+| Transport | 287 | 287 |
+| Authentication | 84 | 84 |
+| **Total passed** | **1,041** | **1,049** |
+| Platform/environment skips | 10 | 2 |
 
-Transport validation used two runs: 271 cases passed with isolated build outputs; ten host-process
-cases require the normal source/executable directory layout and passed from an isolated source copy.
-Their first attempt failed before starting the host because the harness could not find the solution.
-The final core rerun includes the encrypted conflict-candidate staging correction.
+The integration harness, object-materialization contract, Windows production pilot, repository
+smoke matrix and storage-review smoke checks passed. These are correctness checks, not new
+throughput measurements. Builds retained eight existing MSTEST0032 test warnings, with no errors
+or analyzer compatibility failures. Public source boundaries passed for 29 projects; all four
+packages passed MIT licensing, assembly inventory and dependency boundary checks.
 
-Linux validation has not run for this candidate: WSL failed to start twice with
-`Wsl/Service/CreateInstance/CreateVm/HCS/ERROR_NO_SYSTEM_RESOURCES`. Docker was unavailable,
-so live Keycloak and Docker integration tests were not rerun. Existing deterministic authentication
-tests do not substitute for a new live-provider or device qualification.
+Local WSL still failed to start with `HCS/ERROR_NO_SYSTEM_RESOURCES`. The successful hosted
+Linux runs above resolve the public release's Linux validation gate; local WSL failure is not
+counted as a test pass. No new physical-phone, live-Keycloak or power-cut qualification is claimed.
 
-### Package preparation (superseded binaries)
+## Package consumers
 
-All four public `1.0.0-preview.15` packages built successfully. The source boundary verified 29
-projects, and package checks verified MIT licensing, the expected assembly and allowed dependencies
-in each package. The Release solution build passed with eight existing MSTEST0032 test warnings.
+A clean export of the release commit built the local candidate packages. A fresh package and HTTP
+cache restored those packages without production project references. **361/361 candidate consumer
+tests passed: 277 transport and 84 authentication, with no skips.** Ten source-layout host-process
+cases remain covered by the full source suites above. Nuspec metadata identified the exact release
+commit, and recorded package origins matched the isolated candidate feed.
 
-A fresh package/HTTP cache restored the four packages from the local candidate feed, with no
-production project references. **355/355 package-consumer tests passed: 271 transport and 84
-authentication, with no skips.** The ten source-layout host-process tests are covered above.
-Package origins and hashes were checked against the candidate feed.
+The published-feed consumer used another fresh package and HTTP cache with NuGet.org as its only
+source, with no production project references. **361/361 published-package tests passed: 277
+transport and 84 authentication, with no failures or skips.** These repeat the candidate cases;
+they are not 722 distinct tests. Every restored nuspec identifies the immutable release commit.
 
-The integration harness, materialization contract, six provider/cache smoke combinations,
-three SegmentCore storage-review smoke cases and Windows quick production pilot passed.
-The pilot includes atomic changes, checkpointing, compaction, reopen, backup and restore.
-These are correctness checks; their timings are not a new performance comparison.
+The four independently downloaded packages passed `dotnet nuget verify --all` repository-signature
+verification and the public package-boundary checks. Their SHA-256 hashes exactly match the
+packages restored by the isolated consumer.
 
-Candidate artifacts are under the ignored `.tmp/preview15-release/packages/`; consumer logs,
-TRX results and origin records are under `.tmp/preview15-consumer/runs/candidate-20261030-184651/`.
-Their repository metadata deliberately says `uncommitted-preview15-candidate`.
-They must be rebuilt from the eventual immutable release commit before publication.
-
-| Candidate package | SHA-256 |
+| Package, version `1.0.0-preview.15` | Published nupkg SHA-256 |
 | --- | --- |
-| InterfaceDB | `ad68d98e5a8ccf8d2f3a3bb1e3c2addd232c11667875b1f988f52fdf05f5e1d7` |
-| InterfaceDB.Authentication | `5eef5533e585233a7ed934e89798f4239fc24fef9330b2ed3cc82e5717539a3e` |
-| InterfaceDB.Storage.SegmentCore | `04c2cea3380aa408bcd23ed59b4fdf567a41a0d8b0a433bada39645ab19be74a` |
-| InterfaceDB.Transport | `971dd9a249c7b11e2c95d5c0fe2e9df1093d877343109e6535b19ff098103cdc` |
+| [InterfaceDB](https://www.nuget.org/packages/InterfaceDB/1.0.0-preview.15) | `f324e2ec722e7256d346287b3f067a3a2fbb87fa8cd97f12c11cdba643bc493e` |
+| [InterfaceDB.Storage.SegmentCore](https://www.nuget.org/packages/InterfaceDB.Storage.SegmentCore/1.0.0-preview.15) | `e267f1185c5137b6382dcbab940977ead8864f50cb44c9b573ff2effa5e682f7` |
+| [InterfaceDB.Authentication](https://www.nuget.org/packages/InterfaceDB.Authentication/1.0.0-preview.15) | `0242dcc1e7fbee035753ad8e7e7a6bb38204338a78f6d5cf63611a9ae5ff54cf` |
+| [InterfaceDB.Transport](https://www.nuget.org/packages/InterfaceDB.Transport/1.0.0-preview.15) | `928674229b0e8b38291ebc6fdaa4b4c59bce75121420ac03f1cd097ed534e052` |
 
-Publication awaits completed cross-platform validation, an immutable release snapshot and rebuilt
-packages. The 30 October package-consumer results do not validate the later security changes.
-No commercial implementation, local context or credentials are included in these packages.
+The earlier 30 October local preview.15 packages are superseded and must not be distributed.
+
+Receipts, immutable source export, package downloads and consumer evidence are retained locally
+under the ignored `.tmp/preview15-final/`. Local context, private implementations and credentials
+are excluded from public source and packages. The release tag stays on the tested runtime commit;
+this publication receipt does not change or republish its binaries.
+
+## Upgrade
+
+Update all four public packages and rebuild clients and hosts using the
+[preview.15 release and upgrade notes](preview15-release-notes.md). Coordinate the TCP upgrade
+during a write pause. Explicit remote revision imports require a host authorization policy;
+existing encrypted fields require the staged reader-first conversion. Durability, isolation,
+committed-copy reads and migration ownership remain preserved by the tested paths.

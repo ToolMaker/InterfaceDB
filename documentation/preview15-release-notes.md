@@ -1,6 +1,6 @@
 # InterfaceDB 1.0.0-preview.15
 
-Status: local release candidate, not published. See [validation](preview15-validation.md).
+Status: published on NuGet.org. See the [current verification receipt](preview15-validation.md).
 Update `InterfaceDB`, `InterfaceDB.Storage.SegmentCore`, `InterfaceDB.Authentication` and
 `InterfaceDB.Transport` together, then rebuild the application and host.
 
@@ -74,9 +74,9 @@ client/server feature upgrade, not a rolling-write compatibility promise.
 
 Durability defaults, atomicity, strict revision checks, committed-copy reads, data isolation,
 serializer registration and migration ownership remain intact. No performance improvement or
-new physical-device qualification is claimed. Linux validation and the final immutable release
-workflow must complete before publication. Local packages built on 30 October predate these
-changes and must be rebuilt; do not distribute them as the completed preview.15.
+new physical-device qualification is claimed. Windows/Linux CI and the immutable release
+workflow passed; the verification receipt records published-package checks. Local packages built
+on 30 October predate these changes; use the published preview.15 packages instead.
 
 The [preview.14 release notes](preview14-release-notes.md) describe inherited authentication
 and connection features. Older deployments must also follow the preview.13 upgrade requirements.

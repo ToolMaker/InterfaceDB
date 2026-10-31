@@ -1,10 +1,11 @@
 # InterfaceDB
 
-**Preview.15 candidate:** encrypted-field, migration, checkpoint, query and authentication fixes.
-The four public `1.0.0-preview.15` packages are entering final release verification; preview.14 remains the published release until the publication receipt is updated.
-Existing formats, isolation, durable acknowledgements and committed-copy reads are preserved.
-See [candidate release notes](documentation/preview15-release-notes.md),
-[validation and remaining work](documentation/preview15-validation.md),
+**Preview.15 published:** encrypted-field, migration, checkpoint, query and authentication fixes.
+The four public `1.0.0-preview.15` packages are available on NuGet.org.
+Coordinate the TCP client/server upgrade and follow the staged encrypted-field conversion.
+Isolation, durable acknowledgements and committed-copy reads are preserved.
+See [release and upgrade notes](documentation/preview15-release-notes.md),
+[publication and verification receipt](documentation/preview15-validation.md),
 [policy integration](documentation/data-access-policies.md) and
 [measured costs](documentation/access-policy-production-20261028.md).
 
@@ -290,6 +291,8 @@ Run the canonical fresh managed object-materialization quick gate:
 Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are intentionally ignored. Curated, reproducible results belong in `documentation/performance-results.md`.
 
 ## Project Status
+
+`1.0.0-preview.15` was published to NuGet.org on 31 October 2026 after Windows/Linux CI. It adds reviewed storage and authentication corrections, context-bound encrypted fields and server-owned remote revisions. See [the coordinated upgrade instructions](documentation/preview15-release-notes.md) and [published-package verification](documentation/preview15-validation.md). Update all four packages and rebuild clients and hosts together.
 
 `1.0.0-preview.14` was published to NuGet.org on 30 October 2026 after Windows/Linux CI and fresh-feed package-consumer verification. It adds connection recovery, safe diagnostics and opt-in native database accounts. See [the release notes](documentation/preview14-release-notes.md) and [verification receipt](documentation/preview14-validation.md). Rebuild clients and hosts with the matching package set.
 
