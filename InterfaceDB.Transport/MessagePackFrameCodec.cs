@@ -10,6 +10,11 @@ namespace Idb.Transport;
 internal static class MessagePackFrameCodec
 {
     internal const int HeaderBytes = 44;
+    internal const int MaximumSubscriptionControlFrameBytes = 1024;
+
+    internal static ValueTask<WireMessage?> ReadSubscriptionControlAsync(Stream stream, TransportLimits limits,
+        CancellationToken cancellationToken = default)
+        => ReadAsync(stream, limits, Math.Min(limits.MaximumFrameBytes, MaximumSubscriptionControlFrameBytes), cancellationToken);
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     internal static byte[] Encode(WireMessage message, TransportLimits limits)
@@ -181,7 +186,8 @@ internal static class MessagePackFrameCodec
                         CheckBinary(mutation.Payload, limits);
                     }
                 }
-                if (request.PageSize > limits.MaximumPageItems) throw Limit();
+                if (request.PageSize > (request.Command == EncodedStoreCommand.ReserveRevisions
+                    ? limits.MaximumBatchItems : limits.MaximumPageItems)) throw Limit();
                 TransportValidation.Request(request, limits);
             }
             if (message.Response is { } response)

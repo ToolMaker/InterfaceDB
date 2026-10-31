@@ -10,8 +10,9 @@ internal sealed class PrimaryIndexMap :
     IReadOnlyDictionary<string, StripedObjectLogRecordAddress>,
     IDisposable
 {
-    private readonly IReadOnlyDictionary<string, StripedObjectLogRecordAddress> _basis;
+    private IReadOnlyDictionary<string, StripedObjectLogRecordAddress> _basis;
     private readonly Dictionary<string, OverlayChange> _changes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StripedObjectLogRecordAddress> _deletions = new(StringComparer.Ordinal);
     private int _count;
     private int _disposed;
 
@@ -25,6 +26,22 @@ internal sealed class PrimaryIndexMap :
 
     public bool IsPaged => _basis is IPagedPrimaryIndexView { IsPaged: true };
 
+    internal void Rebase(IReadOnlyDictionary<string, StripedObjectLogRecordAddress> basis,
+        IReadOnlyDictionary<string, PrimaryIndexChange> changesAfterCapture)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        var previous = _basis;
+        _basis = basis;
+        _changes.Clear();
+        _count = basis.Count;
+        foreach (var pair in changesAfterCapture)
+        {
+            if (pair.Value.IsDelete) TryRemove(pair.Key, out _);
+            else Set(pair.Key, pair.Value.Address);
+        }
+        if (!ReferenceEquals(previous, basis) && previous is IDisposable disposable) disposable.Dispose();
+    }
+
     public IEnumerable<string> Keys => this.Select(static pair => pair.Key);
 
     public IEnumerable<StripedObjectLogRecordAddress> Values => this.Select(static pair => pair.Value);
@@ -36,6 +53,25 @@ internal sealed class PrimaryIndexMap :
     }
 
     public bool ContainsKey(string key) => TryGetValue(key, out _);
+
+    internal bool TryGetLatestAddress(string key, out StripedObjectLogRecordAddress value)
+        => _deletions.TryGetValue(key, out value) || TryGetValue(key, out value);
+
+    internal bool RecordDeletion(string key, StripedObjectLogRecordAddress tombstone)
+    {
+        var removed = TryRemove(key, out _);
+        _deletions[key] = tombstone;
+        return removed;
+    }
+
+    internal void RetireDeletionMarkers(IReadOnlyList<ObjectLogWritePosition> positions)
+    {
+        // Capture drained all mutations admitted before these stripe positions. Only
+        // newer tombstones can still race an outstanding publication continuation.
+        foreach (var pair in _deletions.ToArray())
+            if (pair.Value.Address.Lsn <= positions[pair.Value.Stripe].LastLsn)
+                _deletions.Remove(pair.Key);
+    }
 
     public bool TryGetValue(string key, out StripedObjectLogRecordAddress value)
     {
@@ -140,6 +176,7 @@ internal sealed class PrimaryIndexMap :
         var existedInBasis = hasChange ? previous.ExistedInBasis : _basis.ContainsKey(key);
         var exists = hasChange ? !previous.IsDelete : existedInBasis;
         _changes[key] = new OverlayChange(false, value, existedInBasis);
+        _deletions.Remove(key);
         if (!exists)
         {
             _count++;

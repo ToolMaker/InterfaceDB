@@ -300,7 +300,9 @@ namespace Idb.Libraries.Implementation.Extensions
                 new EnvelopeLifecycle<TContract>(
                     () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
                     sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key),
-                    sp.GetRequiredKeyedService<IEncryptor>(key)));
+                    sp.GetRequiredKeyedService<IEncryptor>(key),
+                    physicalKey => StorageEncryptionContext.Create(contractConfig, "file", physicalKey),
+                    configuredStoragePolicy.EncryptedFieldWrites));
 
             // File-provider write locking. Future providers should register their own IStorageWriteLock
             // implementation from their provider-specific registration path.

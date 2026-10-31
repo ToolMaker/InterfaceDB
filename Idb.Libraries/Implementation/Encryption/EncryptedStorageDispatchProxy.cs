@@ -3,15 +3,19 @@ using Idb.Libraries.Abstractions.Dtos;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
 using MessagePack;
+using Idb.Libraries.Implementation.Indexes;
+using Idb.Libraries.Implementation.Serialization;
 
 namespace Idb.Libraries.Implementation.Encryption;
 
-internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
+internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy, IWrappedContractInstance<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private TContract? _inner;
     private IObjectEnvelope<TContract>? _envelope;
     private IEncryptor? _encryptor;
+    private byte[] _recordContext = [];
+    private EncryptedFieldWriteMode _writeMode;
     private static readonly IReadOnlyDictionary<string, EncryptedFieldDefinition> EmptyDefinitions =
         new Dictionary<string, EncryptedFieldDefinition>(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, EncryptedFieldDefinition> _definitions = EmptyDefinitions;
@@ -19,14 +23,27 @@ internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
     internal TContract Inner =>
         _inner ?? throw new InvalidOperationException("Encrypted storage proxy has not been initialized.");
 
+    TContract IWrappedContractInstance<TContract>.Implementation => Inner;
+
+    TContract IWrappedContractInstance<TContract>.CreateImplementationCopy()
+    {
+        var copy = EncryptedStorageFieldProcessor<TContract>.CloneForStorage((TContract)(object)this);
+        var envelope = EnvelopeWriteCoordinator<TContract>.CopyEnvelope(_envelope!);
+        envelope.ObjectInstance = copy;
+        StoredContractEnvelopeAccessor<TContract>.SetEnvelope(copy, envelope);
+        return copy;
+    }
+
     public static TContract Create(
         TContract inner,
         IObjectEnvelope<TContract> envelope,
         IEncryptor encryptor,
-        IReadOnlyDictionary<string, EncryptedFieldDefinition> definitions)
+        IReadOnlyDictionary<string, EncryptedFieldDefinition> definitions, byte[] recordContext, EncryptedFieldWriteMode writeMode)
     {
         var proxy = DispatchProxy.Create<TContract, EncryptedStorageDispatchProxy<TContract>>();
         var typedProxy = (EncryptedStorageDispatchProxy<TContract>)(object)proxy;
+        typedProxy._recordContext = recordContext.ToArray();
+        typedProxy._writeMode = writeMode;
         typedProxy._inner = inner ?? throw new ArgumentNullException(nameof(inner));
         typedProxy._envelope = envelope ?? throw new ArgumentNullException(nameof(envelope));
         typedProxy._encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
@@ -55,10 +72,11 @@ internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
         {
             if (!envelope.EncryptedFields.TryGetValue(getterDefinition.Name, out var encryptedValue))
             {
-                return getterDefinition.Property.GetValue(inner);
+                throw new System.Security.Cryptography.CryptographicException("A declared encrypted field is missing its ciphertext.");
             }
 
-            var plain = encryptor.Decrypt(encryptedValue.Ciphertext);
+            var plain = StorageFieldEncryption.Decrypt(encryptor, encryptedValue.Ciphertext,
+                StorageFieldEncryption.Context(_recordContext, getterDefinition.Name));
             return MessagePackSerializer.Deserialize(getterDefinition.PropertyType, plain, MessagePackSerializerOptions.Standard);
         }
 
@@ -67,12 +85,9 @@ internal class EncryptedStorageDispatchProxy<TContract> : DispatchProxy
         {
             var value = args is { Length: > 0 } ? args[0] : null;
             var plain = MessagePackSerializer.Serialize(setterDefinition.PropertyType, value, MessagePackSerializerOptions.Standard);
-            envelope.EncryptedFields[setterDefinition.Name] = new EncryptedFieldValue
-            {
-                ProfileName = setterDefinition.ProfileName,
-                PropertyTypeName = setterDefinition.TypeName,
-                Ciphertext = encryptor.Encrypt(plain)
-            };
+            envelope.EncryptedFields[setterDefinition.Name] = StorageFieldEncryption.Encrypt(encryptor, plain,
+                StorageFieldEncryption.Context(_recordContext, setterDefinition.Name),
+                setterDefinition.ProfileName, setterDefinition.TypeName, _writeMode);
 
             setterDefinition.Property.SetValue(inner, GetDefault(setterDefinition.PropertyType));
             return null;

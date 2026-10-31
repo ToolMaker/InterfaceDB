@@ -8,6 +8,9 @@ namespace Idb.Libraries.Abstractions.Options;
 /// </summary>
 public sealed record StoragePolicy
 {
+    /// <summary>Context-bound writes are the default. LegacyContextless is only for a staged reader-first upgrade.</summary>
+    public Idb.Libraries.Abstractions.Services.Encryption.EncryptedFieldWriteMode EncryptedFieldWrites { get; init; }
+        = Idb.Libraries.Abstractions.Services.Encryption.EncryptedFieldWriteMode.ContextBound;
     /// <summary>Borrowed, optional diagnostics supplied at the composition root. Null preserves the disabled fast path.</summary>
     public Idb.Diagnostics.IDatabaseTelemetry? Telemetry { get; init; }
     /// <summary>Null disables historical editing. Finite leases do not survive process/store restart.</summary>

@@ -177,6 +177,44 @@ Current field-encryption limits remain:
 - profile names are persisted as labels; the registered repository encryptor performs the encryption;
 - plaintext necessarily exists in application memory while a value is being used.
 
+## Field encryption upgrade (preview.15)
+
+New field writes authenticate the existing trusted storage context plus the declared property
+name using `IContextualEncryptor`. A new outer envelope format is not needed. In strict mode,
+contextless ciphertext, a wrong record/field context, and missing declared ciphertext are rejected.
+Field profiles remain labels; they do not select separate keys. This prevents substitution, not
+replay of an older valid value for the same record and field.
+
+For an existing store with contextless encrypted fields:
+
+1. Back up the complete store and retain the existing encryption keys.
+2. Upgrade every field reader while explicitly setting
+   `AesGcmEncryptorOptions.AllowContextlessPayloadMigration = true` and
+   `StoragePolicy.EncryptedFieldWrites = EncryptedFieldWriteMode.LegacyContextless`.
+   This temporary setting preserves old writes; substitution protection is not active yet.
+3. Once all readers are upgraded, set `EncryptedFieldWrites = ContextBound`. This is the
+   default for new registrations. TCP field encryption runs in the typed client, so upgrade
+   all writers sharing the dataset before this switch. Coordinate the separate TCP host upgrade too.
+4. Initialize the repository, enumerate all records and save each through its normal repository
+   API. Read each encrypted field through the returned contract; the save decrypts the old fields
+   and writes all of them under the final destination context. Normal conflict checks still apply:
+   handle a concurrent conflict by reading fresh state, not by forcing an overwrite. A successful
+   save advances its revision and produces normal notifications. This is a resumable per-record
+   migration, not one atomic transaction over the entire database.
+5. Verify a complete pass and reopen with `AllowContextlessPayloadMigration = false`. Keep the
+   legacy switch disabled after completion. Keep historical keys until all retained versions and
+   backups that still need them have expired or been migrated.
+
+Outer-envelope key rotation alone does not rewrite the encrypted-field dictionary. An ordinary
+read workload is not proof of complete field conversion. Older applications require restoring
+an appropriate backup after context-bound fields have been written; do not silently downgrade.
+The field context uses the same configured provider/contract/key identity as storage encryption,
+so copying raw ciphertext between providers or keys is not a migration. Read and save through the
+repository abstractions instead. When constructing `EnvelopeLifecycle<TContract>` directly for a field-encrypted contract, supply
+the trusted repository context factory; omitting it is rejected rather than sharing an implicit
+context across repositories. Custom lifecycle implementations that allocate identities late
+must implement `IEnvelopeFieldBinding<TContract>` before serialization; the built-in providers do so.
+
 ## Parser And Payload Admission
 
 The default MessagePack options use `MessagePackSecurity.UntrustedData`. Before object construction, an `IDB2`–`IDB6` runtime-type identifier must resolve through the frozen `StoredRuntimeTypeAllowlist<TContract>`. Writes also require an enrolled closed concrete implementation of the requested contract.

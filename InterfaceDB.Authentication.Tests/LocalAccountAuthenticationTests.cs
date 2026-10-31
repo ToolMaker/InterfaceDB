@@ -6,6 +6,67 @@ namespace InterfaceDB.Authentication.Tests;
 [TestClass]
 public sealed class LocalAccountAuthenticationTests
 {
+    [TestMethod]
+    public async Task PasswordAdmissionWaitsBoundedlyAndCancelledWaitDoesNotConsumeWorkBudget()
+    {
+        await using var store = new MemoryAccounts();
+        var options = Options(AccountCreationMode.Everyone) with { MaximumConcurrentPasswordChecks = 1, AttemptsPerMinute = 3 };
+        using var hasher = new GatedHasher();
+        using var provider = new LocalAccountAuthenticationProvider(store, hasher, new ConfiguredAccountCreationPolicy(options), options);
+        await provider.CreateAsync("alice", Password, null);
+        var first = Task.Run(async () => await provider.AuthenticateAsync(Login("alice")));
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            Assert.IsTrue(hasher.Entered.Wait(TimeSpan.FromSeconds(10)));
+            var queued = provider.AuthenticateAsync(Login("alice"), cancellation.Token).AsTask();
+            Assert.IsFalse(queued.IsCompleted, "A busy password worker must not become an invalid-credentials rejection.");
+            cancellation.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => queued);
+        }
+        finally { hasher.Release.Set(); await first; }
+        Assert.IsNotNull(await provider.AuthenticateAsync(Login("alice")));
+    }
+
+    private sealed class GatedHasher : IPasswordHasher, IDisposable
+    {
+        public ManualResetEventSlim Entered { get; } = new(false);
+        public ManualResetEventSlim Release { get; } = new(false);
+        public string Hash(string password) => password;
+        public bool Verify(string password, string encodedHash)
+        {
+            Entered.Set();
+            if (!Release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException();
+            return password == encodedHash;
+        }
+        public void Dispose() { Entered.Dispose(); Release.Dispose(); }
+    }
+
+    [TestMethod]
+    [DataRow(0)] [DataRow(1)]
+    public async Task PasswordAdmissionOverloadAndDeadlineReturnBusyWithoutConsumingAttempts(int queueCapacity)
+    {
+        await using var store = new MemoryAccounts();
+        var options = Options(AccountCreationMode.Everyone) with
+        {
+            MaximumConcurrentPasswordChecks = 1, MaximumQueuedPasswordChecks = queueCapacity,
+            PasswordAdmissionTimeout = TimeSpan.FromMilliseconds(100), AttemptsPerMinute = 3
+        };
+        using var hasher = new GatedHasher();
+        using var provider = new LocalAccountAuthenticationProvider(store, hasher, new ConfiguredAccountCreationPolicy(options), options);
+        await provider.CreateAsync("alice", Password, null);
+        var first = Task.Run(async () => await provider.AuthenticateAsync(Login("alice")));
+        try
+        {
+            Assert.IsTrue(hasher.Entered.Wait(TimeSpan.FromSeconds(10)));
+            var waiting = provider.AuthenticateAsync(Login("alice")).AsTask();
+            await Assert.ThrowsExactlyAsync<AuthenticationBusyException>(() => provider.AuthenticateAsync(Login("alice")).AsTask());
+            await Assert.ThrowsExactlyAsync<AuthenticationBusyException>(() => waiting);
+        }
+        finally { hasher.Release.Set(); await first; }
+        Assert.IsNotNull(await provider.AuthenticateAsync(Login("alice")));
+    }
+
     private const string Password = "a-long-test-password-123";
     private static LocalAccountOptions Options(AccountCreationMode creation = AccountCreationMode.Administrators,
         DatabaseAccountMode mode = DatabaseAccountMode.MultipleAccounts) => new()
@@ -141,7 +202,7 @@ public sealed class LocalAccountAuthenticationTests
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await provider.CreateAsync("alice", Password, null, cancellation.Token));
         Assert.AreEqual(0, await store.CountAsync());
         await provider.CreateAsync("alice", Password, null);
-        await Assert.ThrowsExactlyAsync<UnauthorizedAccessException>(async () => await provider.AuthenticateAsync(Login("alice")));
+        await Assert.ThrowsExactlyAsync<AuthenticationBusyException>(async () => await provider.AuthenticateAsync(Login("alice")));
     }
 
     [TestMethod]

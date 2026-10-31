@@ -61,6 +61,11 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         envelope.RevisionTimestampUtcMicroseconds = condition.ExpectedRevision;
     }
 
+    /// <summary>Returns the explicit import revision staged for this write, or zero for an ordinary save.</summary>
+    public static long ImportedRevision(IObjectEnvelope<TContract>? envelope)
+        => envelope is not null && Conditions.TryGetValue(envelope, out var condition)
+            && condition.Action == EnvelopeRevisionAction.Import ? condition.SourceRevision : 0;
+
     internal static void CopyCondition(IObjectEnvelope<TContract> source, IObjectEnvelope<TContract> target)
     {
         if (Conditions.TryGetValue(source, out var condition)) SetCondition(target, condition);
@@ -191,6 +196,10 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
         var location = candidate.Location;
         var expected = candidate.RevisionTimestampUtcMicroseconds;
         Conditions.TryGetValue(candidate, out var condition);
+        // Providers have finalized physical identity. A strategy may materialize the candidate
+        // immediately, so authenticate fields at that identity before exposing it to the strategy.
+        if (!deleting && _lifecycle is Idb.Libraries.Abstractions.Services.Encryption.IEnvelopeFieldBinding<TContract> incomingFields)
+            incomingFields.BindFields(candidate);
         var context = new EnvelopeWriteConflict<TContract>(key, expected, current, isInsert || condition?.ExpectedMissing == true, candidate, readCurrent);
         var decision = condition is null && (_strategy is not StrictTimestampMatchStrategy<TContract> || candidate is RuntimeEditEnvelope<TContract>)
             ? await DecideExtendedAsync(context, deleting, token).ConfigureAwait(false)
@@ -237,6 +246,9 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
             plain.ObjectInstance = resolved.ObjectInstance;
             resolved = plain;
         }
+        if (!deleting && !ReferenceEquals(resolved, candidate)
+            && _lifecycle is Idb.Libraries.Abstractions.Services.Encryption.IEnvelopeFieldBinding<TContract> fields)
+            fields.BindFields(resolved);
         if (!deleting)
             resolved.RevisionTimestampUtcMicroseconds = condition?.Action switch
             {
@@ -374,7 +386,12 @@ public sealed class EnvelopeWriteCoordinator<TContract> where TContract : class,
             token.ThrowIfCancellationRequested();
             var current = await ReadCurrentAsync(token).ConfigureAwait(false)
                 ?? throw new RetainedVersionUnavailableException("The current entity was deleted.");
-            var envelope = await _owner._lifecycle.WrapAsync(resolved).ConfigureAwait(false);
+            // Keep logical values until the common replacement-candidate path prepares
+            // storage. Encrypting here would scrub the backing fields before that second
+            // preparation, making an encrypted value indistinguishable from an explicit null.
+            var envelope = CopyEnvelope(resolved.Envelope ?? current.Envelope!);
+            envelope.ObjectInstance = Idb.Libraries.Implementation.Encryption.EncryptedStorageFieldProcessor<TContract>.CloneForStorage(resolved);
+            StoredContractEnvelopeAccessor<TContract>.SetEnvelope(envelope.ObjectInstance, envelope);
             envelope.EnvelopeCacheKey = Key; envelope.Location = Candidate.Location;
             envelope.ExtensionMetadata = current.Envelope!.ExtensionMetadata?.ToArray();
             envelope.VersionTag = current.Envelope.VersionTag;

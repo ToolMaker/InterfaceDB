@@ -1,8 +1,9 @@
-# Native database accounts — preview.14
+# Native database accounts
 
 This provider authenticates a username and password directly against a server-owned credential
-store. Keycloak and JWT issuance are not required. It is implemented in the current source and
-is included in preview.14. Use matching preview.14 client and host packages.
+store. Keycloak and JWT issuance are not required. The provider was introduced in preview.14.
+The bounded password-admission queue described below requires the preview.15 candidate or later.
+Use matching client and host package versions; see [candidate status](preview15-validation.md).
 Existing JWT/certificate configurations and unauthenticated embedded repositories retain their
 behavior. Changing an existing deployment to native accounts is explicit, not an automatic migration.
 See the [validation record](native-account-validation-20261029.md) for Windows/Linux results and scope.
@@ -152,9 +153,13 @@ This does not retract data already downloaded or cancel an operation already adm
 
 Defaults are 10,000 accounts, two concurrent password computations, and **60 password-work
 admissions per minute across this provider instance**. The rate budget includes successful logins,
-registration and password changes; saturation rejects admission, rather than queuing unbounded
-hash work. Tune `AttemptsPerMinute` (1–10,000), `MaximumConcurrentPasswordChecks` (1–32) and host
-connection limits for your workload. An exposed login endpoint also needs deployment-level abuse
+registration and password changes. By default, up to 32 requests may wait for a password worker,
+for at most two seconds. Tune `MaximumQueuedPasswordChecks` (0–1,024) and
+`PasswordAdmissionTimeout` (zero–30 seconds), alongside `AttemptsPerMinute` (1–10,000),
+`MaximumConcurrentPasswordChecks` (1–32) and host connection limits. Queue saturation, an admission
+deadline or an exhausted work budget raises `AuthenticationBusyException`, reported over TCP as
+`Busy`; it is not an invalid-password result or an uncertain account mutation. Cancelled or rejected
+waiters do not consume the password-work rate budget. An exposed login endpoint also needs deployment-level abuse
 controls: a global budget alone cannot prevent an attacker exhausting that budget.
 
 Password hashing is deliberately expensive. A persistent encoded-store connection authenticates

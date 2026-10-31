@@ -35,7 +35,7 @@ public sealed partial class TcpEncodedEnvelopeStore
         long sequence = 1;
         while (true)
         {
-            var message = await MessagePackFrameCodec.ReadAsync(_stream, Limits, token).ConfigureAwait(false);
+            var message = await MessagePackFrameCodec.ReadSubscriptionControlAsync(_stream, Limits, token).ConfigureAwait(false);
             if (message is null)
             {
                 token.ThrowIfCancellationRequested();

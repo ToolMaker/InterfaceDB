@@ -44,7 +44,7 @@ public sealed partial class TcpStoreHost
                 AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope.Identity,
                 AccessToken = ProviderAuthenticationWire.Receipt(_options.AuthenticationMode, identity)
             }, limits, handshake).ConfigureAwait(false);
-            close = MessagePackFrameCodec.ReadAsync(stream, limits, stop.Token).AsTask();
+            close = MessagePackFrameCodec.ReadSubscriptionControlAsync(stream, limits, stop.Token).AsTask();
             long sequence = 1;
             while (!stop.IsCancellationRequested)
             {

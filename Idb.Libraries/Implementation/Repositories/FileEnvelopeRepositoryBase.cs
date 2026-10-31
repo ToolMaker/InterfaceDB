@@ -600,7 +600,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!StorageObjectCachePolicy.TryGetObjectInstance(currentEnvelope, out var instance)
-                || instance is not TImplementation)
+                || !ContractInstance<TContract>.Is<TImplementation>(instance))
             {
                 continue;
             }
@@ -678,7 +678,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
 
         if (instance is not null && string.IsNullOrWhiteSpace(currentEnvelope.ImplementationTypeName))
         {
-            currentEnvelope.ImplementationTypeName = GetImplementationTypeName(instance.GetType());
+            currentEnvelope.ImplementationTypeName = GetImplementationTypeName(ContractInstance<TContract>.Implementation(instance).GetType());
         }
 
         if (pinInstance && instance is not null && currentEnvelope.ObjectInstance is null)

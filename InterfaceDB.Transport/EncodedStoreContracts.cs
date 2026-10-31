@@ -4,11 +4,11 @@ namespace Idb.Transport;
 public enum EncodedStoreCapabilities
 {
     None = 0, Read = 1, Write = 2, Delete = 4, GetMany = 8, AtomicBatch = 16,
-    Enumerate = 32, Checkpoint = 64, DurableCommits = 128,
-    All = Read | Write | Delete | GetMany | AtomicBatch | Enumerate | Checkpoint | DurableCommits
+    Enumerate = 32, Checkpoint = 64, DurableCommits = 128, ReserveRevisions = 256,
+    All = Read | Write | Delete | GetMany | AtomicBatch | Enumerate | Checkpoint | DurableCommits | ReserveRevisions
 }
 
-public enum EncodedStoreCommand { Get = 1, Put, Delete, GetMany, ApplyBatch, Enumerate, Checkpoint, Ping, Changes }
+public enum EncodedStoreCommand { Get = 1, Put, Delete, GetMany, ApplyBatch, Enumerate, Checkpoint, Ping, Changes, ReserveRevisions }
 
 /// <summary>A null payload represents a deletion; an empty payload is a valid stored value.</summary>
 public sealed record EncodedMutation(string Key, byte[]? Payload);
@@ -48,6 +48,7 @@ public sealed record EncodedStoreRequest
                 ? EncodedStoreCapabilities.Delete : EncodedStoreCapabilities.None),
         EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes => EncodedStoreCapabilities.Enumerate,
         EncodedStoreCommand.Checkpoint => EncodedStoreCapabilities.Checkpoint,
+        EncodedStoreCommand.ReserveRevisions => EncodedStoreCapabilities.Write | EncodedStoreCapabilities.ReserveRevisions,
         EncodedStoreCommand.Ping => EncodedStoreCapabilities.None,
         _ => throw new ArgumentOutOfRangeException(nameof(Command))
     };

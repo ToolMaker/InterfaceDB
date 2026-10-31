@@ -9,6 +9,23 @@ namespace Idb.Storage.SegmentCore.Tests;
 public sealed class SegmentCheckpointCaptureTests
 {
     [TestMethod]
+    public async Task DeltaRejectsImpossibleCountBeforeAllocatingTheDeclaredDictionary()
+    {
+        using var root = new TemporaryRoot();
+        var path = Path.Combine(root.Path, "invalid-count.idbdlt");
+        await PrimaryIndexDeltaCheckpoint.WriteAsync(path + ".tmp", path, 2, 1, 0,
+            [new(1, 64, 0, 0)], new Dictionary<string, PrimaryIndexChange>(), PlatformDurableFileSystem.Instance, default);
+        var bytes = File.ReadAllBytes(path);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(36), 100_000);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(bytes.Length - 4), Crc32C.Compute(bytes.AsSpan(0, bytes.Length - 4)));
+        File.WriteAllBytes(path, bytes);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.ThrowsExactly<ObjectLogCorruptionException>(() => PrimaryIndexDeltaCheckpoint.Read(path));
+        Assert.IsLessThan(1_000_000L, GC.GetAllocatedBytesForCurrentThread() - before,
+            "A tiny corrupt checkpoint must not allocate its declared record count.");
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task DetachedCapturePreservesConcurrentUpdatesAndRestoresFailedChanges(bool failPublication)

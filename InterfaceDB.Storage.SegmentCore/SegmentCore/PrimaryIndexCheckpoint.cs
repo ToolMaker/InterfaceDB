@@ -217,7 +217,12 @@ internal static class PrimaryIndexCheckpoint
             state = Compose(latest, delta);
         }
 
-        PrunePublished(checkpointDirectory, generationsToKeep);
+        try { PrunePublished(checkpointDirectory, generationsToKeep); }
+        catch
+        {
+            if (state.IsFull && state.Entries is IDisposable disposable) disposable.Dispose();
+            throw;
+        }
         return state;
     }
 
@@ -441,11 +446,15 @@ internal static class PrimaryIndexCheckpoint
                 }
             }
 
+            var publishedEntries = entries;
+            if (buildPageMap && TryOpenPagedIndex(finalPath, generation, positions.Count, entries.Count,
+                    dataOffset, fileBytes, out var paged))
+                publishedEntries = paged;
             return new PrimaryIndexCheckpointState(
                 generation,
                 transactionWatermark,
                 positions,
-                entries,
+                publishedEntries,
                 fileBytes)
             {
                 IsFull = true,

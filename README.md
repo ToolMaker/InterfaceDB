@@ -1,11 +1,10 @@
 # InterfaceDB
 
-**Preview.14:** connection recovery, safe transport diagnostics and an optional native
-username/password authentication provider. All four public packages use `1.0.0-preview.14`.
-Update clients and hosts together; authentication defaults, data isolation, storage durability
-and committed-read semantics are unchanged.
-See [upgrade notes](documentation/preview14-release-notes.md),
-[release validation](documentation/preview14-validation.md),
+**Preview.15 candidate:** encrypted-field, migration, checkpoint, query and authentication fixes.
+The four public `1.0.0-preview.15` packages are entering final release verification; preview.14 remains the published release until the publication receipt is updated.
+Existing formats, isolation, durable acknowledgements and committed-copy reads are preserved.
+See [candidate release notes](documentation/preview15-release-notes.md),
+[validation and remaining work](documentation/preview15-validation.md),
 [policy integration](documentation/data-access-policies.md) and
 [measured costs](documentation/access-policy-production-20261028.md).
 

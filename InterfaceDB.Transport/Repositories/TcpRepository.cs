@@ -55,7 +55,9 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
             ExpectedAccountIdentity = Volatile.Read(ref _accountIdentity),
             Telemetry = _options.Connection.Telemetry ?? _options.StoragePolicy.Telemetry,
             // Preserve the requested capabilities so a read-only principal can open a typed repository.
-            RequiredCapabilities = _options.Connection.RequiredCapabilities,
+            RequiredCapabilities = _options.Connection.RequiredCapabilities
+                | ((_options.Connection.RequiredCapabilities & EncodedStoreCapabilities.Write) != 0
+                    ? EncodedStoreCapabilities.ReserveRevisions : EncodedStoreCapabilities.None),
             ExpectedScopeIdentity = Volatile.Read(ref _scopeIdentity) ?? _options.Connection.ExpectedScopeIdentity
         };
         var rejectedAttempts = 0;
@@ -127,7 +129,9 @@ public sealed partial class TcpRepository<TContract> : IEnvelopeMetadataReposito
             var lifecycle = new EnvelopeLifecycle<TContract>(() => new FileObjectEnvelope<TContract>(_options.Contract)
             {
                 EnvelopeCacheKey = string.Empty, VersionTag = _options.Contract.ActiveVersion!
-            }, identity, _options.Encryptor);
+            }, identity, _options.Encryptor,
+                key => StorageEncryptionContext.Create(_options.Contract, "tcp-repository-v1:" + _options.Connection.StoreAlias, key),
+                _options.StoragePolicy.EncryptedFieldWrites);
             var envelopes = new RemoteEnvelopeRepository<TContract>(operationOptions, source, _serializer, lifecycle, identity, ReadFreshPhysicalAsync);
             IIndexManager<TContract> indexes = SearchIndexMetadata.HasIndexes(typeof(TContract))
                 ? new SearchIndexManager<TContract>(envelopes, policy) : new PassthroughIndexManager<TContract>(envelopes);

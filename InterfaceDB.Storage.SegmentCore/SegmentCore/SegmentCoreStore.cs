@@ -1104,8 +1104,8 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             _indexVisibility.EnterWriteLock();
             try
             {
-                PublishIfNewer(_primaryIndex, key, address);
-                _checkpointChanges[key] = new PrimaryIndexChange(false, _primaryIndex[key]);
+                if (PublishIfNewer(_primaryIndex, key, address))
+                    _checkpointChanges[key] = new PrimaryIndexChange(false, address);
             }
             finally
             {
@@ -2441,11 +2441,19 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
             }
             catch
             {
+                if (state.IsFull && state.Entries is IDisposable disposable) disposable.Dispose();
                 Volatile.Write(ref _faulted, 1);
                 throw;
             }
         }
 
+        _indexVisibility.EnterWriteLock();
+        try
+        {
+            if (state.IsFull) _primaryIndex.Rebase(state.Entries, _checkpointChanges);
+            _primaryIndex.RetireDeletionMarkers(state.Positions);
+        }
+        finally { _indexVisibility.ExitWriteLock(); }
         _latestCheckpoint = state;
         Volatile.Write(ref _checkpointGeneration, state.Generation);
         stopwatch.Stop();
@@ -2737,10 +2745,8 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                     var mutation = mutations[index];
                     if (mutation.Kind == ObjectLogRecordKind.Put)
                     {
-                        PublishIfNewer(_primaryIndex, mutation.Key, addresses[index]);
-                        _checkpointChanges[mutation.Key] = new PrimaryIndexChange(
-                            false,
-                            _primaryIndex[mutation.Key]);
+                        if (PublishIfNewer(_primaryIndex, mutation.Key, addresses[index]))
+                            _checkpointChanges[mutation.Key] = new PrimaryIndexChange(false, addresses[index]);
                     }
                     else
                     {
@@ -2797,6 +2803,7 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                 }
                 catch (TransactionPreparationAbortedException aborted)
                 {
+                    Interlocked.Or(ref _dirtyStripeMask, unchecked((long)aborted.PreparedStripeMask));
                     storageStarted = false;
                     System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(aborted.InnerException!).Throw();
                     throw;
@@ -2822,10 +2829,8 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
                     var mutation = mutations[index];
                     if (mutation.Kind == ObjectLogRecordKind.Put)
                     {
-                        PublishIfNewer(_primaryIndex, mutation.Key, addresses[index]);
-                        _checkpointChanges[mutation.Key] = new PrimaryIndexChange(
-                            false,
-                            _primaryIndex[mutation.Key]);
+                        if (PublishIfNewer(_primaryIndex, mutation.Key, addresses[index]))
+                            _checkpointChanges[mutation.Key] = new PrimaryIndexChange(false, addresses[index]);
                     }
                     else if (RemoveIfNotNewer(_primaryIndex, mutation.Key, addresses[index]))
                     {
@@ -3141,34 +3146,18 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         }
     }
 
-    private static void PublishIfNewer(
+    private static bool PublishIfNewer(
         PrimaryIndexMap index,
         string key,
         StripedObjectLogRecordAddress candidate)
     {
-        while (true)
+        if (index.TryGetLatestAddress(key, out var current))
         {
-            if (!index.TryGetValue(key, out var current))
-            {
-                if (index.TryAdd(key, candidate))
-                {
-                    return;
-                }
-
-                continue;
-            }
-
             RequireSameStripe(key, current, candidate);
-            if (current.Address.Lsn >= candidate.Address.Lsn)
-            {
-                return;
-            }
-
-            if (index.TryUpdate(key, candidate, current))
-            {
-                return;
-            }
+            if (current.Address.Lsn >= candidate.Address.Lsn) return false;
         }
+        index[key] = candidate;
+        return true;
     }
 
     private static bool RemoveIfNotNewer(
@@ -3176,21 +3165,12 @@ public sealed partial class SegmentCoreStore : IAsyncDisposable
         string key,
         StripedObjectLogRecordAddress tombstone)
     {
-        while (index.TryGetValue(key, out var current))
+        if (index.TryGetLatestAddress(key, out var current))
         {
             RequireSameStripe(key, current, tombstone);
-            if (current.Address.Lsn > tombstone.Address.Lsn)
-            {
-                return false;
-            }
-
-            if (index.Remove(key, current))
-            {
-                return true;
-            }
+            if (current.Address.Lsn > tombstone.Address.Lsn) return false;
         }
-
-        return false;
+        return index.RecordDeletion(key, tombstone);
     }
 
     private static void RequireSameStripe(

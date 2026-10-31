@@ -61,16 +61,18 @@ public sealed class SegmentCoreMigrationRegressionTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task EncryptedFieldIsAvailableToBothMigrationStepsAndPersistsAfterReopen(bool clearSecret)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task EncryptedFieldIsAvailableToBothMigrationStepsAndPersistsAfterReopen(bool clearSecret, bool contextual)
     {
         using var root = new TemporaryDirectory();
         var encryptor = Encryptor();
         SecretMigrationStepOne.ClearSecret = clearSecret;
         var expectedSecret = clearSecret ? null : Secret + "|v2|v3";
         var expectedSecondInput = clearSecret ? "<null>" : Secret + "|v2";
-        var original = await SeedSourceAsync(root.Path, "1.0.0", encryptor);
+        var original = await SeedSourceAsync(root.Path, "1.0.0", encryptor, contextual: contextual);
         await using (var provider = BuildProvider(root.Path, "3.0.0", encryptor))
         {
             var result = await provider.GetRequiredService<ISegmentCoreRepositoryMaintenance<IMigrationSecret>>()
@@ -81,7 +83,7 @@ public sealed class SegmentCoreMigrationRegressionTests
             Assert.AreEqual(1, SecretMigrationStepTwo.UpCalls);
         }
 
-        await using (var reopened = BuildProvider(root.Path, "3.0.0", encryptor))
+        await using (var reopened = BuildProvider(root.Path, "3.0.0", Encryptor(allowLegacy: false)))
         {
             var envelope = await reopened.GetRequiredService<IEnvelopeRepository<IMigrationSecret>>().GetPhysicalAsync(Key);
             Assert.IsNotNull(envelope);
@@ -103,7 +105,8 @@ public sealed class SegmentCoreMigrationRegressionTests
             Assert.IsNull(persisted.ObjectInstance!.Secret, "The migrated secret must not become a plaintext object property on disk.");
             Assert.IsTrue(persisted.EncryptedFields.TryGetValue(nameof(IMigrationSecret.Secret), out var encrypted));
             Assert.AreEqual("secret-profile", encrypted.ProfileName);
-            Assert.AreEqual(expectedSecret, MessagePackSerializer.Deserialize<string?>(encryptor.Decrypt(encrypted.Ciphertext)));
+            Assert.AreEqual(expectedSecret, MessagePackSerializer.Deserialize<string?>(encryptor.Decrypt(encrypted.Ciphertext,
+                StorageEncryptionContext.CreateField(StorageEncryptionContext.Create(new RegressionConfig(root.Path, "3.0.0"), "segment-core", Key), nameof(IMigrationSecret.Secret)))));
         }
         await using var source = await SegmentCoreStore.OpenAsync(SourceRoot(root.Path), Options().StoreOptions);
         CollectionAssert.AreEqual(original, await source.GetAsync(Key));
@@ -179,9 +182,13 @@ public sealed class SegmentCoreMigrationRegressionTests
     }
 
     private static async Task<byte[]> SeedSourceAsync(string root, string storedVersion, AesGcmEncryptor outerEncryptor,
-        IEncryptor? fieldEncryptor = null, bool corruptField = false)
+        IEncryptor? fieldEncryptor = null, bool corruptField = false, bool contextual = false)
     {
-        var ciphertext = (fieldEncryptor ?? outerEncryptor).Encrypt(MessagePackSerializer.Serialize(Secret));
+        var fieldContext = StorageEncryptionContext.CreateField(
+            StorageEncryptionContext.Create(new RegressionConfig(root, "1.0.0"), "segment-core", Key), nameof(IMigrationSecret.Secret));
+        var ciphertext = contextual
+            ? ((IContextualEncryptor)(fieldEncryptor ?? outerEncryptor)).Encrypt(MessagePackSerializer.Serialize(Secret), fieldContext)
+            : (fieldEncryptor ?? outerEncryptor).Encrypt(MessagePackSerializer.Serialize(Secret));
         if (corruptField) ciphertext[^1] ^= 0x40;
         var sourceConfig = new RegressionConfig(root, "1.0.0");
         var envelope = new FileObjectEnvelope<IMigrationSecret>(sourceConfig)
@@ -227,7 +234,9 @@ public sealed class SegmentCoreMigrationRegressionTests
         return services.BuildServiceProvider();
     }
 
-    private static AesGcmEncryptor Encryptor(byte value = 0x31) => new(new FixedKeyProvider(value));
+    // These fixtures seed legacy fields deliberately; only their migration reader opts in.
+    private static AesGcmEncryptor Encryptor(byte value = 0x31, bool allowLegacy = true)
+        => new(new FixedKeyProvider(value), new() { AllowContextlessPayloadMigration = allowLegacy });
     private static string SourceRoot(string root) => Path.Combine(root, "source");
     private static string TargetRoot(string root, string version) => Path.Combine(root, "records", version);
 

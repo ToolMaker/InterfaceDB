@@ -129,7 +129,7 @@ public sealed partial class TcpRepositoryTests
                     EncodedStoreCommand.Put => new() { Command = command, Key = "x", Payload = [1] },
                     EncodedStoreCommand.GetMany => new() { Command = command, Keys = ["x"] },
                     EncodedStoreCommand.ApplyBatch => new() { Command = command, Mutations = [new("x", [1]), new("y", null)] },
-                    EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes => new() { Command = command, PageSize = 1 },
+                    EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes or EncodedStoreCommand.ReserveRevisions => new() { Command = command, PageSize = 1 },
                     _ => new() { Command = command }
                 };
                 Assert.AreEqual(RemoteErrorCode.Unauthorized,

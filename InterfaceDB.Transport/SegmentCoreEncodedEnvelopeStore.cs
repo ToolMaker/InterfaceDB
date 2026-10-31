@@ -29,7 +29,7 @@ public sealed partial class SegmentCoreEncodedEnvelopeStore : IEncodedEnvelopeSt
         => (_store, _limits, _maximumEnumerationKeys, _maximumPartitionKeys, _partitionIndex)
             = (store, limits, maximumEnumerationKeys, maximumPartitionKeys, partitionIndex);
 
-    public EncodedStoreCapabilities Capabilities => EncodedStoreCapabilities.All;
+    public EncodedStoreCapabilities Capabilities => EncodedStoreCapabilities.All & ~EncodedStoreCapabilities.ReserveRevisions;
     public PartitionIndexStatistics PartitionIndexStatistics => _partitionIndex.Statistics;
 
     /// <summary>Opens an exclusively owned store with durable writes; no relaxed durability override is exposed.</summary>

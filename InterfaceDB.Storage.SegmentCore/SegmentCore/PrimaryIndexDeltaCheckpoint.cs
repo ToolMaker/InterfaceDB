@@ -151,20 +151,13 @@ internal static class PrimaryIndexDeltaCheckpoint
 
     public static PrimaryIndexDeltaFileState Read(string path)
     {
-        var bytes = File.ReadAllBytes(path);
-        if (bytes.Length < HeaderBytes + PositionBytes + FooterBytes)
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
+        if (stream.Length < HeaderBytes + PositionBytes + FooterBytes)
         {
             throw new ObjectLogCorruptionException($"Primary-index delta '{path}' is incomplete.");
         }
 
-        var data = bytes.AsSpan(0, bytes.Length - FooterBytes);
-        var expectedCrc = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(bytes.Length - FooterBytes));
-        if (Crc32C.Compute(data) != expectedCrc)
-        {
-            throw new ObjectLogCorruptionException($"Primary-index delta '{path}' has an invalid checksum.");
-        }
-
-        var reader = new DeltaReader(data, path);
+        var reader = new DeltaReader(stream, path);
         if (!reader.ReadBytes(8).SequenceEqual(Magic)
             || reader.ReadInt32() != FormatVersion
             || reader.ReadInt32() != HeaderBytes)
@@ -189,6 +182,11 @@ internal static class PrimaryIndexDeltaCheckpoint
             throw new ObjectLogCorruptionException($"Primary-index delta '{path}' has invalid counts.");
         }
 
+        var minimumLength = HeaderBytes + (long)stripeCount * PositionBytes
+            + (long)changeCount * (36 + 1) + FooterBytes;
+        if (stream.Length < minimumLength)
+            throw new ObjectLogCorruptionException($"Primary-index delta '{path}' has impossible counts.");
+
         var positions = new ObjectLogWritePosition[stripeCount];
         for (var index = 0; index < stripeCount; index++)
         {
@@ -203,7 +201,7 @@ internal static class PrimaryIndexDeltaCheckpoint
             }
         }
 
-        var changes = new Dictionary<string, PrimaryIndexChange>(changeCount, StringComparer.Ordinal);
+        var changes = new Dictionary<string, PrimaryIndexChange>(Math.Min(changeCount, 65_536), StringComparer.Ordinal);
         for (var index = 0; index < changeCount; index++)
         {
             var keyLength = reader.ReadInt32();
@@ -254,7 +252,7 @@ internal static class PrimaryIndexDeltaCheckpoint
             watermark,
             positions,
             changes,
-            bytes.LongLength);
+            stream.Length);
     }
 
     private static void TryDelete(string path)
@@ -304,27 +302,20 @@ internal static class PrimaryIndexDeltaCheckpoint
         }
     }
 
-    private ref struct DeltaReader
+    private sealed class DeltaReader(Stream stream, string path)
     {
-        private readonly ReadOnlySpan<byte> _data;
-        private readonly string _path;
-        private int _offset;
-
-        public DeltaReader(ReadOnlySpan<byte> data, string path)
-        {
-            _data = data;
-            _path = path;
-        }
+        private byte[] _buffer = new byte[256];
+        private uint _crc = Crc32C.InitialState;
 
         public ReadOnlySpan<byte> ReadBytes(int count)
         {
-            if (count < 0 || count > _data.Length - _offset)
-            {
-                throw new ObjectLogCorruptionException($"Primary-index delta '{_path}' is truncated.");
-            }
-
-            var value = _data.Slice(_offset, count);
-            _offset += count;
+            if (count < 0 || count > stream.Length - FooterBytes - stream.Position)
+                throw new ObjectLogCorruptionException($"Primary-index delta '{path}' is truncated.");
+            if (_buffer.Length < count) _buffer = new byte[count];
+            var value = _buffer.AsSpan(0, count);
+            try { stream.ReadExactly(value); }
+            catch (EndOfStreamException) { throw new ObjectLogCorruptionException($"Primary-index delta '{path}' is truncated."); }
+            _crc = Crc32C.Append(_crc, value);
             return value;
         }
 
@@ -334,10 +325,13 @@ internal static class PrimaryIndexDeltaCheckpoint
 
         public void RequireEnd()
         {
-            if (_offset != _data.Length)
-            {
-                throw new ObjectLogCorruptionException($"Primary-index delta '{_path}' has trailing data.");
-            }
+            if (stream.Position != stream.Length - FooterBytes)
+                throw new ObjectLogCorruptionException($"Primary-index delta '{path}' has trailing data.");
+            Span<byte> footer = stackalloc byte[FooterBytes];
+            try { stream.ReadExactly(footer); }
+            catch (EndOfStreamException) { throw new ObjectLogCorruptionException($"Primary-index delta '{path}' is truncated."); }
+            if (BinaryPrimitives.ReadUInt32LittleEndian(footer) != Crc32C.Complete(_crc))
+                throw new ObjectLogCorruptionException($"Primary-index delta '{path}' has an invalid checksum.");
         }
     }
 }

@@ -215,6 +215,18 @@ On write, `EnvelopeLifecycle<TContract>` asks `EncryptedStorageFieldProcessor<TC
 
 On read, `EnvelopeLifecycle<TContract>` wraps the materialized object in `EncryptedStorageDispatchProxy<TContract>` when encrypted field definitions exist. Non-encrypted properties delegate to the concrete object. Encrypted getters decrypt the envelope field value on demand. Encrypted setters update the envelope ciphertext and clear the concrete backing property.
 
+Saving a proxy uses its logical property values, preserving encrypted value types and explicit null
+assignments. Concrete-implementation queries materialize an independent readable object; unsaved
+changes remain private. Index discovery and cache attributes use the registered implementation's
+metadata rather than the generated proxy type. Migration restores encrypted properties before the
+first `Up` step, so later steps receive the preceding step's edits, including intentional nulls.
+In preview.15, field encryption binds each value to its repository, final record key and declared
+field name using the existing context-bound encryptor frame. The outer envelope format is unchanged.
+Legacy field reads and reader-first rollout require the explicit options described in
+[Field encryption upgrade](security.md#field-encryption-upgrade-preview15). Custom lifecycles must
+receive a trusted repository context factory and implement the field-binding capability when
+provider key allocation can change the initial key.
+
 Field-only encryption protects only values selected with `[EncryptedStorageField]`. It does not encrypt `ExtensionMetadata` or other envelope fields. Use whole-envelope encryption when extension metadata is sensitive.
 
 Encrypted values are excluded from search-index derivatives. Type-level `[SearchIndex]` discovery skips encrypted members, and applying `[SearchIndex]` directly to a member that also has `[EncryptedStorageField]` is rejected. SegmentCore disables and purges its plaintext persistent search-index catalog when repository encryption is active, then rebuilds indexes in memory from authoritative decrypted records.

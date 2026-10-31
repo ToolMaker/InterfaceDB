@@ -151,7 +151,7 @@ public sealed class PassthroughIndexManager<TContract> : IIndexManager<TContract
             {
                 throw new InvalidOperationException("Envelope does not contain an object instance.");
             }
-            var implementation = (TImplementation)entity;
+            if (!ContractInstance<TContract>.TryRead<TImplementation>(entity, out var implementation)) continue;
             if (!predicate(implementation))
             {
                 continue;

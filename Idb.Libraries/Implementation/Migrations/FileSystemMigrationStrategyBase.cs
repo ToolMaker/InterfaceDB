@@ -250,6 +250,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
         var currentPayload = serializedEnvelope.ObjectPayload;
         var currentVersion = sourceVersion;
         IMigration? latestMigration = null;
+        var firstStep = true;
 
         foreach (var descriptor in chain)
         {
@@ -257,6 +258,12 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             try
             {
                 migrationInstance = DeserializeMigration(currentPayload, descriptor.MigrationType);
+                if (firstStep)
+                {
+                    EncryptedMigrationFields.Restore(migrationInstance, serializedEnvelope.EncryptedFields, _encryptor,
+                        StorageEncryptionContext.Create(_contractConfig, "file", physicalKey));
+                    firstStep = false;
+                }
                 if (!migrationInstance.Up())
                 {
                     throw new MigrationExecutionException(
@@ -429,7 +436,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             || payload[2] != (byte)'B'
             || payload[3] is not ((byte)'2' or (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6'))
         {
-            return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload, null);
+            return new SerializedEnvelope(Path.GetFileNameWithoutExtension(file.Name), payload, null, null);
         }
 
         var hasCacheFlag = payload[3] is (byte)'3' or (byte)'4' or (byte)'5' or (byte)'6';
@@ -445,10 +452,9 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
             _ = MessagePackSerializer.Deserialize<bool>(stream, ContractSerializerOptions);
         }
 
-        if (hasEncryptedFields)
-        {
-            _ = MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(stream, ContractSerializerOptions);
-        }
+        var encryptedFields = hasEncryptedFields
+            ? MessagePackSerializer.Deserialize<Dictionary<string, EncryptedFieldValue>>(stream, ContractSerializerOptions)
+            : null;
 
         var extensionMetadata = hasExtensionMetadata
             ? ReadExtensionMetadata(payload, stream, file.FullName)
@@ -456,7 +462,7 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
 
         var objectPayload = new byte[checked((int)(stream.Length - stream.Position))];
         stream.ReadExactly(objectPayload);
-        return new SerializedEnvelope(cacheKey, objectPayload, extensionMetadata);
+        return new SerializedEnvelope(cacheKey, objectPayload, encryptedFields, extensionMetadata);
     }
 
     private static byte[]? ReadExtensionMetadata(
@@ -571,5 +577,6 @@ public abstract class FileSystemMigrationStrategyBase<TContract> : IMigrationStr
     private sealed record SerializedEnvelope(
         string CacheKey,
         byte[] ObjectPayload,
+        Dictionary<string, EncryptedFieldValue>? EncryptedFields,
         byte[]? ExtensionMetadata);
 }

@@ -17,6 +17,7 @@ public sealed class LocalAccountAuthenticationProvider : IAuthenticationProvider
     private readonly object _rateGate = new();
     private DateTimeOffset _window;
     private int _attempts;
+    private int _queuedPasswordChecks;
     private int _disposed;
     public bool RequiresDataIsolation => _options.AccountMode == DatabaseAccountMode.MultipleAccounts;
 
@@ -155,13 +156,29 @@ public sealed class LocalAccountAuthenticationProvider : IAuthenticationProvider
     private async ValueTask EnterPasswordWorkAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        lock (_rateGate)
+        if (!await _passwordSlots.WaitAsync(0, token).ConfigureAwait(false))
         {
-            var now = _clock.GetUtcNow();
-            if (now - _window >= TimeSpan.FromMinutes(1)) { _window = now; _attempts = 0; }
-            if (++_attempts > _options.AttemptsPerMinute) throw Denied();
+            var queued = Interlocked.Increment(ref _queuedPasswordChecks);
+            try
+            {
+                if (queued > _options.MaximumQueuedPasswordChecks
+                    || !await _passwordSlots.WaitAsync(_options.PasswordAdmissionTimeout, token).ConfigureAwait(false))
+                    throw new AuthenticationBusyException();
+            }
+            finally { Interlocked.Decrement(ref _queuedPasswordChecks); }
         }
-        if (!await _passwordSlots.WaitAsync(0, token).ConfigureAwait(false)) throw Denied();
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            lock (_rateGate)
+            {
+                var now = _clock.GetUtcNow();
+                if (now - _window >= TimeSpan.FromMinutes(1)) { _window = now; _attempts = 0; }
+                if (_attempts >= _options.AttemptsPerMinute) throw new AuthenticationBusyException();
+                _attempts++;
+            }
+        }
+        catch { _passwordSlots.Release(); throw; }
     }
 
     private static bool ReservedClaim(string type) => type is "iss" or "sub" or "name" or "exp" or "nbf" or "iat"

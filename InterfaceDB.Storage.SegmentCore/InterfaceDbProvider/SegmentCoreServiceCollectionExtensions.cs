@@ -112,7 +112,9 @@ public static class SegmentCoreServiceCollectionExtensions
             new EnvelopeLifecycle<TContract>(
                 () => sp.GetRequiredKeyedService<IObjectEnvelope<TContract>>(key),
                 sp.GetRequiredKeyedService<IEnvelopeStorageIdentityFactory<TContract>>(key),
-                sp.GetRequiredKeyedService<IEncryptor>(key)));
+                sp.GetRequiredKeyedService<IEncryptor>(key),
+                physicalKey => StorageEncryptionContext.Create(effectiveConfig, "segment-core", physicalKey),
+                policy.EncryptedFieldWrites));
         services.TryAddKeyedSingleton<IEnvelopeRepository<TContract>>(databaseKey, (sp, key) =>
             new SegmentCoreEnvelopeRepository<TContract>(
                 sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(key),

@@ -14,7 +14,8 @@ public sealed class EncryptedFieldMetadataCacheTests
     [TestMethod]
     public void SharedMetadataKeepsEachProxyCiphertextAndValuesIndependent()
     {
-        var processor = new EncryptedStorageFieldProcessor<ISecretRecord>(new TestEncryptor());
+        var processor = new EncryptedStorageFieldProcessor<ISecretRecord>(new TestEncryptor(),
+            key => System.Text.Encoding.UTF8.GetBytes(key), EncryptedFieldWriteMode.LegacyContextless);
         var first = new SecretRecord { Secret = "first", Number = 5 };
         var second = new SecretRecord { Secret = "second", Number = 8 };
         var firstEnvelope = CreateEnvelope(first);
@@ -32,6 +33,9 @@ public sealed class EncryptedFieldMetadataCacheTests
         Assert.AreEqual("second", secondProxy.Secret);
         Assert.AreEqual(5, firstProxy.Number);
         Assert.AreEqual(8, secondProxy.Number);
+        Assert.AreEqual(Idb.Libraries.Abstractions.Enums.StorageObjectCacheMode.StrongObject,
+            StorageObjectCachePolicy.ResolveObjectCacheMode(firstProxy, Idb.Libraries.Abstractions.Options.StoragePolicy.Default),
+            "An encryption wrapper must preserve the implementation's cache attribute.");
 
         firstProxy.Secret = "changed";
         firstProxy.Number = 12;
@@ -51,7 +55,8 @@ public sealed class EncryptedFieldMetadataCacheTests
     [TestMethod]
     public void DifferentRuntimeTypesRetainExplicitInterfacePropertyResolution()
     {
-        var processor = new EncryptedStorageFieldProcessor<ISecretRecord>(new TestEncryptor());
+        var processor = new EncryptedStorageFieldProcessor<ISecretRecord>(new TestEncryptor(),
+            key => System.Text.Encoding.UTF8.GetBytes(key), EncryptedFieldWriteMode.LegacyContextless);
         for (var iteration = 0; iteration < 3; iteration++)
         {
             foreach (ISecretRecord entity in new ISecretRecord[] { new SecretRecord(), new ExplicitSecretRecord() })
@@ -79,6 +84,7 @@ public sealed class EncryptedFieldMetadataCacheTests
         int Number { get; set; }
     }
 
+    [StorageCached]
     private sealed class SecretRecord : ISecretRecord
     {
         public string? Secret { get; set; }

@@ -24,6 +24,7 @@ public sealed class JwtAccessTokenValidator : IAccessTokenValidator, IDisposable
         internal SemaphoreSlim RefreshGate { get; } = new(1, 1);
         internal KeySnapshot? Snapshot;
         internal long? LastAttempt;
+        internal Task? RefreshTask;
     }
 
     private static readonly HashSet<string> SupportedAlgorithms = new(StringComparer.Ordinal)
@@ -133,29 +134,44 @@ public sealed class JwtAccessTokenValidator : IAccessTokenValidator, IDisposable
             return authority.Snapshot!.Keys.Any(key => key.KeyId == keyId) ? authority.Snapshot.Keys : throw Rejected();
         var snapshot = Volatile.Read(ref authority.Snapshot);
         if (Fresh(snapshot) && HasKey(snapshot, keyId)) return snapshot!.Keys;
+        Task refresh;
         await authority.RefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             snapshot = authority.Snapshot;
             if (Fresh(snapshot) && HasKey(snapshot, keyId)) return snapshot!.Keys;
-            if (authority.LastAttempt is { } last && _time.GetElapsedTime(last) < _options.MinimumRefreshInterval)
-                return Usable(snapshot) && HasKey(snapshot, keyId) ? snapshot!.Keys : throw Rejected();
-            authority.LastAttempt = _time.GetTimestamp();
-            try
+            if (authority.RefreshTask is { IsCompleted: false } running)
+                refresh = running;
+            else
             {
-                var keys = await LoadKeysAsync(authority.Options, cancellationToken).ConfigureAwait(false);
-                snapshot = new(keys, _time.GetTimestamp());
-                Volatile.Write(ref authority.Snapshot, snapshot);
+                if (authority.LastAttempt is { } last && _time.GetElapsedTime(last) < _options.MinimumRefreshInterval)
+                    return Usable(snapshot) && HasKey(snapshot, keyId) ? snapshot!.Keys : throw Rejected();
+                authority.LastAttempt = _time.GetTimestamp();
+                refresh = authority.RefreshTask = RefreshKeysAsync(authority);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException
-                or AuthenticationException or OperationCanceledException or ArgumentException or SecurityTokenException)
-            {
-                if (!Usable(snapshot) || !HasKey(snapshot, keyId)) throw Rejected();
-            }
-            return Usable(snapshot) && HasKey(snapshot, keyId) ? snapshot!.Keys : throw Rejected();
         }
         finally { authority.RefreshGate.Release(); }
+
+        // Callers own their wait, not the authority's bounded shared HTTP refresh.
+        await refresh.WaitAsync(cancellationToken).ConfigureAwait(false);
+        snapshot = Volatile.Read(ref authority.Snapshot);
+        return Usable(snapshot) && HasKey(snapshot, keyId) ? snapshot!.Keys : throw Rejected();
+    }
+
+    private async Task RefreshKeysAsync(Authority authority)
+    {
+        try
+        {
+            // Each discovery/JWKS request retains its configured HTTP deadline.
+            var keys = await LoadKeysAsync(authority.Options, CancellationToken.None).ConfigureAwait(false);
+            if (Volatile.Read(ref _disposed) == 0)
+                Volatile.Write(ref authority.Snapshot, new(keys, _time.GetTimestamp()));
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
+        {
+            // Preserve the old snapshot's original age. Every waiter independently
+            // checks hard expiry and key membership; refresh failure grants no access.
+        }
     }
 
     private bool Fresh(KeySnapshot? snapshot) => snapshot is not null && _time.GetElapsedTime(snapshot.LoadedAt) < _options.RefreshInterval;

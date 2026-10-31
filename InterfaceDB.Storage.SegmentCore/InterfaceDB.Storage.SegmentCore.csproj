@@ -8,7 +8,7 @@
     <IsPackable>true</IsPackable>
     <AssemblyName>InterfaceDB.Storage.SegmentCore</AssemblyName>
     <PackageId>InterfaceDB.Storage.SegmentCore</PackageId>
-    <Version>1.0.0-preview.14</Version>
+    <Version>1.0.0-preview.15</Version>
     <Authors>ToolMaker</Authors>
     <Description>High-throughput append-only SegmentCore storage provider for InterfaceDB.</Description>
     <PackageTags>interfacedb;storage;object-database;wal;append-only;android;ios;maccatalyst;macos</PackageTags>
@@ -16,7 +16,7 @@
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 14 adds safe token-outage recovery, subscription reauthentication, bounded Busy backoff, diagnostic reason codes and opt-in native username/password accounts. Existing JWT configuration, data isolation, durability and committed-copy reads are preserved. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/preview14-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 15 fixes encrypted-field updates and migrations, concrete reads, string-range ordering, checkpoint publication, delete-policy enforcement, password admission and JWT refresh cancellation. Durability, committed-copy reads and existing storage formats are preserved. Adds server-owned remote revisions, explicit import authorization and staged context-bound field encryption. Coordinated client/server upgrade required. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/preview15-release-notes.md</PackageReleaseNotes>
     <RootNamespace>Idb.Storage.SegmentCore</RootNamespace>
   </PropertyGroup>
 

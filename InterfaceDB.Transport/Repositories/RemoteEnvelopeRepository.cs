@@ -153,6 +153,12 @@ internal sealed class RemoteEnvelopeRepository<TContract> :
         if (inputs.Length >= _options.Connection.Limits.MaximumBatchItems)
             throw new ArgumentException("The batch exceeds the negotiated limit including repository metadata.");
         if (inputs.Length == 0) return [];
+        var imported = inputs.Max(input => EnvelopeWriteCoordinator<TContract>.ImportedRevision(input?.Envelope));
+        byte[]? importPayload = null;
+        if (imported > 0) { importPayload = new byte[8]; BinaryPrimitives.WriteInt64LittleEndian(importPayload, imported); }
+        var reservation = await _store.ExecuteAsync(new() { Command = EncodedStoreCommand.ReserveRevisions,
+            PageSize = inputs.Length, Payload = importPayload }, cancellationToken).ConfigureAwait(false);
+        _clock.Reserve(reservation.Payload ?? throw new InvalidDataException("Missing revision reservation."));
         var candidates = new List<IObjectEnvelope<TContract>>(inputs.Length);
         var mutations = new List<EncodedMutation>(inputs.Length + 1);
         var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -193,7 +199,7 @@ internal sealed class RemoteEnvelopeRepository<TContract> :
         }
         if (recordCount > _options.MaximumSnapshotRecords || snapshotBytes > _options.MaximumSnapshotBytes)
             throw new InvalidDataException("The write would exceed the repository snapshot limit.");
-        mutations.Add(new(ClockKey, _clock.Encode()));
+        // The server commits its reserved clock atomically with these records.
         try { await _store.ApplyBatchAsync(mutations.ToArray(), cancellationToken).ConfigureAwait(false); }
         catch (RemoteCommitOutcomeUnknownException exception)
         {
@@ -221,7 +227,7 @@ internal sealed class RemoteEnvelopeRepository<TContract> :
         if (key == ClockKey) throw new ArgumentException("Reserved physical key.");
         var current = _payloads.ContainsKey(key) ? Materialize(key).RevisionTimestampUtcMicroseconds : (long?)null;
         await PrepareAsync(envelope, false, current, cancellationToken, deleting: true).ConfigureAwait(false);
-        try { await _store.ApplyBatchAsync([new(key, null), new(ClockKey, _clock.Encode())], cancellationToken).ConfigureAwait(false); }
+        try { await _store.ApplyBatchAsync([new(key, null)], cancellationToken).ConfigureAwait(false); }
         catch (RemoteCommitOutcomeUnknownException exception)
         { throw new RemoteRepositoryCommitOutcomeUnknownException(new Dictionary<string, long?> { [key] = null }, exception); }
         _payloads.Remove(key);
@@ -269,16 +275,22 @@ internal sealed class RemoteEnvelopeRepository<TContract> :
 
     private sealed class SnapshotClock : IRevisionTimestampGenerator
     {
-        private readonly MonotonicRevisionTimestampGenerator _generator = new();
+        private long _next, _last;
         internal long Floor { get; set; }
-        public long Next(long observedRevisionTimestampUtcMicroseconds)
-            => Floor = _generator.Next(Math.Max(Floor, observedRevisionTimestampUtcMicroseconds));
-        internal byte[] Encode()
+        internal void Reserve(byte[] range)
         {
-            var bytes = new byte[16];
-            BinaryPrimitives.WriteInt64LittleEndian(bytes, Floor);
-            BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(8), ~Floor);
-            return bytes;
+            if (range.Length != 16) throw new InvalidDataException("Invalid revision reservation.");
+            _next = BinaryPrimitives.ReadInt64LittleEndian(range);
+            _last = BinaryPrimitives.ReadInt64LittleEndian(range.AsSpan(8));
+            if (_next <= Floor || _last < _next || _last == long.MaxValue)
+                throw new InvalidDataException("Invalid revision reservation.");
+            Floor = _last;
+        }
+        public long Next(long observedRevisionTimestampUtcMicroseconds)
+        {
+            if (_next <= observedRevisionTimestampUtcMicroseconds || _next > _last)
+                throw new InvalidDataException("The server reservation does not cover this write.");
+            return _next++;
         }
     }
 }

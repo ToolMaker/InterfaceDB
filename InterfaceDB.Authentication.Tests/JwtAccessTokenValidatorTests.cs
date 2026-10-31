@@ -123,6 +123,37 @@ public sealed class JwtAccessTokenValidatorTests
     }
 
     [TestMethod]
+    public async Task CancellingTheFirstCallerDoesNotPoisonSharedKeyRefresh()
+    {
+        var http = new GatedHttp(request => Reply(request.RequestUri!, _key));
+        using var validator = new JwtAccessTokenValidator(NetworkOptions(), http, _clock);
+        using var cancellation = new CancellationTokenSource();
+        var first = validator.ValidateAsync(Token(), cancellation.Token).AsTask();
+        await http.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => first);
+        http.Release.TrySetResult();
+        Assert.IsNotNull(await validator.ValidateAsync(Token()));
+        Assert.AreEqual(2, http.Calls, "Cancelled callers must not create refresh storms or suppress the shared load.");
+    }
+
+    private sealed class GatedHttp(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Calls);
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            var result = response(request);
+            result.RequestMessage = request;
+            return result;
+        }
+    }
+
+    [TestMethod]
     public async Task UnknownKeyRefreshIsRateLimitedAndAcceptsConfiguredKeyRollover()
     {
         using var nextRsa = RSA.Create(2048);

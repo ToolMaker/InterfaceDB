@@ -15,7 +15,7 @@ namespace Idb.Libraries.Implementation.Indexes;
 /// </summary>
 public class EnvelopeLifecycle<TContract> :
     IEnvelopeLifecycle<TContract>,
-    IEnvelopeMetadataStager<TContract>
+    IEnvelopeMetadataStager<TContract>, IEnvelopeFieldBinding<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private readonly Func<IObjectEnvelope<TContract>> _envelopeFactory;
@@ -25,11 +25,16 @@ public class EnvelopeLifecycle<TContract> :
     public EnvelopeLifecycle(
         Func<IObjectEnvelope<TContract>> envelopeFactory,
         IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory,
-        IEncryptor encryptor)
+        IEncryptor encryptor) : this(envelopeFactory, storageIdentityFactory, encryptor, null) { }
+
+    public EnvelopeLifecycle(Func<IObjectEnvelope<TContract>> envelopeFactory,
+        IEnvelopeStorageIdentityFactory<TContract> storageIdentityFactory, IEncryptor encryptor,
+        Func<string, byte[]>? fieldContextFactory, EncryptedFieldWriteMode fieldWriteMode = EncryptedFieldWriteMode.ContextBound)
     {
         _envelopeFactory = envelopeFactory ?? throw new ArgumentNullException(nameof(envelopeFactory));
         _storageIdentityFactory = storageIdentityFactory ?? throw new ArgumentNullException(nameof(storageIdentityFactory));
-        _encryptedFieldProcessor = new EncryptedStorageFieldProcessor<TContract>(encryptor);
+        _encryptedFieldProcessor = new EncryptedStorageFieldProcessor<TContract>(encryptor,
+            fieldContextFactory, fieldWriteMode);
     }
 
     IObjectEnvelope<TContract> IEnvelopeMetadataStager<TContract>.Stage(
@@ -96,13 +101,16 @@ public class EnvelopeLifecycle<TContract> :
                 $"Envelope extension metadata cannot exceed {EnvelopeExtensionMetadataLimits.MaximumByteLength} bytes.");
         }
 
-        var storageEntity = _encryptedFieldProcessor.PrepareForStorage(
-            EncryptedStorageFieldProcessor<TContract>.CloneForStorage(entity), wrappedEnvelope);
-        wrappedEnvelope.ObjectInstance = storageEntity;
+        // Identity factories may depend on logical field values. Bind only after initial identity is known;
+        // providers finalize Multiple-cardinality keys before the write coordinator's final binding.
+        wrappedEnvelope.ObjectInstance = EncryptedStorageFieldProcessor<TContract>.CloneForStorage(entity);
         _storageIdentityFactory.InitEnvelope(wrappedEnvelope);
+        wrappedEnvelope.ObjectInstance = _encryptedFieldProcessor.PrepareForStorage(wrappedEnvelope.ObjectInstance, wrappedEnvelope);
 
         return ValueTask.FromResult(wrappedEnvelope ?? throw new InvalidOperationException("Failed to resolve envelope instance from service provider."));
     }
+
+    public void BindFields(IObjectEnvelope<TContract> envelope) => _encryptedFieldProcessor.BindFields(envelope);
 
     public TContract Unwrap(IObjectEnvelope<TContract> envelope)
     {

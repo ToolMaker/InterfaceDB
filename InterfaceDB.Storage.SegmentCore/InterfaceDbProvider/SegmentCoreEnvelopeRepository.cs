@@ -677,7 +677,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
         await foreach (var envelope in EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
             if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var instance)
-                && instance is TImplementation)
+                && ContractInstance<TContract>.Is<TImplementation>(instance))
             {
                 yield return envelope;
             }
@@ -832,6 +832,7 @@ public sealed class SegmentCoreEnvelopeRepository<TContract> :
                     sourceRevision > 0 ? EnvelopeRevisionAction.Import : EnvelopeRevisionAction.Advance,
                     sourceRevision, ExpectedMissing: true));
                 envelope.State = StorageObjectState.Active;
+                if (_envelopeLifecycle is IEnvelopeFieldBinding<TContract> fieldBinding) fieldBinding.BindFields(envelope);
                 pending.Add(_envelopeLifecycle.Unwrap(envelope));
                 if (pending.Count == options.BatchSize)
                 {

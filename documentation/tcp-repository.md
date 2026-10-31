@@ -76,7 +76,8 @@ the historical outcome. There is no automatic mutation replay or durable dedupli
 
 ## Application integration
 
-Reference `InterfaceDB.Transport` version `1.0.0-preview.14`. Preserve interface contracts, MessagePack implementations, indexes and normal
+For the preview.15 candidate, reference `InterfaceDB.Transport` version `1.0.0-preview.15` from
+the candidate feed until publication. Preserve interface contracts, MessagePack implementations, indexes and normal
 `IRepository<T>` calls. Supply an explicit runtime type allowlist.
 
 Adapt the application's existing signed-in user token store:
@@ -271,3 +272,55 @@ authentication, isolation, serializer selection, push lifetimes, server migratio
 Explicitly run `tests/InterfaceDB.Authentication.KeycloakTests/run-typed-tests.ps1` for isolated
 Docker/Keycloak qualification and `tests/InterfaceDB.Transport.DockerTests/run-tests.ps1` for
 storage/migration qualification. These use their own test resources.
+
+## Server-owned revisions (preview.15)
+
+The host protects `.idb-remote-repository-clock-v1` in every authorized data scope, independently
+of the selected data policy. It denies direct and batched client mutations of this reserved key.
+`ReserveRevisions` uses an existing request frame with `PageSize` as the bounded reservation
+count; optional eight-byte `Payload` identifies an explicitly authorized imported revision.
+Responses carry the first and last assigned revisions. The session owns the reservation until its
+next record commit, which atomically includes the durable high-water mark. Closing the session
+or rejecting the data write does not publish its reservation.
+
+The server does not deserialize domain records or need their encryption keys. The configured
+provider must support durable atomic batches. A successful remote write remains a single durable
+batch, with one additional reservation round trip. Read-only sessions need no reservation grant.
+An uncertain commit retains the existing outcome-unknown error and reconciliation requirement.
+
+Normal saves need no extra configuration. To preserve external revisions through
+`SaveWithExtensionMetadataAsync(... EnvelopeRevisionAction.Import ...)`, inject an implementation
+of `IRepositoryRevisionImportPolicy` into the store registration's `RevisionImportPolicy` property.
+Its `AuthorizeImport(DataAccessContext, DataAccessScope, long)` method receives the validated
+caller and the server-approved scope. Permit only trusted migration/replication identities; never
+return true just because an arbitrary client supplies a revision or requested scope. Null denies
+remote imports before storage changes. Local repository imports are unchanged. This preserves
+far-future imported revisions without imposing an arbitrary device-clock limit; ordinary saves
+then advance beyond the imported revision, even after restart or wall-clock rollback.
+
+For example, register an application-owned policy at the composition root and inject it into
+only the intended alias:
+
+```csharp
+services.AddSingleton<IRepositoryRevisionImportPolicy, TrustedMigrationImportPolicy>();
+var registration = new TcpStoreRegistration("people", manifest, store)
+{
+    AccessPolicy = tenantPolicy,
+    RevisionImportPolicy = serviceProvider.GetRequiredService<IRepositoryRevisionImportPolicy>()
+};
+```
+
+`TrustedMigrationImportPolicy` is your implementation of the interface, using your validated
+identity claims and the authorized scope. The database does not invent a universally privileged
+claim name. Omit the property when remote revision-preserving imports are unnecessary.
+
+This authority protects repository metadata, not the contents of opaque records written by a
+caller already authorized to replace them. It cannot attest to revisions hidden inside arbitrary
+custom ciphertext. Keep data policies and application validation in place. An already corrupt or
+exhausted clock is not reset automatically: stop writers, reconcile authoritative data and restore
+or migrate under trusted host control. Resetting its floor could reuse existing revisions.
+
+Upgrade host and writers together during a controlled write pause. Updated typed writers negotiate
+`ReserveRevisions`; older hosts reject that requirement before writes. Updated hosts reject older
+client-maintained clock writes. Existing clock encoding and domain payloads need no conversion
+for this change. Field-encryption rollout has its own staged settings in [security.md](security.md).

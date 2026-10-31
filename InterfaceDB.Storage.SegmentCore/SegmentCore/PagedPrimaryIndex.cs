@@ -126,17 +126,9 @@ internal sealed class PagedPrimaryIndex :
     public IEnumerator<KeyValuePair<string, StripedObjectLogRecordAddress>> GetEnumerator()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        using var stream = new FileStream(
-            _path,
-            new FileStreamOptions
-            {
-                Mode = FileMode.Open,
-                Access = FileAccess.Read,
-                Share = FileShare.ReadWrite | FileShare.Delete,
-                BufferSize = 64 * 1024,
-                Options = FileOptions.SequentialScan
-            });
-        stream.Position = _dataOffset;
+        // Publication may unlink this checkpoint while the index still owns its open
+        // handle. Each enumerator needs its own position, without reopening the path.
+        using var stream = new BufferedStream(new HandleReadStream(_handle, _dataOffset), 64 * 1024);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
         for (var index = 0; index < Count; index++)
         {
@@ -161,6 +153,28 @@ internal sealed class PagedPrimaryIndex :
     }
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    private sealed class HandleReadStream(SafeFileHandle handle, long offset) : Stream
+    {
+        private long _position = offset;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => RandomAccess.GetLength(handle);
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override int Read(Span<byte> buffer)
+        {
+            var read = RandomAccess.Read(handle, buffer, _position);
+            _position += read;
+            return read;
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        // The index, not an individual enumerator, owns the handle.
+    }
 
     public void Dispose()
     {

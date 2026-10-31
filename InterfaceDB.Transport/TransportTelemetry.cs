@@ -20,6 +20,7 @@ internal static class TransportTelemetry
         EncodedStoreCommand.ApplyBatch => DatabaseOperation.SaveBatch,
         EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes => DatabaseOperation.Query,
         EncodedStoreCommand.Checkpoint => DatabaseOperation.Checkpoint,
+        EncodedStoreCommand.ReserveRevisions => DatabaseOperation.Execute,
         _ => DatabaseOperation.Unknown
     };
     internal static DatabaseError Error(RemoteErrorCode code) => code switch

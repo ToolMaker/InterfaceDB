@@ -10,6 +10,56 @@ namespace Idb.Storage.SegmentCore.Tests;
 public sealed class SegmentCoreStoreTests
 {
     [TestMethod]
+    public void LatePutPublicationCannotResurrectANewerDeletion()
+    {
+        using var map = new PrimaryIndexMap();
+        var put = typeof(SegmentCoreStore).GetMethod("PublishIfNewer", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var delete = typeof(SegmentCoreStore).GetMethod("RemoveIfNotNewer", BindingFlags.Static | BindingFlags.NonPublic)!;
+        StripedObjectLogRecordAddress Address(long lsn) => new(0, new(1, 64, 96, lsn));
+        put.Invoke(null, [map, "key", Address(1)]);
+        // Simulate continuation scheduling: the newer delete publishes before an
+        // older put that has already completed its append on the same stripe.
+        delete.Invoke(null, [map, "key", Address(3)]);
+        put.Invoke(null, [map, "key", Address(2)]);
+        Assert.IsFalse(map.ContainsKey("key"));
+        Assert.AreEqual(0, map.Count);
+        put.Invoke(null, [map, "key", Address(4)]);
+        Assert.AreEqual(Address(4), map["key"], "A genuinely newer insert must still succeed.");
+    }
+
+    [TestMethod]
+    public async Task PagedIndexRemainsEnumerableAndPagedAfterItsOriginalCheckpointIsPruned()
+    {
+        using var root = new TemporaryDirectory();
+        var options = WalOptions(stripes: 1) with
+        {
+            CheckpointGenerationsToKeep = 1,
+            PrimaryIndexOptions = new() { Mode = SegmentCorePrimaryIndexMode.Paged }
+        };
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            await store.SaveAsync("key", new byte[] { 1 });
+            await store.CheckpointAsync();
+        }
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            for (var generation = 2; generation <= 5; generation++)
+            {
+                await store.SaveAsync("key", new byte[] { (byte)generation });
+                await store.SaveAsync("new-" + generation, new byte[] { (byte)generation });
+                await store.CheckpointAsync();
+                Assert.HasCount(generation, store.GetKeysSnapshot());
+                Assert.IsTrue(store.Statistics.PrimaryIndexIsPaged);
+                var checkpoint = (PrimaryIndexCheckpointState)typeof(SegmentCoreStore).GetField("_latestCheckpoint", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+                Assert.IsTrue(checkpoint.Entries is IPagedPrimaryIndexView { IsPaged: true }, "A full checkpoint must not retain the resident capture dictionary in paged mode.");
+            }
+        }
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        Assert.AreEqual(5, reopened.Count);
+        CollectionAssert.AreEqual(new byte[] { 5 }, await reopened.GetAsync("key"));
+    }
+
+    [TestMethod]
     public async Task SaveAndGet_MaterializesPayloadByDirectLocator()
     {
         using var root = new TemporaryDirectory();

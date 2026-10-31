@@ -1,8 +1,8 @@
 # InterfaceDB.Transport
 
-## Preview.14 release
+## Preview.15
 
-Connection recovery, safe transport diagnostics and optional native accounts are documented in the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/preview14-release-notes.md). Update all four public packages together. Existing JWT settings, isolation, committed reads and durability remain unchanged.
+Preview.15 fixes encrypted-field updates and migrations, concrete reads, checkpoint publication, delete-policy enforcement and authentication admission. See the [upgrade guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/preview15-release-notes.md). Update all four public packages together. Adds server-owned remote revisions, explicit import authorization and context-bound field encryption. Isolation, committed reads and durability are preserved. Follow the staged field-encryption and coordinated TCP upgrade instructions before deployment.
 
 ## Preview.13: tenant and group policies
 
@@ -11,14 +11,14 @@ Select private-user, tenant/group, unrestricted or custom boundaries per server 
 `[StorageAccessClaim("tenant_id")]` plus `ContractDataAccessPolicy<T>` enforces record ownership
 before writes and automatically indexes declared criteria. Bounded partition indexes accelerate
 scoped reads; cached keys never replace authorization. See the
-[source integration guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/data-access-policies.md) for DI, serializers,
-notifications, limits and breaking-change migration. Matching preview.14 client/server versions are required; these APIs replace the preview.12 scoping configuration.
+[source integration guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/data-access-policies.md) for DI, serializers,
+notifications, limits and breaking-change migration. Matching preview.15 client/server versions are required; these APIs replace the preview.12 scoping configuration.
 
 ## Inherited preview.12 storage baseline
 
 File and SegmentCore reads return independent committed copies, including strong/weak caches. Unsaved edits stay private until a successful save. Correctness fixes cover indexed predicates, key identity, index failure visibility, transactions and compaction-safe scans. Serializer-aware context handling removes unused work without changing encryption or durability defaults.
 
-Cached selective searches improve, while copied large results and scans cost more. See the [preview.12 upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/preview12-release-notes.md) and [measured trade-offs](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/performance-proposal-review-20261020.md). Update all InterfaceDB packages together and rebuild.
+Cached selective searches improve, while copied large results and scans cost more. See the [preview.12 upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/preview12-release-notes.md) and [measured trade-offs](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/performance-proposal-review-20261020.md). Update all InterfaceDB packages together and rebuild.
 
 Optional MIT TLS TCP connector and host for InterfaceDB on .NET 10.
 
@@ -31,15 +31,15 @@ pub/sub hints, explicit compatibility manifests, and a runnable SegmentCore host
 envelope serializer remains MessagePack; a configured revision-aware serializer can be shared
 with storage. TCP control frames retain their MessagePack protocol.
 
-Install `InterfaceDB.Transport` version `1.0.0-preview.14`. Keep all InterfaceDB package versions aligned.
+Install `InterfaceDB.Transport` version `1.0.0-preview.15`. Keep all InterfaceDB package versions aligned.
 
 ```shell
-dotnet add package InterfaceDB.Transport --version 1.0.0-preview.14
+dotnet add package InterfaceDB.Transport --version 1.0.0-preview.15
 ```
 
-See the [online TCP guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/tcp-repository.md),
-[hosting guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.14/documentation/tcp-transport.md),
-and [typed client sample](https://github.com/ToolMaker/InterfaceDB/tree/v1.0.0-preview.14/samples/InterfaceDB.TcpRepository.Client).
+See the [online TCP guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/tcp-repository.md),
+[hosting guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.15/documentation/tcp-transport.md),
+and [typed client sample](https://github.com/ToolMaker/InterfaceDB/tree/v1.0.0-preview.15/samples/InterfaceDB.TcpRepository.Client).
 
 Configure TLS, JWT issuer/audience and application authorization before exposure. One process
 owns each physical database. A lost write acknowledgement requires reconciliation before retry.

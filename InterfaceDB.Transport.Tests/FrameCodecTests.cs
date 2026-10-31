@@ -140,6 +140,21 @@ public sealed class FrameCodecTests
     }
 
     [TestMethod]
+    [DataRow((int)WireMessageKind.Close)] [DataRow((int)WireMessageKind.Changed)]
+    public async Task SubscriptionControlFramesHaveTheirOwnSmallBudget(int messageKind)
+    {
+        var kind = (WireMessageKind)messageKind;
+        var valid = MessagePackFrameCodec.Encode(new() { Kind = kind, CorrelationId = 2 }, Limits);
+        await using (var stream = new MemoryStream(valid))
+            Assert.AreEqual(kind, (await MessagePackFrameCodec.ReadSubscriptionControlAsync(stream, Limits))!.Kind);
+        var header = valid[..MessagePackFrameCodec.HeaderBytes];
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(8, 4), MessagePackFrameCodec.MaximumSubscriptionControlFrameBytes);
+        await using var input = new MemoryStream(header);
+        var failure = await Assert.ThrowsExactlyAsync<RemoteStoreException>(() => MessagePackFrameCodec.ReadSubscriptionControlAsync(input, Limits).AsTask());
+        Assert.AreEqual(RemoteErrorCode.LimitExceeded, failure.Code);
+    }
+
+    [TestMethod]
     public async Task EmptyBodyAndCorruptChecksumAreRejected()
     {
         await Reject(Frame([]), RemoteErrorCode.ProtocolError);

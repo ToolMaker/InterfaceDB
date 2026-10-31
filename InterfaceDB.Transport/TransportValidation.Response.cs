@@ -10,6 +10,16 @@ internal static partial class TransportValidation
         bool invalid = response.AffectedCount < 0;
         switch (request.Command)
         {
+            case EncodedStoreCommand.ReserveRevisions:
+                invalid |= response.Payload is not { Length: 16 } || response.Found
+                    || response.Records is not null || response.NextAfterKey is not null || response.AffectedCount != 0;
+                if (response.Payload is { Length: 16 } range)
+                {
+                    var first = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(range);
+                    var last = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(range.AsSpan(8));
+                    invalid |= first <= 0 || last < first || last - first != request.PageSize - 1;
+                }
+                break;
             case EncodedStoreCommand.Changes:
                 invalid |= response.Records is null || response.Records.Length > request.PageSize
                     || response.Payload is null || response.Payload.Length > 100

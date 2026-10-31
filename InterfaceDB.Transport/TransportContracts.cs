@@ -119,6 +119,8 @@ public sealed record TcpStoreRegistration(string Alias, CompatibilityManifest Ma
 {
     /// <summary>Server-owned policy; null inherits DefaultAccessPolicy. Use UnrestrictedDataAccessPolicy to explicitly opt out.</summary>
     public IDataAccessPolicy? AccessPolicy { get; init; }
+    /// <summary>Explicit authority to import external revisions; null denies remote imports. Normal saves are unaffected.</summary>
+    public IRepositoryRevisionImportPolicy? RevisionImportPolicy { get; init; }
 }
 
 public sealed record TcpStoreHostOptions
@@ -216,13 +218,20 @@ internal static partial class TransportValidation
         }
         // Reject irrelevant fields too: there is one canonical shape for each operation.
         if ((request.Command is not (EncodedStoreCommand.Get or EncodedStoreCommand.Put or EncodedStoreCommand.Delete) && request.Key is not null)
-            || (request.Command != EncodedStoreCommand.Put && request.Payload is not null)
+            || (request.Command is not (EncodedStoreCommand.Put or EncodedStoreCommand.ReserveRevisions) && request.Payload is not null)
             || (request.Command != EncodedStoreCommand.GetMany && request.Keys is not null)
             || (request.Command != EncodedStoreCommand.ApplyBatch && request.Mutations is not null)
-            || (request.Command is not (EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes) && (request.AfterKey is not null || request.PageSize != 0)))
+            || (request.Command is not (EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes) && request.AfterKey is not null)
+            || (request.Command is not (EncodedStoreCommand.Enumerate or EncodedStoreCommand.Changes or EncodedStoreCommand.ReserveRevisions) && request.PageSize != 0))
             throw new ArgumentException("Unexpected storage command fields.");
         switch (request.Command)
         {
+            case EncodedStoreCommand.ReserveRevisions:
+                if (request.PageSize < 1 || request.PageSize > limits.MaximumBatchItems
+                    || (request.Payload is not null && (request.Payload.Length != 8
+                        || System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(request.Payload) <= 0)))
+                    throw new ArgumentException("Invalid revision reservation.");
+                break;
             case EncodedStoreCommand.Get:
             case EncodedStoreCommand.Delete: Key(request.Key); break;
             case EncodedStoreCommand.Put: Key(request.Key); Payload(request.Payload); break;

@@ -449,6 +449,47 @@ public sealed class StripedObjectLogProbeTests
         MaxSegmentBytes = 1024 * 1024
     };
 
+    [TestMethod]
+    public async Task AbortedWalPreparationIsFlushedBeforeCheckpointAndRemainsInvisibleAfterReopen()
+    {
+        using var root = TestRoot.Create();
+        using var fileSystem = new BlockingDurableFileSystem();
+        var options = new SegmentCoreOptions
+        {
+            TransactionProtocol = SegmentCoreTransactionProtocol.MutationWriteAheadLog,
+            DurableFileSystem = fileSystem,
+            LogOptions = Options(1) with
+            {
+                MaximumBatchRecords = 1, QueueCapacityPerStripe = 1,
+                QueueFullBehavior = ObjectLogQueueFullBehavior.Reject,
+                DurabilityStrategy = ObjectLogDurabilityStrategy.ExplicitFlush
+            }
+        };
+        await using (var store = await SegmentCoreStore.OpenAsync(root.Path, options))
+        {
+            fileSystem.BlockFlushes();
+            var active = store.SaveAsync("active", new byte[] { 1 }).AsTask();
+            fileSystem.WaitForBlockedFlush();
+            await using var transaction = await store.BeginTransactionAsync();
+            await transaction.SaveAsync("accepted", new byte[] { 2 });
+            await transaction.SaveAsync("rejected", new byte[] { 3 });
+            Task commit;
+            try { commit = transaction.CommitAsync().AsTask(); }
+            finally { fileSystem.ReleaseFlushes(); }
+            await active;
+            await Assert.ThrowsExactlyAsync<ObjectLogBackpressureException>(() => commit);
+            var dirty = typeof(SegmentCoreStore).GetField("_dirtyStripeMask", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            Assert.AreNotEqual(0L, (long)dirty.GetValue(store)!, "An aborted preparation can leave appended frames requiring a flush.");
+            Assert.IsNull(await store.GetAsync("accepted"));
+            await store.CheckpointAsync();
+            Assert.AreEqual(0L, (long)dirty.GetValue(store)!);
+        }
+        await using var reopened = await SegmentCoreStore.OpenAsync(root.Path, options);
+        CollectionAssert.AreEqual(new byte[] { 1 }, await reopened.GetAsync("active"));
+        Assert.IsNull(await reopened.GetAsync("accepted"));
+        Assert.IsNull(await reopened.GetAsync("rejected"));
+    }
+
     private static int LegacySelectStripe(string key, int stripeCount)
     {
         var hash = 2166136261u;

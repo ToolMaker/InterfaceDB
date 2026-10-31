@@ -8,6 +8,13 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>Builds a stable, non-secret repository context for authenticated storage encryption.</summary>
 public static class StorageEncryptionContext
 {
+    /// <summary>Domain-separated AAD for one declared field within a trusted physical-record context.</summary>
+    public static byte[] CreateField(ReadOnlySpan<byte> recordContext, string fieldName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldName);
+        return Idb.Libraries.Implementation.Encryption.StorageFieldEncryption.Context(recordContext, fieldName);
+    }
+
     public static byte[] Create<TContract>(
         IDbContractConfigDto<TContract> configuration,
         string provider,

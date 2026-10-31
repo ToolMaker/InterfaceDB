@@ -1,6 +1,6 @@
 using Idb.Libraries.Abstractions.Dtos;
 using System.Buffers;
-using System.Reflection;
+using Idb.Libraries.Implementation.Migrations;
 using Idb.Libraries.Abstractions.Exceptions;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Migrations;
@@ -16,8 +16,6 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
     private static readonly MessagePackSerializerOptions SerializerOptions =
         MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance)
             .WithSecurity(MessagePackSecurity.UntrustedData);
-    private static readonly MessagePackSerializerOptions FieldSerializerOptions =
-        MessagePackSerializerOptions.Standard.WithSecurity(MessagePackSecurity.UntrustedData);
     private readonly string _activeVersion;
     private readonly IEncryptor _encryptor;
     private readonly Func<string, byte[]>? _encryptionContextFactory;
@@ -82,7 +80,7 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                     SerializerOptions)!;
                 if (firstStep)
                 {
-                    RestoreEncryptedFields(migrated, envelope.EncryptedFields);
+                    EncryptedMigrationFields.Restore(migrated, envelope.EncryptedFields, _encryptor, _encryptionContextFactory?.Invoke(physicalKey));
                     firstStep = false;
                 }
                 if (!migrated.Up())
@@ -126,51 +124,6 @@ internal sealed class SegmentCoreMigrationEngine<TContract>
                 new InvalidCastException(
                     $"Migration result does not implement '{typeof(TContract).FullName}'."));
         return (contract, envelope.ExtensionMetadata?.ToArray());
-    }
-
-    private void RestoreEncryptedFields(IMigration migration, Dictionary<string, EncryptedFieldValue>? fields)
-    {
-        if (fields is not { Count: > 0 }) return;
-
-        // Use only properties declared by the registered migration type and its interfaces.
-        // Persisted type-name metadata must never select a runtime type for deserialization.
-        var type = migration.GetType();
-        var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
-            .Concat(type.GetInterfaces().SelectMany(static contract => contract.GetProperties()))
-            .Where(static property => property.GetIndexParameters().Length == 0
-                && property.GetMethod is { IsPublic: true }
-                && property.SetMethod is { IsPublic: true })
-            .ToLookup(static property => property.Name, StringComparer.Ordinal);
-        foreach (var field in fields)
-        {
-            var candidates = properties[field.Key].ToArray();
-            if (candidates.Length == 0
-                || candidates.Select(static property => property.PropertyType).Distinct().Count() != 1
-                || candidates.Select(property => ResolveSetter(type, property)).Distinct().Count() != 1)
-            {
-                throw new InvalidDataException(
-                    $"Encrypted source field '{field.Key}' requires an unambiguous writable property on migration '{type.FullName}'.");
-            }
-            if (field.Value?.Ciphertext is not { Length: > 0 } ciphertext)
-                throw new InvalidDataException($"Encrypted source field '{field.Key}' has no ciphertext.");
-
-            // Field encryption is contextless even when the surrounding envelope uses a
-            // physical-key context. Restore once so later steps keep Up() changes and nulls.
-            var plain = _encryptor.Decrypt(ciphertext);
-            var value = MessagePackSerializer.Deserialize(candidates[0].PropertyType, plain, FieldSerializerOptions);
-            candidates[0].SetValue(migration, value);
-        }
-    }
-
-    private static MethodInfo ResolveSetter(Type implementationType, PropertyInfo property)
-    {
-        var setter = property.SetMethod!;
-        if (property.DeclaringType!.IsInterface)
-        {
-            var map = implementationType.GetInterfaceMap(property.DeclaringType);
-            setter = map.TargetMethods[Array.IndexOf(map.InterfaceMethods, setter)];
-        }
-        return setter.GetBaseDefinition();
     }
 
     private byte[] DecryptStoredPayload(string physicalKey, byte[] storedPayload)

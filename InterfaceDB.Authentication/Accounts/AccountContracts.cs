@@ -15,6 +15,8 @@ public sealed record LocalAccountOptions
     public TimeSpan SessionLifetime { get; init; } = TimeSpan.FromMinutes(5);
     public int MaximumAccounts { get; init; } = 10_000;
     public int MaximumConcurrentPasswordChecks { get; init; } = 2;
+    public int MaximumQueuedPasswordChecks { get; init; } = 32;
+    public TimeSpan PasswordAdmissionTimeout { get; init; } = TimeSpan.FromSeconds(2);
     public int AttemptsPerMinute { get; init; } = 60;
 
     public void Validate()
@@ -23,6 +25,8 @@ public sealed record LocalAccountOptions
             throw new ArgumentException("A stable idb-local: authority is required.");
         if (!Enum.IsDefined(AccountMode) || !Enum.IsDefined(CreationMode) || MaximumAccounts is < 1 or > 100_000
             || MaximumConcurrentPasswordChecks is < 1 or > 32 || AttemptsPerMinute is < 1 or > 10_000
+            || MaximumQueuedPasswordChecks is < 0 or > 1024
+            || PasswordAdmissionTimeout < TimeSpan.Zero || PasswordAdmissionTimeout > TimeSpan.FromSeconds(30)
             || SessionLifetime < TimeSpan.FromSeconds(1) || SessionLifetime > TimeSpan.FromMinutes(10))
             throw new ArgumentException("Invalid local account limits or mode.");
         foreach (var values in new[] { CreatorAccountIds, CreatorRoles, NewAccountRoles })
@@ -55,6 +59,9 @@ public sealed class AccountCreationRejectedException() : InvalidOperationExcepti
 
 /// <summary>A credential-store capacity rejection proven to occur before attempting a write.</summary>
 public sealed class AccountStoreCapacityException() : InvalidOperationException("The credential store has reached its configured capacity.");
+
+/// <summary>Authentication work was not admitted; no credential mutation or verification was attempted.</summary>
+public sealed class AuthenticationBusyException() : InvalidOperationException("Authentication capacity is temporarily exhausted.");
 
 public interface IPasswordHasher
 {

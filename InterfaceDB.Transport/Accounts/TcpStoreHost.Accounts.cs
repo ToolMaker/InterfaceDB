@@ -37,6 +37,7 @@ public sealed partial class TcpStoreHost
             error = RemoteErrorCode.None;
         }
         catch (UnauthorizedAccessException) { error = RemoteErrorCode.Unauthorized; }
+        catch (AuthenticationBusyException) { error = RemoteErrorCode.Busy; }
         catch (Exception exception) when (!invokedManager && exception is ArgumentException or JsonException)
         { error = RemoteErrorCode.InvalidRequest; }
         catch (AccountCreationRejectedException) { error = RemoteErrorCode.InvalidRequest; }

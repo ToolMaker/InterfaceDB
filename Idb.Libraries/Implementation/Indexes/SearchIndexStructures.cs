@@ -600,7 +600,8 @@ internal interface IRangeIndexStrategy<T> : IDisposable
 internal sealed class SortedBucketRangeIndexStrategy<T> : IRangeIndexStrategy<T>
     where T : notnull
 {
-    private readonly SortedList<T, HashSet<string>> _buckets = new(Comparer<T>.Default);
+    private readonly SortedList<T, HashSet<string>> _buckets = new(
+        typeof(T) == typeof(string) ? (IComparer<T>)(object)StringComparer.Ordinal : Comparer<T>.Default);
 
     public int DistinctValueCount => _buckets.Count;
 

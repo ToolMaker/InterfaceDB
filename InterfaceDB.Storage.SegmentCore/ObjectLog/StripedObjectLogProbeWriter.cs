@@ -341,7 +341,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
         catch (Exception error) when (!completion.HasStorageFailure && error is OperationCanceledException or ObjectLogBackpressureException)
         {
             // Every admitted append has completed and no WAL commit was submitted.
-            throw new TransactionPreparationAbortedException(error);
+            throw new TransactionPreparationAbortedException(error, completion.PreparedStripeMask);
         }
     }
 
@@ -352,6 +352,8 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Exception? _failure;
         private Exception? _storageFailure;
+        private long _preparedStripeMask;
+        public ulong PreparedStripeMask => unchecked((ulong)Volatile.Read(ref _preparedStripeMask));
         public bool HasStorageFailure => Volatile.Read(ref _storageFailure) is not null;
         private int _remaining;
 
@@ -366,6 +368,7 @@ public sealed class StripedObjectLogProbeWriter : IAsyncDisposable
         public void Succeed(int index, StripedObjectLogRecordAddress address)
         {
             _addresses[index] = address;
+            Interlocked.Or(ref _preparedStripeMask, unchecked((long)(1UL << address.Stripe)));
             Complete(1);
         }
 

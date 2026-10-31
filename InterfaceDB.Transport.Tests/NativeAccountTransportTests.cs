@@ -16,6 +16,32 @@ namespace InterfaceDB.Transport.Tests;
 [TestClass]
 public sealed class NativeAccountTransportTests
 {
+    [TestMethod]
+    public async Task AuthenticationAndAccountAdmissionReportBusyWithoutPretendingCredentialsAreInvalidOrCommitted()
+    {
+        await using var fixture = await Fixture.Open(_root, creation: AccountCreationMode.Everyone);
+        var busy = new BusyAuthentication();
+        await using var host = await TcpStoreHost.StartAsync(fixture.Host() with { AuthenticationProvider = busy, AccountManager = busy });
+        var login = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+            await TcpEncodedEnvelopeStore.ConnectAsync(fixture.Client(host, "admin")));
+        Assert.AreEqual(RemoteErrorCode.Busy, login.Code);
+        var create = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+            await TcpAccountClient.CreateAsync(fixture.Client(host, "unused"), "alice", Password));
+        Assert.AreEqual(RemoteErrorCode.Busy, create.Code);
+        Assert.AreEqual(1, await fixture.Accounts.CountAsync());
+    }
+
+    private sealed class BusyAuthentication : IAuthenticationProvider, IDatabaseAccountManager
+    {
+        public bool RequiresDataIsolation => false;
+        public ValueTask<AuthenticatedIdentity> AuthenticateAsync(AuthenticationCredentials credentials, CancellationToken cancellationToken = default)
+            => throw new AuthenticationBusyException();
+        public ValueTask<bool> IsSessionValidAsync(AuthenticatedIdentity identity, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
+        public ValueTask<AccountIdentity> CreateAsync(string username, string password, AuthenticatedIdentity? actor, CancellationToken cancellationToken = default)
+            => throw new AuthenticationBusyException();
+    }
+
     private const string Password = "native-password-test-123";
     private string _root = null!;
     [TestInitialize] public void Initialize() => _root = Path.Combine(Path.GetTempPath(), "InterfaceDB.NativeAccounts", Guid.NewGuid().ToString("N"));

@@ -145,6 +145,6 @@ public static class StorageObjectCachePolicy
 
     private static bool IsStorageCached<TContract>(TContract? instance)
         where TContract : class, IStoredContract<TContract>
-        => instance is not null && CacheAttributes.GetValue(instance.GetType(), static type =>
+        => instance is not null && CacheAttributes.GetValue(ContractInstance<TContract>.Implementation(instance).GetType(), static type =>
             new CacheAttributeState(type.IsDefined(typeof(StorageCachedAttribute), inherit: true))).IsCached;
 }

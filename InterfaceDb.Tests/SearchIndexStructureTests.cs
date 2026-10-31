@@ -427,6 +427,28 @@ public sealed class SearchIndexStructureTests
     }
 
     [TestMethod]
+    public void StringRangeOrderingDoesNotChangeAcrossIndexStrategiesOrCultures()
+    {
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            foreach (var culture in new[] { "en-US", "sv-SE", "tr-TR" })
+            {
+                System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo(culture);
+                using var index = new AdaptiveRangeSearchIndex<string>();
+                string[] values = ["A", "Z", "a", "ä", "I", "ı", "a\0"];
+                foreach (var value in values) index.Add(value, value);
+                var expected = values.Where(v => string.CompareOrdinal(v, "Z") > 0).ToArray();
+                CollectionAssert.AreEquivalent(expected, index.Search(SearchComparisonOperator.GreaterThan, "Z").ToArray());
+                for (var i = 0; i < 4096; i++) index.Add("0" + i, "padding-" + i);
+                Assert.IsTrue(index.UsesRadixStrategy);
+                CollectionAssert.AreEquivalent(expected, index.Search(SearchComparisonOperator.GreaterThan, "Z").ToArray());
+            }
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = previous; }
+    }
+
+    [TestMethod]
     public void AdaptiveRangeIndexMigratesAtMeasuredHysteresisBoundaries()
     {
         var index = new AdaptiveRangeSearchIndex<int>();

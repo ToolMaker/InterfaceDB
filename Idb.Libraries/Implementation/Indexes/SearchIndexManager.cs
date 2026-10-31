@@ -274,7 +274,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 throw new InvalidOperationException("Envelope does not contain an object instance.");
             }
-            var implementation = (TImplementation)entity;
+            if (!ContractInstance<TContract>.TryRead<TImplementation>(entity, out var implementation)) continue;
             if (!predicate(implementation))
             {
                 continue;
@@ -355,7 +355,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 keys.Remove(entry.Key);
-                if (entry.Value is TImplementation instance && predicate(instance))
+                if (ContractInstance<TContract>.TryRead<TImplementation>(entry.Value, out var instance) && predicate(instance))
                     cachedMatches[entry.Key] = instance;
             }
         }
@@ -374,7 +374,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
             {
                 StorageObjectCachePolicy.TryGetObjectInstance(envelope, out entity);
             }
-            if (entity is not TImplementation implementation || !predicate(implementation))
+            if (!ContractInstance<TContract>.TryRead<TImplementation>(entity, out var implementation) || !predicate(implementation))
             {
                 continue;
             }
@@ -478,7 +478,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
                 cancellationToken.ThrowIfCancellationRequested();
                 if (StorageObjectCachePolicy.TryGetObjectInstance(envelope, out var entity) && entity is not null)
                 {
-                    var runtimeType = entity.GetType();
+                    var runtimeType = ContractInstance<TContract>.Implementation(entity).GetType();
                     if (!runtimeBulkLoads.ContainsKey(runtimeType))
                     {
                         runtimeBulkLoads.Add(
@@ -652,7 +652,8 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         ArgumentNullException.ThrowIfNull(entity);
         ObserveCacheMode(entity);
         foreach (var definition in SearchIndexDiscovery.Discover(typeof(TContract))) _ = definition.Getter(entity);
-        foreach (var definition in SearchIndexDiscovery.Discover(entity.GetType())) _ = definition.Getter(entity);
+        var implementation = ContractInstance<TContract>.Implementation(entity);
+        foreach (var definition in SearchIndexDiscovery.Discover(implementation.GetType())) _ = definition.Getter(implementation);
     }
 
     private void UpdateIndexes(string physicalKey, TContract entity)
@@ -671,7 +672,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
     private void UpdateIndexesCore(string physicalKey, TContract entity)
     {
         _searchIndexes.Upsert(physicalKey, entity);
-        var runtimeType = entity.GetType();
+        var runtimeType = ContractInstance<TContract>.Implementation(entity).GetType();
         if (_runtimeTypesByPhysicalKey.TryGetValue(physicalKey, out var previousRuntimeType)
             && previousRuntimeType != runtimeType
             && _runtimeSearchIndexes.TryGetValue(previousRuntimeType, out var previousStore))
@@ -683,7 +684,7 @@ public sealed class SearchIndexManager<TContract> : IIndexManager<TContract>, ID
         var runtimeStore = GetRuntimeSearchIndexStore(runtimeType);
         if (runtimeStore.HasIndexes)
         {
-            runtimeStore.Upsert(physicalKey, entity);
+            runtimeStore.Upsert(physicalKey, ContractInstance<TContract>.Implementation(entity));
         }
 
         Volatile.Write(ref _persistentCatalogDirty, 1);

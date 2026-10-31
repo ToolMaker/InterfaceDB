@@ -16,9 +16,19 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
         static definition => definition.Name, StringComparer.Ordinal);
     private static readonly ConditionalWeakTable<Type, Lazy<PropertyInfo[]>> RuntimeProperties = new();
     private readonly IEncryptor _encryptor;
+    private readonly Func<string, byte[]> _contextFactory;
+    private readonly EncryptedFieldWriteMode _writeMode;
 
-    public EncryptedStorageFieldProcessor(IEncryptor encryptor)
+    public EncryptedStorageFieldProcessor(IEncryptor encryptor, Func<string, byte[]>? contextFactory,
+        EncryptedFieldWriteMode writeMode)
     {
+        if (!Enum.IsDefined(writeMode)) throw new ArgumentOutOfRangeException(nameof(writeMode));
+        _writeMode = writeMode;
+        if (Definitions.Count != 0 && writeMode == EncryptedFieldWriteMode.ContextBound && encryptor is not IContextualEncryptor)
+            throw new InvalidOperationException("Context-bound fields require an IContextualEncryptor.");
+        if (Definitions.Count != 0 && contextFactory is null)
+            throw new ArgumentException("Encrypted fields require a trusted repository context factory.", nameof(contextFactory));
+        _contextFactory = contextFactory ?? (_ => []);
         _encryptor = encryptor ?? throw new ArgumentNullException(nameof(encryptor));
         if (RequiresEncryption && encryptor is EncryptionNone)
         {
@@ -46,24 +56,22 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
 
         var source = UnwrapProxy(entity);
         var runtimeProperties = ResolveRuntimeProperties(source.GetType());
+        var context = _contextFactory(envelope.EnvelopeCacheKey);
         envelope.EncryptedFields ??= new Dictionary<string, EncryptedFieldValue>(StringComparer.Ordinal);
         for (var index = 0; index < Definitions.Count; index++)
         {
             var definition = Definitions[index];
             var property = runtimeProperties[index];
-            var value = property.GetValue(source);
-            if (value is null && envelope.EncryptedFields.ContainsKey(definition.Name))
-            {
-                continue;
-            }
+            // A proxy's backing fields are scrubbed. Read its logical value, including
+            // an explicit null, rather than mistaking the scrubbed default for an edit.
+            var value = entity is EncryptedStorageDispatchProxy<TContract>
+                ? definition.Property.GetValue(entity)
+                : property.GetValue(source);
 
             var plain = MessagePackSerializer.Serialize(definition.PropertyType, value, MessagePackSerializerOptions.Standard);
-            envelope.EncryptedFields[definition.Name] = new EncryptedFieldValue
-            {
-                ProfileName = definition.ProfileName,
-                PropertyTypeName = definition.TypeName,
-                Ciphertext = _encryptor.Encrypt(plain)
-            };
+            envelope.EncryptedFields[definition.Name] = StorageFieldEncryption.Encrypt(_encryptor, plain,
+                StorageFieldEncryption.Context(context, definition.Name),
+                definition.ProfileName, definition.TypeName, _writeMode);
 
             if (property.SetMethod is not null)
             {
@@ -79,9 +87,22 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
         ArgumentNullException.ThrowIfNull(entity);
         ArgumentNullException.ThrowIfNull(envelope);
 
-        return Definitions.Count == 0
-            ? entity
-            : EncryptedStorageDispatchProxy<TContract>.Create(UnwrapProxy(entity), envelope, _encryptor, DefinitionsByName);
+        if (Definitions.Count == 0) return entity;
+        foreach (var definition in Definitions)
+            if (!envelope.EncryptedFields.TryGetValue(definition.Name, out var field) || field?.Ciphertext is not { Length: > 0 })
+                throw new System.Security.Cryptography.CryptographicException("A declared encrypted field is missing its ciphertext.");
+        return EncryptedStorageDispatchProxy<TContract>.Create(UnwrapProxy(entity), envelope, _encryptor,
+            DefinitionsByName, _contextFactory(envelope.EnvelopeCacheKey), _writeMode);
+    }
+
+    internal void BindFields(IObjectEnvelope<TContract> envelope)
+    {
+        if (Definitions.Count == 0) return;
+        var context = _contextFactory(envelope.EnvelopeCacheKey);
+        foreach (var definition in Definitions)
+            if (envelope.EncryptedFields.TryGetValue(definition.Name, out var value))
+                envelope.EncryptedFields[definition.Name] = StorageFieldEncryption.Bind(_encryptor, value,
+                    StorageFieldEncryption.Context(context, definition.Name), _writeMode);
     }
 
     private static TContract UnwrapProxy(TContract entity)
@@ -92,7 +113,17 @@ internal sealed class EncryptedStorageFieldProcessor<TContract>
     private static readonly Func<object, object> Clone = typeof(object)
         .GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic)!.CreateDelegate<Func<object, object>>();
 
-    internal static TContract CloneForStorage(TContract entity) => (TContract)Clone(UnwrapProxy(entity));
+    internal static TContract CloneForStorage(TContract entity)
+    {
+        var copy = (TContract)Clone(UnwrapProxy(entity));
+        if (entity is EncryptedStorageDispatchProxy<TContract>)
+        {
+            var properties = ResolveRuntimeProperties(copy.GetType());
+            for (var index = 0; index < Definitions.Count; index++)
+                properties[index].SetValue(copy, Definitions[index].Property.GetValue(entity));
+        }
+        return copy;
+    }
 
     private static object? GetDefault(Type type)
         => type.IsValueType ? Activator.CreateInstance(type) : null;

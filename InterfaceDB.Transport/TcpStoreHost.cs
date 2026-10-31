@@ -18,7 +18,10 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
     private sealed record RegisteredStore(TcpStoreRegistration Registration, SemaphoreSlim SessionGate,
         ConcurrentDictionary<string, byte> ScopeSessions, IDataAccessPolicy Policy)
     {
-        internal EncodedStoreCapabilities Capabilities => Registration.Store.Capabilities;
+        internal EncodedStoreCapabilities Capabilities => Registration.Store.Capabilities
+            | ((Registration.Store.Capabilities & (EncodedStoreCapabilities.AtomicBatch | EncodedStoreCapabilities.Write))
+                == (EncodedStoreCapabilities.AtomicBatch | EncodedStoreCapabilities.Write)
+                ? EncodedStoreCapabilities.ReserveRevisions : EncodedStoreCapabilities.None);
     }
     private sealed class Connection(TcpClient client)
     {
@@ -195,6 +198,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                                 || !_options.AuthorizeIdentity!(identity, hello.StoreAlias!, hello.Capabilities))
                                 rejection = RemoteErrorCode.Unauthorized;
                         }
+                        catch (AuthenticationBusyException) { rejection = RemoteErrorCode.Busy; }
                         catch (OperationCanceledException) when (handshake.IsCancellationRequested) { throw; }
                         catch (Exception)
                         {
@@ -295,7 +299,7 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 IEncodedEnvelopeStore endpoint = lease.Registration.Store is IAccessContextEncodedStore contextual
                     ? new AccessContextEncodedStore(contextual, new(identity, hello.StoreAlias!, hello.RequestedScope, hello.Capabilities))
                     : lease.Registration.Store;
-                var sessionStore = new ScopedEncodedStore(endpoint, accessScope!);
+                var sessionStore = new RepositoryRevisionStore(new ScopedEncodedStore(endpoint, accessScope!), _options.TimeProvider, limits);
                 var sessionExpiresAt = _options.TimeProvider.GetUtcNow() + _options.MaximumSessionLifetime;
                 await ServeSessionAsync(stream, sessionStore, limits, hello.Capabilities,
                     hello.StoreAlias!, identity, accessScope!, hello.RequestedScope, sessionExpiresAt).ConfigureAwait(false);
@@ -448,8 +452,8 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
             var error = RemoteErrorCode.None;
             EncodedStoreResponse? response = null;
             bool rejectedBeforeCommit = false;
-            bool validatingWrite = writePolicy is not null
-                && request.Command is EncodedStoreCommand.Put or EncodedStoreCommand.ApplyBatch;
+            bool validatingWrite = request.Command == EncodedStoreCommand.ReserveRevisions
+                || (writePolicy is not null && request.Command is EncodedStoreCommand.Put or EncodedStoreCommand.Delete or EncodedStoreCommand.ApplyBatch);
             try
             {
                 if (validatingWrite)
@@ -457,7 +461,14 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     // Own the bytes before validating. The entire batch passes before any store call.
                     request = request with { Payload = request.Payload?.ToArray(),
                         Mutations = request.Mutations?.Select(m => new EncodedMutation(m.Key, m.Payload?.ToArray())).ToArray() };
-                    writePolicy!.ValidateWrite(new(identity, alias, requestedScope, request.RequiredCapability), request);
+                    var context = new DataAccessContext(identity, alias, requestedScope, request.RequiredCapability);
+                    if (request.Command == EncodedStoreCommand.ReserveRevisions)
+                    {
+                        if (request.Payload is { } import && _stores[alias].Registration.RevisionImportPolicy?.AuthorizeImport(
+                            context, accessScope, System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(import)) != true)
+                            throw new UnauthorizedAccessException("Remote revision import is not authorized.");
+                    }
+                    else writePolicy!.ValidateWrite(context, request);
                     // Application validation cannot extend identity/session lifetime.
                     if ((identity is not null && identity.ExpiresAt <= _options.TimeProvider.GetUtcNow())
                         || sessionExpiresAt <= _options.TimeProvider.GetUtcNow())
