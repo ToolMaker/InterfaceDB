@@ -43,7 +43,16 @@ public sealed partial class TcpRepositoryTests
             await using (var b = Open("parent-b", "a"))
             await using (var different = Open("parent-a", "b"))
             {
-                await a.InitializeAsync(); await b.InitializeAsync(); await different.InitializeAsync();
+                // Setup approvals are leased per subject. The first client's version observer
+                // can briefly own parent-a's approval lease while the other group initializes.
+                // Busy is an explicit, retryable admission result, not an authorization failure.
+                // Retry only that result within the fixture's bounded deadline.
+                foreach (var repository in new[] { a, b, different })
+                    await Until(async () =>
+                    {
+                        try { await repository.InitializeAsync(); return true; }
+                        catch (RemoteStoreException exception) when (exception.Code == RemoteErrorCode.Busy) { return false; }
+                    });
                 await Until(() => Task.FromResult(a.Connection.State == RepositoryConnectionState.Online && b.Connection.State == RepositoryConnectionState.Online));
                 await a.SaveAsync(new RemotePerson { Name = "shared", Score = 17 });
                 await Until(async () => (await b.QueryFirstAsync(_ => true))?.Score == 17);
