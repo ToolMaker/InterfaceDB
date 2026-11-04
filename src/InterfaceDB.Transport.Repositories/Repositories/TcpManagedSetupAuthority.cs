@@ -55,9 +55,7 @@ public sealed class TcpManagedSetupAuthority : IRepositoryVersionAuthority, IMan
         var receiptKey = ManagedSetupProtocol.Hash(Scope + "|" + _tokens.Partition);
         try
         {
-            await using var connection = await TcpEncodedEnvelopeStore.ConnectAsync(_connection, cancellationToken).ConfigureAwait(false);
-            var bytes = await connection.GetAsync(ManagedSetupProtocol.RequestKey(_contract, _requestedProvider), cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidDataException("The server did not return an approved client setup.");
+            var bytes = await ReadSignedSetupAsync(cancellationToken).ConfigureAwait(false);
             var grant = Validate(bytes);
             // Provider/dataset changes need an explicit cache migration, never an empty replacement that loses pending writes.
             var previous = Volatile.Read(ref _grant);
@@ -79,6 +77,13 @@ public sealed class TcpManagedSetupAuthority : IRepositoryVersionAuthority, IMan
             if (Volatile.Read(ref _grant) is not null) await ValidateAccessAsync(false, cancellationToken).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async ValueTask<byte[]> ReadSignedSetupAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await TcpEncodedEnvelopeStore.ConnectAsync(_connection, cancellationToken).ConfigureAwait(false);
+        return await connection.GetAsync(ManagedSetupProtocol.RequestKey(_contract, _requestedProvider), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The server did not return an approved client setup.");
     }
 
     private ManagedClientSetupGrant Decode(string encoded, bool requireUnexpired = true)
@@ -113,14 +118,22 @@ public sealed class TcpManagedSetupAuthority : IRepositoryVersionAuthority, IMan
     }
     public async ValueTask ObserveAsync(CompatibilityManifest manifest, CancellationToken cancellationToken = default)
     {
-        var remaining = (_grant ?? throw new InvalidOperationException("No approved setup.")).ExpiresAt - _clock.GetUtcNow();
+        var approved = Volatile.Read(ref _grant) ?? throw new InvalidOperationException("No approved setup.");
+        var remaining = approved.ExpiresAt - _clock.GetUtcNow();
         if (remaining <= TimeSpan.Zero) return;
         // A lease deadline renews authorization; healthy storage is never polled for changes.
         using var renewal = new CancellationTokenSource(TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerMillisecond, remaining.Ticks * 4 / 5)), _clock);
         using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, renewal.Token);
         await using var listener = await TcpEncodedEnvelopeStore.ConnectCoreAsync(DataConnection(manifest) with
         { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.Enumerate | EncodedStoreCapabilities.DurableCommits }, true, cancellationToken).ConfigureAwait(false);
-        try { await listener.ReadChangesAsync(() => { }, observation.Token).ConfigureAwait(false); }
+        try
+        {
+            // A replacement host can accept the same data manifest with a different client setup.
+            // Check the signed setup after subscribing so a restart cannot leave us watching a stale approval.
+            var current = Validate(await ReadSignedSetupAsync(observation.Token).ConfigureAwait(false));
+            if (current.Setup != approved.Setup || current.DataScopeIdentity != approved.DataScopeIdentity) return;
+            await listener.ReadChangesAsync(() => { }, observation.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (renewal.IsCancellationRequested && !cancellationToken.IsCancellationRequested) { }
     }
 

@@ -302,6 +302,25 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
+    public async Task Setup_ObservationRequestsRediscoveryWhenPolicyChangesBeforeSubscription()
+    {
+        var port = FreeSetupPort();
+        await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(Path.Combine(_root, "master"));
+        var host = await SetupHost(port, store, Setup(mode: RepositoryReadPreference.LocalFirst));
+        var authority = Authority(port);
+        CompatibilityManifest manifest;
+        try { manifest = await authority.DiscoverAsync(); }
+        finally { await host.DisposeAsync(); }
+
+        await using var restarted = await SetupHost(port, store,
+            Setup(mode: RepositoryReadPreference.RemoteFirst) with { Revision = "policy-2" });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await authority.ObserveAsync(manifest, timeout.Token);
+        Assert.AreEqual(manifest, await authority.DiscoverAsync(timeout.Token));
+        Assert.AreEqual(RepositoryReadPreference.RemoteFirst, authority.ReadPreference);
+    }
+
+    [TestMethod]
     public async Task Setup_ReconnectAppliesServerReadModeWithoutChangingVersionOrLosingData()
     {
         var port = FreeSetupPort();
@@ -319,8 +338,15 @@ public sealed partial class TcpRepositoryTests
             await host.DisposeAsync();
             await Until(() => Task.FromResult(managed.Connection.IsDowntime));
             host = await SetupHost(port, store, Setup(mode: RepositoryReadPreference.RemoteFirst) with { Revision = "policy-2" });
-            await Until(() => Task.FromResult(managed.EffectiveReadPreference == RepositoryReadPreference.RemoteFirst
-                && managed.Connection.State == RepositoryConnectionState.Online));
+            try
+            {
+                await Until(() => Task.FromResult(managed.EffectiveReadPreference == RepositoryReadPreference.RemoteFirst
+                    && managed.Connection.State == RepositoryConnectionState.Online));
+            }
+            catch (OperationCanceledException)
+            {
+                Assert.Fail($"Read mode after reconnect: {managed.EffectiveReadPreference}; connection: {managed.Connection.State}; failure: {managed.Connection.LastFailure}");
+            }
             Assert.AreEqual("1.0.0", managed.RunningVersion);
             Assert.AreEqual(3, (await managed.QuerySingleAsync(_ => true)).Score);
         }

@@ -161,7 +161,9 @@ are never included in the client projection.
 to the typed data connection. This keeps client caches and pending writes bound to the actor
 and resolved data scope. A changed scope requires an explicit cache migration or a new setup.
 File, SegmentCore and Atlas use the same contract. Restarting offline can use an existing,
-unexpired approval; reconnect always reauthorizes the scope. The legacy
+unexpired approval. On reconnect, the client reauthorizes the scope and checks the signed
+setup once after subscribing. A host restart between discovery and subscription can change
+the read preference even when the contract version stays the same. The legacy
 `SegmentCoreManagedRepository` composition entry point persists scope identity through an
 `IRepositoryCursorStore` as identity metadata, not as an authorization grant.
 
