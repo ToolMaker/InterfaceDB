@@ -47,6 +47,18 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
             { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits }, false, token, true).ConfigureAwait(false);
         return new(discovery.RemoteManifest, discovery.ScopeIdentity) { AccountIdentity = discovery.AccountIdentity };
     }
+    /// <summary>Fetches an opted-in schema using the existing authentication and data access policy.</summary>
+    public static async ValueTask<TcpContractDescription> DescribeContractAsync(TcpStoreClientOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        await using var connection = await ConnectCoreAsync(options with
+            { RequiredCapabilities = EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits },
+            WireMessageKind.DescribeContract, cancellationToken).ConfigureAwait(false);
+        return new(connection.RemoteManifest, connection._contractDescriptor!);
+    }
+
+    private ContractDescriptor? _contractDescriptor;
     public TransportLimits Limits { get; }
     public EncodedStoreCapabilities Capabilities { get; }
 
@@ -55,21 +67,29 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
 
     internal static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsync(TcpStoreClientOptions options,
         bool subscription, CancellationToken cancellationToken, bool discovery = false)
+        => ConnectCoreAsync(options, discovery ? WireMessageKind.Discover
+            : subscription ? WireMessageKind.Subscribe : WireMessageKind.Hello, cancellationToken);
+
+    private static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsync(TcpStoreClientOptions options,
+        WireMessageKind helloKind, CancellationToken cancellationToken)
         => options is null ? ValueTask.FromException<TcpEncodedEnvelopeStore>(new ArgumentNullException(nameof(options)))
-            : !DatabaseTelemetryOperation.IsEnabled(options.Telemetry) ? ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery)
-            : ConnectCoreAsyncObserved(options, subscription, cancellationToken, discovery);
+            : !DatabaseTelemetryOperation.IsEnabled(options.Telemetry) ? ConnectCoreAsyncUnobserved(options, helloKind, cancellationToken)
+            : ConnectCoreAsyncObserved(options, helloKind, cancellationToken);
 
     private static ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncObserved(TcpStoreClientOptions options,
-        bool subscription, CancellationToken cancellationToken, bool discovery = false)
+        WireMessageKind helloKind, CancellationToken cancellationToken)
     {
         var id = Guid.NewGuid();
         return TransportTelemetry.ObserveAsync(options.Telemetry, DatabaseComponent.TcpClient, DatabaseOperation.Connect,
-                () => ConnectCoreAsyncUnobserved(options, subscription, cancellationToken, discovery, id), log: true, connectionId: id);
+                () => ConnectCoreAsyncUnobserved(options, helloKind, cancellationToken, id), log: true, connectionId: id);
     }
 
     private static async ValueTask<TcpEncodedEnvelopeStore> ConnectCoreAsyncUnobserved(TcpStoreClientOptions options,
-        bool subscription, CancellationToken cancellationToken, bool discovery = false, Guid diagnosticId = default)
+        WireMessageKind helloKind, CancellationToken cancellationToken, Guid diagnosticId = default)
     {
+        var subscription = helloKind == WireMessageKind.Subscribe;
+        var describe = helloKind == WireMessageKind.DescribeContract;
+        var discovery = helloKind == WireMessageKind.Discover || describe;
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Host);
         if (options.Port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(options.Port));
@@ -131,7 +151,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 ? ProviderAuthenticationWire.Encode(await options.CredentialsProvider!.GetCredentialsAsync(deadline.Token).ConfigureAwait(false)) : token?.Value;
             await MessagePackFrameCodec.WriteAsync(stream, new WireMessage
             {
-                Kind = discovery ? WireMessageKind.Discover : subscription ? WireMessageKind.Subscribe : WireMessageKind.Hello,
+                Kind = helloKind,
                 CorrelationId = 1,
                 StoreAlias = options.StoreAlias,
                 Manifest = options.Manifest,
@@ -140,10 +160,12 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 AuthenticationMode = options.AuthenticationMode,
                 AccessToken = authenticationData, RequestedScope = options.RequestedScope, ScopeIdentity = options.ExpectedScopeIdentity
             }, options.Limits, deadline.Token).ConfigureAwait(false);
-            var reply = await MessagePackFrameCodec.ReadAsync(stream, options.Limits, deadline.Token).ConfigureAwait(false)
+            var reply = await MessagePackFrameCodec.ReadAsync(stream, options.Limits,
+                describe ? Math.Min(options.Limits.MaximumFrameBytes, ContractDescriptorWire.MaximumFrameBytes) : options.Limits.MaximumFrameBytes,
+                deadline.Token).ConfigureAwait(false)
                 ?? throw new EndOfStreamException("The server closed during compatibility negotiation.");
             if (reply.Kind != WireMessageKind.HelloResult || reply.CorrelationId != 1
-                || reply.Request is not null || reply.Response is not null || reply.StoreAlias is not null
+                || reply.Request is not null || (!describe && reply.Response is not null) || reply.StoreAlias is not null
                 || reply.TimeoutMilliseconds != 0 || (reply.AccessToken is not null && options.AuthenticationMode != TcpStoreAuthenticationMode.Provider) || reply.RequestedScope is not null)
                 throw new RemoteStoreException(RemoteErrorCode.ProtocolError, "Invalid handshake response.");
             ThrowRemoteError(reply.Error);
@@ -159,6 +181,7 @@ public sealed partial class TcpEncodedEnvelopeStore : IEncodedEnvelopeStore
                 throw new UnauthorizedAccessException("The connection authenticated a different account.");
             return new TcpEncodedEnvelopeStore(tcp, stream, options, reply.Limits, reply.Capabilities)
                 { RemoteManifest = reply.Manifest, ScopeIdentity = reply.ScopeIdentity, AccountIdentity = account,
+                    _contractDescriptor = describe ? ContractDescriptorWire.Decode(reply.Response, reply.Manifest, reply.Limits) : null,
                     DiagnosticConnectionId = diagnosticId, SubscriptionTokenExpiry = subscription ? SubscriptionExpiry(token) : null };
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)

@@ -143,17 +143,17 @@ internal static class MessagePackFrameCodec
             CheckString(message.AccessToken, TransportValidation.MaximumAccessTokenBytes);
             CheckString(message.RequestedScope, TransportValidation.MaximumControlStringBytes);
             CheckString(message.ScopeIdentity, 128);
-            if (message.RequestedScope is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover)
-                || message.ScopeIdentity is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.HelloResult))
+            if (message.RequestedScope is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.DescribeContract)
+                || message.ScopeIdentity is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.DescribeContract or WireMessageKind.HelloResult))
                 throw Protocol("Unexpected data scope fields.");
             if (message.RequestedScope is not null) TransportValidation.ControlString(message.RequestedScope, false);
             if (message.ScopeIdentity is not null) TransportValidation.ControlString(message.ScopeIdentity, false);
             // Slot 10 remains a JWT in existing modes; Provider mode uses bounded provider credentials
             // on requests and a non-secret authenticated identity receipt on successful HelloResult.
-            if (message.AccessToken is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover)
+            if (message.AccessToken is not null && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.DescribeContract)
                     && !(message.AuthenticationMode == TcpStoreAuthenticationMode.Provider && message.Kind is WireMessageKind.CreateAccount or WireMessageKind.HelloResult)
                 || message.AuthenticationMode != TcpStoreAuthenticationMode.MutualTls
-                    && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.HelloResult or WireMessageKind.CreateAccount or WireMessageKind.AccountResult))
+                    && message.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.DescribeContract or WireMessageKind.HelloResult or WireMessageKind.CreateAccount or WireMessageKind.AccountResult))
                 throw Protocol("Unexpected authentication fields.");
             if (message.StoreAlias is not null) TransportValidation.Alias(message.StoreAlias);
             if (message.Manifest is { } manifest)

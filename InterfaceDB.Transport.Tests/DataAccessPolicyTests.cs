@@ -58,6 +58,34 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
+    public async Task DescribeContractRequiresAnAuthorizedDataScope()
+    {
+        await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
+        var options = HostOptions(store);
+        var manifest = options.Stores[0].Manifest;
+        var descriptor = new ContractDescriptor(manifest.ContractIdentity, manifest.ContractVersion,
+            manifest.ContractSchemaHash, "text/x-protobuf",
+            """syntax = "proto3"; message Person { string name = 1; int32 score = 2; }""");
+        await using var host = await TcpStoreHost.StartAsync(options with
+        {
+            DefaultAccessPolicy = new ClaimDataAccessPolicy("groups"),
+            Stores = [options.Stores[0] with { ContractDescriptorProvider = new GroupDescriptorProvider(descriptor) }]
+        });
+
+        var denied = GroupOptions(host, "parent-a", ["a"], "b").Connection;
+        var error = await Assert.ThrowsExactlyAsync<RemoteStoreException>(
+            async () => await TcpEncodedEnvelopeStore.DescribeContractAsync(denied));
+        Assert.AreEqual(RemoteErrorCode.Unauthorized, error.Code);
+        var approved = GroupOptions(host, "parent-a", ["a"], "a").Connection;
+        Assert.AreEqual(descriptor, (await TcpEncodedEnvelopeStore.DescribeContractAsync(approved)).Descriptor);
+    }
+
+    private sealed class GroupDescriptorProvider(ContractDescriptor descriptor) : IContractDescriptorProvider
+    {
+        public ContractDescriptor GetDescriptor(string storeAlias, CompatibilityManifest manifest) => descriptor;
+    }
+
+    [TestMethod]
     public async Task DataPolicy_SubscriptionsAreGroupBoundAndDisposeIndependently()
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);

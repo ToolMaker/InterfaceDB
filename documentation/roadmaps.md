@@ -21,7 +21,9 @@ and TLS TCP. It is not an HTTP/2 gRPC service and is not in the preview.17 packa
 The [measured comparison](performance-protobuf-sql-20261104.md) found smaller
 Protobuf envelopes and higher encoding cost. MessagePack remains the default.
 HTTP/2 gRPC hosting, serializer-independent contract upgrades and mobile/AOT
-qualification remain separate roadmap items.
+qualification remain separate roadmap items. The TCP host supports opt-in
+[schema discovery](tcp-transport.md#optional-contract-descriptions) through a shared
+descriptor interface.
 
 ## Final preview candidate
 

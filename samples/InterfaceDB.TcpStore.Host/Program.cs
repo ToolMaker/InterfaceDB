@@ -94,6 +94,8 @@ try
         owner = store; registration = new(configuration.StoreAlias, configuration.Manifest, store);
     }
     await using var lifetime = new HostLifetime(owner);
+    if (configuration.ContractDescription is { } description)
+        registration = registration with { ContractDescriptorProvider = new ConfiguredContractDescriptorProvider(description) };
     var host = await TcpStoreHost.StartAsync(new TcpStoreHostOptions
     {
         Telemetry = telemetry,
@@ -187,6 +189,11 @@ catch (Exception error)
     return 1;
 }
 
+internal sealed class ConfiguredContractDescriptorProvider(ContractDescriptor descriptor) : IContractDescriptorProvider
+{
+    public ContractDescriptor GetDescriptor(string storeAlias, CompatibilityManifest manifest) => descriptor;
+}
+
 internal sealed class HostConfiguration
 {
     public bool TelemetryEnabled { get; init; }
@@ -212,6 +219,7 @@ internal sealed class HostConfiguration
     public X509RevocationMode PrivateCaRevocationMode { get; init; } = X509RevocationMode.Online;
     public string[] RequiredTokenScopes { get; init; } = ["interfacedb.storage"];
     public required CompatibilityManifest Manifest { get; init; }
+    public ContractDescriptor? ContractDescription { get; init; }
     public TransportLimits Limits { get; init; } = new();
     public int MaximumConnections { get; init; } = 16;
     public int MaximumEnumerationKeys { get; init; } = 100_000;

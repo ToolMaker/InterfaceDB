@@ -16,7 +16,7 @@ namespace Idb.Transport;
 public sealed partial class TcpStoreHost : IAsyncDisposable
 {
     private sealed record RegisteredStore(TcpStoreRegistration Registration, SemaphoreSlim SessionGate,
-        ConcurrentDictionary<string, byte> ScopeSessions, IDataAccessPolicy Policy)
+        ConcurrentDictionary<string, byte> ScopeSessions, IDataAccessPolicy Policy, byte[]? ContractDescriptorPayload)
     {
         internal EncodedStoreCapabilities Capabilities => Registration.Store.Capabilities
             | ((Registration.Store.Capabilities & (EncodedStoreCapabilities.AtomicBatch | EncodedStoreCapabilities.Write))
@@ -60,7 +60,9 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 throw new ArgumentException("Multi-account authentication requires an explicit partitioning data access policy for every store.");
             if (_stores.Values.Any(existing => ReferenceEquals(existing.Registration.Store, registration.Store)))
                 throw new ArgumentException("A physical store can be registered under only one alias.");
-            _stores.Add(registration.Alias, new(registration, new(1, 1), new(StringComparer.Ordinal), policy));
+            var descriptor = registration.ContractDescriptorProvider?.GetDescriptor(registration.Alias, registration.Manifest);
+            var descriptorPayload = descriptor is null ? null : ContractDescriptorWire.Encode(descriptor, registration.Manifest);
+            _stores.Add(registration.Alias, new(registration, new(1, 1), new(StringComparer.Ordinal), policy, descriptorPayload));
         }
         if (_stores.Count == 0) throw new ArgumentException("At least one configured store is required.");
         _connectionSlots = new(options.MaximumConnections, options.MaximumConnections);
@@ -223,11 +225,13 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                     else if (accessScope.Partition.Length != 0 && _options.Limits.MaximumKeyBytes <= ScopedEncodedStore.PrefixBytes) rejection = RemoteErrorCode.LimitExceeded;
                     else if ((candidate.Capabilities & hello.Capabilities) != hello.Capabilities)
                         rejection = RemoteErrorCode.UnsupportedCapability;
-                    else if (hello.Kind == WireMessageKind.Discover)
+                    else if (hello.Kind is WireMessageKind.Discover or WireMessageKind.DescribeContract)
                     {
                         if (hello.Manifest!.ContractIdentity != candidate.Registration.Manifest.ContractIdentity
                             || hello.Capabilities != (EncodedStoreCapabilities.Read | EncodedStoreCapabilities.DurableCommits))
                             rejection = RemoteErrorCode.IncompatibleManifest;
+                        else if (hello.Kind == WireMessageKind.DescribeContract && candidate.ContractDescriptorPayload is null)
+                            rejection = RemoteErrorCode.UnsupportedCapability;
                         else selected = candidate;
                     }
                     else if (candidate.Registration.Manifest != hello.Manifest) rejection = RemoteErrorCode.IncompatibleManifest;
@@ -272,15 +276,21 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
                 if (accessScope!.Partition.Length != 0)
                     hostLimits = hostLimits with { MaximumKeyBytes = hostLimits.MaximumKeyBytes - ScopedEncodedStore.PrefixBytes };
                 var limits = hostLimits.Intersect(hello.Limits!);
-                if (hello.Kind == WireMessageKind.Discover)
+                if (hello.Kind is WireMessageKind.Discover or WireMessageKind.DescribeContract)
                 {
-                    await MessagePackFrameCodec.WriteAsync(stream, new()
+                    var reply = new WireMessage
                     {
                         Kind = WireMessageKind.HelloResult, CorrelationId = 1,
                         Manifest = selected!.Registration.Manifest, Limits = limits, Capabilities = hello.Capabilities,
                         AuthenticationMode = _options.AuthenticationMode, ScopeIdentity = accessScope!.Identity,
                         AccessToken = ProviderAuthenticationWire.Receipt(_options.AuthenticationMode, identity)
-                    }, limits, handshake.Token).ConfigureAwait(false);
+                    };
+                    if (hello.Kind == WireMessageKind.DescribeContract)
+                    {
+                        reply = reply with { Response = new() { Found = true, Payload = selected.ContractDescriptorPayload } };
+                        await WriteContractDescriptionAsync(stream, reply, limits, handshake.Token).ConfigureAwait(false);
+                    }
+                    else await MessagePackFrameCodec.WriteAsync(stream, reply, limits, handshake.Token).ConfigureAwait(false);
                     return;
                 }
                 if (hello.Kind == WireMessageKind.Subscribe)
@@ -343,9 +353,24 @@ public sealed partial class TcpStoreHost : IAsyncDisposable
         catch { return false; } // Credential-store faults and custom provider exceptions fail closed.
     }
 
+    private static async ValueTask WriteContractDescriptionAsync(SslStream stream, WireMessage reply,
+        TransportLimits limits, CancellationToken cancellationToken)
+    {
+        byte[] frame;
+        try { frame = MessagePackFrameCodec.Encode(reply, limits); }
+        catch (RemoteStoreException exception) when (exception.Code == RemoteErrorCode.LimitExceeded)
+        {
+            frame = MessagePackFrameCodec.Encode(new()
+            {
+                Kind = WireMessageKind.HelloResult, CorrelationId = reply.CorrelationId, Error = RemoteErrorCode.LimitExceeded
+            }, limits);
+        }
+        await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+    }
+
     private static RemoteErrorCode ValidateHello(WireMessage hello)
     {
-        if (hello.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover) || hello.CorrelationId != 1 || hello.StoreAlias is null
+        if (hello.Kind is not (WireMessageKind.Hello or WireMessageKind.Subscribe or WireMessageKind.Discover or WireMessageKind.DescribeContract) || hello.CorrelationId != 1 || hello.StoreAlias is null
             || hello.Manifest is null || hello.Limits is null || hello.Request is not null
             || hello.Response is not null || hello.Error != RemoteErrorCode.None || hello.TimeoutMilliseconds != 0)
             return RemoteErrorCode.ProtocolError;

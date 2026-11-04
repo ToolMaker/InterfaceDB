@@ -129,6 +129,57 @@ containers (`DefaultKeySet`) for Schannel compatibility, and ephemeral keys on o
 the service identity needs permission to create its temporary key container. No certificate is
 installed into a trust store.
 
+### Optional contract descriptions
+
+Publish a schema per store alias by setting `TcpStoreRegistration.ContractDescriptorProvider`.
+The host calls the provider at startup with the alias and active manifest. A provider can
+return a Protobuf schema, JSON Schema, or other UTF-8 contract text. Returning null leaves
+schema discovery disabled for that alias. The descriptor's identity, version and schema
+hash must match the active manifest. Supply the schema for the deployed contract as an
+explicit artifact. Its schema hash is the compatibility identifier from that manifest.
+
+The sample host accepts a `contractDescription` object in its settings file. For example,
+if the existing manifest declares `GroupMessage`, version `1.0.0`, and hash
+`group-message-v1`, its settings can include:
+
+```json
+{
+  "contractDescription": {
+    "contractIdentity": "GroupMessage",
+    "contractVersion": "1.0.0",
+    "contractSchemaHash": "group-message-v1",
+    "mediaType": "text/x-protobuf",
+    "schema": "syntax = \"proto3\"; message GroupMessage { string text = 1; }"
+  }
+}
+```
+
+Omit `contractDescription` to leave schema discovery disabled. The CLI can print the
+active manifest and descriptor as JSON:
+
+```powershell
+dotnet run --project samples/InterfaceDB.TcpStore.Client -- clientsettings.json --describe-contract
+```
+
+Application clients can use `TcpEncodedEnvelopeStore.DescribeContractAsync(options)`
+with their usual TLS, authentication, alias, and scope settings. Discovery requires
+read permission on the requested store and applies the host's data access policy.
+The server checks contract identity and returns the schema for the active version,
+even if the caller supplied an older version for that contract. The encoded descriptor
+is limited to 64 KiB and must also fit the negotiated payload and frame limits.
+
+The TCP request uses the existing handshake shape with message kind 11. The
+`HelloResult` carries the manifest and a found response whose binary payload is the
+UTF-8 JSON descriptor. Compatibility discovery and established storage sessions keep
+their existing message shapes. An updated host returns `UnsupportedCapability` for
+a store without a descriptor. An older host can close the connection when it receives
+the new request.
+
+Only the explicitly registered schema and compatibility metadata are returned.
+The host serves the prepared descriptor without opening a storage session or invoking
+a record serializer. The descriptor provider can also be used by a future gRPC host.
+Standard gRPC reflection would describe that host's registered RPC services and messages.
+
 ### Explicit mutual TLS compatibility mode
 
 `hostsettings.example.json` retains the original certificate-only configuration. That mode requires

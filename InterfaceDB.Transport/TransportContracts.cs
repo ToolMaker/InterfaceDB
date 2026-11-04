@@ -119,6 +119,8 @@ public sealed record TcpStoreRegistration(string Alias, CompatibilityManifest Ma
 {
     /// <summary>Server-owned policy; null inherits DefaultAccessPolicy. Use UnrestrictedDataAccessPolicy to explicitly opt out.</summary>
     public IDataAccessPolicy? AccessPolicy { get; init; }
+    /// <summary>Opt in to authorized schema discovery for this alias by supplying a descriptor provider.</summary>
+    public IContractDescriptorProvider? ContractDescriptorProvider { get; init; }
     /// <summary>Explicit authority to import external revisions; null denies remote imports. Normal saves are unaffected.</summary>
     public IRepositoryRevisionImportPolicy? RevisionImportPolicy { get; init; }
 }
@@ -262,7 +264,7 @@ internal static partial class TransportValidation
     }
 }
 
-internal enum WireMessageKind { Hello = 1, HelloResult, Request, Response, Close, Subscribe, Changed, Discover, CreateAccount, AccountResult }
+internal enum WireMessageKind { Hello = 1, HelloResult, Request, Response, Close, Subscribe, Changed, Discover, CreateAccount, AccountResult, DescribeContract = 11 }
 
 internal sealed record WireMessage
 {

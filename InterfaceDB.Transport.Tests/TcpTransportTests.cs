@@ -58,6 +58,119 @@ public sealed class TcpTransportTests
     }
 
     [TestMethod]
+    public async Task DescribeContractReturnsTheActiveSchemaWithoutAcquiringAStoreSession()
+    {
+        var backend = new CountingStore();
+        var manifest = Manifest();
+        var provider = new TestDescriptorProvider(ExampleDescriptor(manifest));
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(backend) with
+        {
+            Stores = [new(Alias, manifest, backend) { ContractDescriptorProvider = provider }]
+        });
+        var options = ClientOptions(host);
+        await using var ordinarySession = await TcpEncodedEnvelopeStore.ConnectAsync(options);
+        var oldManifest = manifest with { ContractVersion = "0.9" };
+
+        var description = await TcpEncodedEnvelopeStore.DescribeContractAsync(options with { Manifest = oldManifest });
+        Assert.AreEqual(manifest, description.Manifest);
+        Assert.AreEqual(provider.Descriptor, description.Descriptor);
+        using var schema = System.Text.Json.JsonDocument.Parse(description.Descriptor.Schema);
+        var properties = schema.RootElement.GetProperty("properties");
+        Assert.AreEqual("string", properties.GetProperty("name").GetProperty("type").GetString());
+        Assert.AreEqual("integer", properties.GetProperty("score").GetProperty("type").GetString());
+
+        Assert.AreEqual(manifest, await TcpEncodedEnvelopeStore.DiscoverAsync(options));
+        Assert.AreEqual(1, provider.Calls);
+        Assert.AreEqual(0, backend.Calls);
+        await ordinarySession.PutAsync("key", [1, 2]);
+        CollectionAssert.AreEqual(new byte[] { 1, 2 }, await ordinarySession.GetAsync("key"));
+    }
+
+    [TestMethod]
+    public async Task DescribeContractRequiresExplicitRegistrationAndHonorsAliasAuthorization()
+    {
+        var backend = new CountingStore();
+        var hidden = new CountingStore();
+        var manifest = Manifest();
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(backend) with
+        {
+            Stores = [new(Alias, manifest, backend), new("private-store", manifest, hidden)
+            { ContractDescriptorProvider = new TestDescriptorProvider(ExampleDescriptor(manifest), "private-store") }]
+        });
+        var options = ClientOptions(host);
+        var unsupported = await Assert.ThrowsExactlyAsync<RemoteStoreException>(
+            async () => await TcpEncodedEnvelopeStore.DescribeContractAsync(options));
+        Assert.AreEqual(RemoteErrorCode.UnsupportedCapability, unsupported.Code);
+
+        var denied = await Assert.ThrowsExactlyAsync<RemoteStoreException>(
+            async () => await TcpEncodedEnvelopeStore.DescribeContractAsync(options with { StoreAlias = "private-store" }));
+        Assert.AreEqual(RemoteErrorCode.Unauthorized, denied.Code);
+        Assert.AreEqual(manifest, await TcpEncodedEnvelopeStore.DiscoverAsync(options));
+        Assert.AreEqual(0, backend.Calls + hidden.Calls);
+    }
+
+    [TestMethod]
+    public async Task DescribeContractChecksTheManifestAndNegotiatedPayloadLimit()
+    {
+        var backend = new CountingStore();
+        var manifest = Manifest();
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(backend) with
+        {
+            Stores = [new(Alias, manifest, backend)
+            { ContractDescriptorProvider = new TestDescriptorProvider(ExampleDescriptor(manifest)) }]
+        });
+        var options = ClientOptions(host);
+        var wrongContract = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+            await TcpEncodedEnvelopeStore.DescribeContractAsync(options with
+            { Manifest = manifest with { ContractIdentity = "another-contract" } }));
+        Assert.AreEqual(RemoteErrorCode.IncompatibleManifest, wrongContract.Code);
+        var tooSmall = await Assert.ThrowsExactlyAsync<RemoteStoreException>(async () =>
+            await TcpEncodedEnvelopeStore.DescribeContractAsync(options with
+            { Limits = options.Limits with { MaximumPayloadBytes = 64 } }));
+        Assert.AreEqual(RemoteErrorCode.LimitExceeded, tooSmall.Code);
+        Assert.AreEqual(0, backend.Calls);
+    }
+
+    [TestMethod]
+    public async Task DescribeContractRejectsStaleOrOversizeSchemasBeforeListening()
+    {
+        var backend = new CountingStore();
+        var manifest = Manifest();
+        var descriptor = ExampleDescriptor(manifest);
+        foreach (var invalid in new[]
+        {
+            descriptor with { ContractVersion = "0.9" },
+            descriptor with { Schema = new string('x', 65 * 1024) }
+        })
+        {
+            await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            {
+                await using var host = await TcpStoreHost.StartAsync(HostOptions(backend) with
+                {
+                    Stores = [new(Alias, manifest, backend) { ContractDescriptorProvider = new TestDescriptorProvider(invalid) }]
+                });
+            });
+        }
+        Assert.AreEqual(0, backend.Calls);
+    }
+
+    private static ContractDescriptor ExampleDescriptor(CompatibilityManifest manifest) =>
+        new(manifest.ContractIdentity, manifest.ContractVersion, manifest.ContractSchemaHash, "application/schema+json",
+            """{"type":"object","properties":{"name":{"type":"string"},"score":{"type":"integer"}}}""");
+
+    private sealed class TestDescriptorProvider(ContractDescriptor descriptor, string expectedAlias = Alias) : IContractDescriptorProvider
+    {
+        internal ContractDescriptor Descriptor => descriptor;
+        internal int Calls { get; private set; }
+        public ContractDescriptor GetDescriptor(string storeAlias, CompatibilityManifest manifest)
+        {
+            Assert.AreEqual(expectedAlias, storeAlias);
+            Calls++;
+            return descriptor;
+        }
+    }
+
+    [TestMethod]
     public async Task DefaultServerTrustRejectsPrivateCaWithoutExecutingStorage()
     {
         var backend = new CountingStore();

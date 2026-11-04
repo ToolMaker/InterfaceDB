@@ -7,9 +7,9 @@ using System.Text.Json.Serialization;
 using Idb.Authentication;
 using Idb.Transport;
 
-if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] != "--probe"))
+if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] is not ("--probe" or "--describe-contract")))
 {
-    Console.Error.WriteLine("Usage: InterfaceDB.TcpStore.Client <clientsettings.json> [--probe]");
+    Console.Error.WriteLine("Usage: InterfaceDB.TcpStore.Client <clientsettings.json> [--probe | --describe-contract]");
     return 2;
 }
 
@@ -46,8 +46,9 @@ try
         tokenProvider = new ClientCredentialsAccessTokenProvider(settings.ToOptions(), handler);
     }
     using var tokenLifetime = tokenProvider as IDisposable;
-    var probe = args.Length == 2;
-    await using var store = await TcpEncodedEnvelopeStore.ConnectAsync(new TcpStoreClientOptions
+    var mode = args.Length == 2 ? args[1] : null;
+    var probe = mode == "--probe";
+    var options = new TcpStoreClientOptions
     {
         Host = configuration.Host,
         Port = configuration.Port,
@@ -65,7 +66,15 @@ try
             : EncodedStoreCapabilities.None),
         ServerCertificateValidation = serverTrust is null ? null
             : (_, certificate, chain, errors) => serverTrust.Validate(certificate, chain, errors)
-    }, shutdown.Token);
+    };
+    if (mode == "--describe-contract")
+    {
+        var description = await TcpEncodedEnvelopeStore.DescribeContractAsync(options, shutdown.Token);
+        Console.WriteLine(JsonSerializer.Serialize(description, new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+
+    await using var store = await TcpEncodedEnvelopeStore.ConnectAsync(options, shutdown.Token);
     await store.ExecuteAsync(new() { Command = EncodedStoreCommand.Ping }, shutdown.Token);
     Console.WriteLine("Authenticated TLS connection and Ping succeeded.");
     if (probe)

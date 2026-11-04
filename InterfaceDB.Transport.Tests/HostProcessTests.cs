@@ -31,7 +31,9 @@ public sealed class HostProcessTests
     }
 
     [TestMethod]
-    public async Task ConfiguredHostProcessAuthenticatesPersistsAndStopsGracefully()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ConfiguredHostProcessAuthenticatesPersistsAndStopsGracefully(bool describeContract)
     {
         using var certificates = new TestCertificates();
         var password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
@@ -40,6 +42,15 @@ public sealed class HostProcessTests
             CreateServerPfx(certificates.Root, password));
         var port = AvailablePort();
         var configuration = await WriteConfigurationAsync(port, certificates.Client.GetCertHashString(HashAlgorithmName.SHA256));
+        var manifest = Manifest();
+        var descriptor = new ContractDescriptor(manifest.ContractIdentity, manifest.ContractVersion, manifest.ContractSchemaHash,
+            "text/x-protobuf", """syntax = "proto3"; message ProcessRecord { bytes data = 1; }""");
+        if (describeContract)
+        {
+            var settings = JsonNode.Parse(await File.ReadAllTextAsync(configuration))!.AsObject();
+            settings["contractDescription"] = JsonSerializer.SerializeToNode(descriptor);
+            await File.WriteAllTextAsync(configuration, settings.ToJsonString());
+        }
         var payload = new byte[] { 0xc1, 0xff, 0x80, 0, 17 };
 
         using (var process = StartHost(configuration, password))
@@ -50,12 +61,19 @@ public sealed class HostProcessTests
                 var firstLine = await process.StandardOutput.ReadLineAsync().WaitAsync(Deadline);
                 StringAssert.Contains(firstLine ?? "", "host listening", "The configured host must start before the client connects.");
                 var output = process.StandardOutput.ReadToEndAsync();
-                await using (var client = await TcpEncodedEnvelopeStore.ConnectAsync(new()
+                var connection = new TcpStoreClientOptions
                 {
                     Host = "127.0.0.1", TargetHost = "localhost", Port = port,
                     StoreAlias = "process-test", Manifest = Manifest(), ClientCertificate = certificates.Client,
                     ServerCertificateValidation = certificates.ValidateServer
-                }))
+                };
+                if (describeContract)
+                {
+                    var published = await TcpEncodedEnvelopeStore.DescribeContractAsync(connection);
+                    Assert.AreEqual(manifest, published.Manifest);
+                    Assert.AreEqual(descriptor, published.Descriptor);
+                }
+                await using (var client = await TcpEncodedEnvelopeStore.ConnectAsync(connection))
                 {
                     await client.PutAsync("persisted", payload);
                     CollectionAssert.AreEqual(payload, await client.GetAsync("persisted"));
