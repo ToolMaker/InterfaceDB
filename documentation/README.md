@@ -57,6 +57,7 @@ Use the focused guides when needed:
 - [Optional compaction maintenance controls](compaction-maintenance.md): scheduling policies, candidate selection, shared I/O admission and separate maintenance summaries; current integration limits are explicit.
 - [Envelope revisions](envelope-revisions.md): conditional writes, compatibility, metadata import, and storage ownership.
 - [Security And Encryption](security.md): threat boundaries, AES-GCM, encrypted fields, key storage, and rotation.
+- [Protobuf serialization](protobuf-serialization.md): optional source serializer for File, SegmentCore, Atlas and TCP; explicit schemas, encryption and migration boundaries.
 - [Serializer registration](serializer-configuration.md): keyed envelope serializers, revision support and authenticated encryption wrappers; preview.11 support.
 - [Data access policies](data-access-policies.md): preview.13 DI-based user/tenant/group policies, interface ownership checks, automatic indexes, bounded selection, unrestricted mode and breaking-change migration.
 - [Choosing a policy for performance](data-access-policies.md#choosing-a-policy-for-performance): preserve required isolation and ownership guarantees; choose policy/index options using measured costs and workload limits.

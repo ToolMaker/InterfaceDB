@@ -5,6 +5,10 @@ including Atlas, local/remote and peer repositories, storage migration and confl
 The nine packages are versioned together. See the [package map and upgrade notes](documentation/preview17-release-notes.md)
 and [verification/publication status](documentation/preview17-validation.md).
 
+The current source also includes an optional [Protobuf serializer for gRPC integrations](documentation/protobuf-serialization.md),
+with [MessagePack, TCP and SQL benchmark results](documentation/performance-protobuf-sql-20261104.md).
+The published preview.17 packages use the existing MessagePack default.
+
 If InterfaceDB helps you or your business, please consider [sponsoring maintenance](SPONSORING.md).
 Sponsorship is optional and adds no conditions to the [MIT license](LICENSE).
 

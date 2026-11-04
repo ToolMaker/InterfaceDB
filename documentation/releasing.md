@@ -1,7 +1,7 @@
 # Preparing an InterfaceDB NuGet preview
 
 All implemented modules are MIT licensed. `Scripts/PackageProjects.json` is the explicit
-runtime package inventory; `Scripts/TestProjects.json` lists the ten standard suites.
+runtime package inventory; `Scripts/TestProjects.json` lists the standard suites.
 Use the repository's `global.json` SDK. Local context, credentials, customer data and
 private historical handoffs do not belong in source commits or packages.
 
@@ -47,7 +47,7 @@ Record skipped tests, warnings and qualifications accurately.
 ## Publish and verify
 
 Commit the complete snapshot and push for Windows/Linux CI. Once both pass, push the
-authorized `v<version>` tag. The release workflow checks versions, builds, runs all ten
+authorized `v<version>` tag. The release workflow checks versions, builds, runs the standard
 suites and the integration/smoke gates, packs the manifest and publishes with NuGet's
 short-lived trusted-publishing credential.
 

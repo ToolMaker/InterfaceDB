@@ -93,6 +93,30 @@ Repository startup includes recovery and index initialization; relational reopen
 opens connections without rebuilding their indexes. Do not rank these as
 equivalent startup operations. Neither is a per-query charge.
 
+## Comparing envelope serializers
+
+Add `--compare-serializers` to include a second SegmentCore store using Protobuf.
+Both SegmentCore stores use the same contract, indexes, cache, commit settings and
+verified SQL workload. The original SegmentCore result uses MessagePack. Repeat
+with `--reverse` to expose engine-order effects. For example:
+
+```powershell
+dotnet run --no-build -c Release --project StorageBenchmarks.Transactions -- --sql-comparison --compare-serializers --skip-file --records=10000 --iterations=50 --mutation-limit=1000 --cache=MetadataOnly --compare-ordinal-strings --include-sqlserver --output=artifacts/sql-serializers.json
+```
+
+Use `--serializer-comparison --iterations=500 --output=artifacts/codec-tcp.json`
+to measure envelope encoding, decoding, payload size, and direct point/page reads
+with and without loopback TCP. Repeat with a new output path and `--reverse`.
+This runs over the existing mutual TLS TCP transport on an established session;
+it measures neither connection setup nor an HTTP/2 gRPC endpoint. The TCP host
+passes stored bytes through, and the timed typed read decodes once at the client.
+The runner verifies bytes and every entity field before timing, and emits raw
+samples plus p50, p95, and process-wide allocations.
+
+On Windows set `TEMP` and `TMP` for the benchmark process to a task-specific
+folder under `C:\Temp`. Reports need a separate path so they survive scratch
+cleanup. Use the dedicated benchmark database for SQL Server.
+
 ## Repeated before/current runs
 
 ### Isolating the SegmentCore flush strategy

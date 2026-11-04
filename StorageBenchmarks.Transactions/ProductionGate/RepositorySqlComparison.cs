@@ -9,6 +9,8 @@ using Idb.Storage.SegmentCore;
 using Idb.Storage.SegmentCore.ObjectLog;
 using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
+using Idb.Libraries.Abstractions.Services.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 
 // Application-level comparison: full repository/index/envelope path, not raw engine calls.
 internal static class RepositorySqlComparison
@@ -41,6 +43,7 @@ internal static class RepositorySqlComparison
             throw new ArgumentException("--retain-cache-objects requires --queries-only; retained drafts must not affect mutation workloads.");
         var compareOrdinalStrings = args.Contains("--compare-ordinal-strings");
         var skipFile = args.Contains("--skip-file");
+        var compareSerializers = args.Contains("--compare-serializers");
         if (!Enum.TryParse<ObjectLogDurabilityStrategy>(Arg("--segment-durability") ?? "ExplicitFlush", true, out var segmentDurability)
             || !Enum.IsDefined(segmentDurability))
             throw new ArgumentException("--segment-durability must be ExplicitFlush or WriteThrough.");
@@ -52,7 +55,6 @@ internal static class RepositorySqlComparison
             queryKinds = [queryKind];
         }
         var root = Path.Combine(Path.GetTempPath(), "InterfaceDbSqlComparison", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
         var source = Enumerable.Range(0, records).Select(index => GateRecord.Create(index)).ToArray();
         var metrics = new List<Metric>();
         var storage = new List<object>();
@@ -67,8 +69,18 @@ internal static class RepositorySqlComparison
             if (!skipFile)
                 factories.Add(() => new InterfaceDbGateStore(Path.Combine(root, $"file-{cache}"),
                     cache, StorageDurabilityMode.Durable));
-            factories.Add(() => new InterfaceDbGateStore(Path.Combine(root, $"segment-{cache}"),
+            factories.Add(() => CreateSegmentStore(cache, protobuf: false));
+            if (compareSerializers)
+                factories.Add(() => CreateSegmentStore(cache, protobuf: true));
+        }
+
+        InterfaceDbGateStore CreateSegmentStore(StorageObjectCacheMode cache, bool protobuf) =>
+            new(Path.Combine(root, $"segment-{cache}-{(protobuf ? "protobuf" : "messagepack")}"),
                 cache, StorageDurabilityMode.Durable, register: (services, options) =>
+                {
+                    if (protobuf)
+                        services.AddKeyedSingleton<IObjectSerializer<IProductionGateRecord>>(
+                            options.EnvelopeDICacheKey, GateSerializers.CreateProtobuf());
                     services.AddSegmentCoreRepository<IProductionGateRecord>(options,
                         new SegmentCoreRepositoryOptions
                         {
@@ -83,9 +95,10 @@ internal static class RepositorySqlComparison
                                     DurabilityStrategy = segmentDurability
                                 }
                             }
-                        }, storageIdentityFactory: new ProductionGateIdentityFactory(options)),
-                engineName: "InterfaceDB SegmentCore", repositoryType: ContractRepositoryType.SegmentCore));
-        }
+                        }, storageIdentityFactory: new ProductionGateIdentityFactory(options));
+                },
+                engineName: protobuf ? "InterfaceDB SegmentCore Protobuf" : "InterfaceDB SegmentCore",
+                repositoryType: ContractRepositoryType.SegmentCore);
         if (!onlyInterfaceDb)
         {
             factories.Add(() => new SqliteGateStore(Path.Combine(root, "direct.db"),
@@ -109,6 +122,7 @@ internal static class RepositorySqlComparison
             factories.Add(() => new SqlServerGateStore(connectionString, dropOnDispose: true, indexAge: true));
         }
         if (reverse) factories.Reverse();
+        Directory.CreateDirectory(root);
         try
         {
             foreach (var factory in factories)
@@ -130,7 +144,10 @@ internal static class RepositorySqlComparison
             var assemblies = new[] { typeof(RepositorySqlComparison).Assembly,
                 typeof(Idb.Libraries.Abstractions.Services.Repository.IRepository<>).Assembly,
                 typeof(SegmentCoreOptions).Assembly, typeof(SqliteConnection).Assembly,
-                typeof(Dapper.SqlMapper).Assembly, typeof(SqlConnection).Assembly }.Distinct()
+                typeof(Dapper.SqlMapper).Assembly, typeof(SqlConnection).Assembly,
+                typeof(Idb.Serialization.Protobuf.ProtobufObjectSerializer<>).Assembly,
+                typeof(ProtoBuf.Meta.RuntimeTypeModel).Assembly,
+                typeof(MessagePack.MessagePackSerializer).Assembly }.Distinct()
                 .ToDictionary(assembly => assembly.GetName().Name!,
                     assembly => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))));
             await File.WriteAllTextAsync(output, JsonSerializer.Serialize(new
@@ -141,6 +158,7 @@ internal static class RepositorySqlComparison
                 CacheModes = caches.Select(value => value.ToString()).ToArray(),
                 OnlyInterfaceDb = onlyInterfaceDb, QueriesOnly = queriesOnly, CompareOrdinalStrings = compareOrdinalStrings,
                 ReadProbes = readProbes, RetainCacheObjects = retainCacheObjects,
+                CompareSerializers = compareSerializers,
                 SkipFile = skipFile, SegmentDurability = segmentDurability.ToString(),
                 QueryKinds = queryKinds.Select(kind => kind.ToString()).ToArray(),
                 Reverse = reverse, MaterializationContract = GateRecordMaterialization.Contract,

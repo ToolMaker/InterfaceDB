@@ -86,8 +86,8 @@ accepting a write; it still stores the validated bytes without re-encoding them.
 that changes a stored representation, or a write to another database with its own authenticated
 encryption context, has its own necessary serialization work.
 
-Call-count tests cover the default MessagePack format, a custom test format and that custom
-format wrapped in encryption. They check ordinary writes/reads, batches, indexed queries,
+Call-count tests cover the default MessagePack format, Protobuf, a custom test format and
+encrypted variants. They check ordinary writes/reads, batches, indexed queries,
 conflicts, deletes, metadata acknowledgements, deltas and pub/sub hints.
 
 ## Format changes and migrations
@@ -143,7 +143,7 @@ existing behavior.
 Registering another serializer does not convert existing files. Keep existing databases on
 their configured format, or perform an explicit verified conversion.
 
-This change provides serializer/encryption injection. A Protobuf serializer and a gRPC
-transport are not included. Existing built-in migration engines and encrypted-field value
-encoding still use MessagePack; supporting another format throughout those paths is separate
-work. Do not invoke those migration paths against a different envelope format.
+An optional [Protobuf serializer](protobuf-serialization.md) is now available in source;
+a gRPC transport remains separate work. Existing built-in contract migration engines and
+encrypted-field value encoding still use MessagePack. Do not invoke those contract migration
+paths against Protobuf envelopes; see the guide's compatibility boundaries.

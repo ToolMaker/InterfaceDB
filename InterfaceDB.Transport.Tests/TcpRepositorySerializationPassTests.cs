@@ -1,4 +1,5 @@
 using Idb.Transport;
+using Idb.Serialization.Protobuf;
 using Idb.Transport.Repositories;
 using Idb.Libraries.Abstractions.Services.Encryption;
 using Idb.Libraries.Abstractions.Services.Serialization;
@@ -10,25 +11,37 @@ namespace InterfaceDB.Transport.Tests;
 public sealed partial class TcpRepositoryTests
 {
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(true, true)]
-    public async Task SerializerPasses_CrudUsesOneEncodingPerWriteAndOneDecodingPerSnapshotRecord(bool marker, bool encrypted)
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(false, true, true)]
+    public async Task SerializerPasses_CrudUsesOneEncodingPerWriteAndOneDecodingPerSnapshotRecord(bool marker, bool encrypted, bool protobuf)
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        var manifest = Manifest() with { EnvelopeFormat = marker ? MarkerFormat : Manifest().EnvelopeFormat };
+        var manifest = Manifest() with { EnvelopeFormat = protobuf ? ProtobufObjectSerializer<IRemotePerson>.EnvelopeFormat : marker ? MarkerFormat : Manifest().EnvelopeFormat };
         await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { Stores = [new("people", manifest, store)] });
-        var counter = new MarkerSerializer(marker);
+        var counter = new MarkerSerializer(marker, protobuf);
         await using var repository = new TcpRepository<IRemotePerson>(CountedOptions(host, counter, manifest, encrypted));
 
         var saved = await repository.SaveAsync(new RemotePerson { Name = "first", Score = 1 });
         counter.AssertAndReset(1, 0);
-        // The unencrypted envelope is stored byte-for-byte, with no server-side re-encoding.
-        if (!encrypted)
+        // The host stores and returns the encoded payload unchanged, including ciphertext.
+        var records = (await store.EnumerateAsync(20)).Records!;
+        var storedPayload = records.Single(record => record.Payload.Length != 16).Payload;
+        if (!encrypted) CollectionAssert.AreEqual(counter.LastPayload!, storedPayload);
+        await using (var encodedClient = await TcpEncodedEnvelopeStore.ConnectAsync(
+            WithSerializer(host, counter, manifest).Connection))
         {
-            var records = (await store.EnumerateAsync(20)).Records!;
-            CollectionAssert.AreEqual(counter.LastPayload!, records.Single(record => record.Payload.Length != 16).Payload);
+            var received = await encodedClient.ExecuteAsync(new()
+            { Command = EncodedStoreCommand.Get, Key = saved.Envelope!.EnvelopeCacheKey });
+            CollectionAssert.AreEqual(storedPayload, received.Payload);
+            var page = await encodedClient.ExecuteAsync(new()
+            { Command = EncodedStoreCommand.Enumerate, PageSize = 20 });
+            CollectionAssert.AreEqual(storedPayload,
+                page.Records!.Single(record => record.Key == saved.Envelope.EnvelopeCacheKey).Payload);
         }
+        counter.AssertAndReset(0, 0); // Transporting bytes does not materialize an entity.
         var stale = await repository.QuerySingleAsync(_ => true);
         counter.AssertAndReset(0, 1);
         saved.Name = "updated";
@@ -48,15 +61,17 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(true, true)]
-    public async Task SerializerPasses_BatchAndDeltaMaterializeEachReceivedRecordOnlyOnce(bool marker, bool encrypted)
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(false, true, true)]
+    public async Task SerializerPasses_BatchAndDeltaMaterializeEachReceivedRecordOnlyOnce(bool marker, bool encrypted, bool protobuf)
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        var manifest = Manifest() with { EnvelopeFormat = marker ? MarkerFormat : Manifest().EnvelopeFormat };
+        var manifest = Manifest() with { EnvelopeFormat = protobuf ? ProtobufObjectSerializer<IRemotePerson>.EnvelopeFormat : marker ? MarkerFormat : Manifest().EnvelopeFormat };
         await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { Stores = [new("people", manifest, store)] });
-        var counter = new MarkerSerializer(marker);
+        var counter = new MarkerSerializer(marker, protobuf);
         await using var repository = new TcpRepository<IRemotePerson>(CountedOptions(host, counter, manifest, encrypted));
 
         var saved = await repository.SaveManyAsync([new RemotePerson { Name = "one" }, new RemotePerson { Name = "two" }]);
@@ -77,15 +92,17 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(true, true)]
-    public async Task SerializerPasses_MetadataAcknowledgementReusesTheMaterializedSnapshot(bool marker, bool encrypted)
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(false, true, true)]
+    public async Task SerializerPasses_MetadataAcknowledgementReusesTheMaterializedSnapshot(bool marker, bool encrypted, bool protobuf)
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        var manifest = Manifest() with { EnvelopeFormat = marker ? MarkerFormat : Manifest().EnvelopeFormat };
+        var manifest = Manifest() with { EnvelopeFormat = protobuf ? ProtobufObjectSerializer<IRemotePerson>.EnvelopeFormat : marker ? MarkerFormat : Manifest().EnvelopeFormat };
         await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { Stores = [new("people", manifest, store)] });
-        var counter = new MarkerSerializer(marker);
+        var counter = new MarkerSerializer(marker, protobuf);
         await using var repository = new TcpRepository<IRemotePerson>(CountedOptions(host, counter, manifest, encrypted));
         var saved = await repository.SaveWithExtensionMetadataAsync(new RemotePerson { Name = "original", Score = 7 }, null, [1]);
         counter.AssertAndReset(1, 0);
@@ -111,13 +128,16 @@ public sealed partial class TcpRepositoryTests
     }
 
     [TestMethod]
-    public async Task SerializerPasses_PushNotificationsDoNotEncodeOrDecodeEnvelopes()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SerializerPasses_PushNotificationsDoNotEncodeOrDecodeEnvelopes(bool protobuf)
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(_root);
-        await using var host = await Host(store);
-        var counter = new MarkerSerializer(false);
-        await using var subscriber = new TcpRepository<IRemotePerson>(Options(host, Token("parent-a")) with { Serializer = counter });
-        await using var writer = Client(host, "parent-a");
+        var manifest = Manifest() with { EnvelopeFormat = protobuf ? ProtobufObjectSerializer<IRemotePerson>.EnvelopeFormat : Manifest().EnvelopeFormat };
+        await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { Stores = [new("people", manifest, store)] });
+        var counter = new MarkerSerializer(false, protobuf);
+        await using var subscriber = new TcpRepository<IRemotePerson>(WithSerializer(host, counter, manifest));
+        await using var writer = new TcpRepository<IRemotePerson>(WithSerializer(host, new MarkerSerializer(false, protobuf), manifest));
         int notifications = 0;
         await using var subscription = subscriber.SubscribeChanges(() => { Interlocked.Increment(ref notifications); return ValueTask.CompletedTask; });
         await subscription.Ready.WaitAsync(TimeSpan.FromSeconds(5));

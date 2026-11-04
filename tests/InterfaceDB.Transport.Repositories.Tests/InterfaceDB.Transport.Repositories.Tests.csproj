@@ -8,6 +8,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/InterfaceDB.Serialization.Protobuf/InterfaceDB.Serialization.Protobuf.csproj" />
     <ProjectReference Include="../../src/InterfaceDB.Transport.Repositories/InterfaceDB.Transport.Repositories.csproj" />
     <ProjectReference Include="../../src/InterfaceDB.Transport.Atlas/InterfaceDB.Transport.Atlas.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />

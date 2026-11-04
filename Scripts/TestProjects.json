@@ -8,5 +8,6 @@
   "tests/InterfaceDB.ConflictResolution.Tests/InterfaceDB.ConflictResolution.Tests.csproj",
   "tests/InterfaceDB.StorageMigrations.Tests/InterfaceDB.StorageMigrations.Tests.csproj",
   "tests/InterfaceDB.Storage.Atlas.Tests/InterfaceDB.Storage.Atlas.Tests.csproj",
-  "tests/InterfaceDB.Transport.Repositories.Tests/InterfaceDB.Transport.Repositories.Tests.csproj"
+  "tests/InterfaceDB.Transport.Repositories.Tests/InterfaceDB.Transport.Repositories.Tests.csproj",
+  "tests/InterfaceDB.Serialization.Protobuf.Tests/InterfaceDB.Serialization.Protobuf.Tests.csproj"
 ]

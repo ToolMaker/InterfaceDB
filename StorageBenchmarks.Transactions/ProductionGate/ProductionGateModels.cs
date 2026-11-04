@@ -418,8 +418,11 @@ internal interface IProductionGateRecord : IStoredContract<IProductionGateRecord
 }
 
 [MessagePackObject(keyAsPropertyName: true, AllowPrivate = true)]
-internal sealed class ProductionGateRecord : IProductionGateRecord
+internal sealed partial class ProductionGateRecord : IProductionGateRecord
 {
+    private ProductionGateRecord() : this("", "", 0, "", "", 0) { }
+
+    [SerializationConstructor]
     public ProductionGateRecord(string id, string name, int age, string role, string content, long revision)
     {
         Id = id;
@@ -430,10 +433,10 @@ internal sealed class ProductionGateRecord : IProductionGateRecord
         Revision = revision;
     }
 
-    public string Id { get; }
-    public string Name { get; }
+    public string Id { get; private set; }
+    public string Name { get; private set; }
     public int Age { get; set; }
-    public string Role { get; }
+    public string Role { get; private set; }
     public string Content { get; set; }
     public long Revision { get; set; }
 

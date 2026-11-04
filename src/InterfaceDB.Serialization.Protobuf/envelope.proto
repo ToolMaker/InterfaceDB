@@ -1,0 +1,23 @@
+syntax = "proto3";
+package interfacedb.serialization.v1;
+
+// InterfaceDB envelope wire schema. Payload has the schema registered for type_id.
+// Field numbers and their meanings are persistent storage identities.
+message Envelope {
+  int32 format_version = 1; // Must be 1.
+  string key = 2;
+  string contract_version = 3;
+  int64 revision = 4; // UTC microseconds, nonnegative; assigned by the repository.
+  string type_id = 5;
+  bool cache_object = 6;
+  bytes payload = 7;
+  repeated EncryptedField encrypted_fields = 8;
+  bool has_extension_metadata = 9; // Distinguishes null from an empty byte array.
+  bytes extension_metadata = 10;
+}
+message EncryptedField {
+  string name = 1;
+  string profile_name = 2;
+  string property_type_name = 3;
+  bytes ciphertext = 4;
+}

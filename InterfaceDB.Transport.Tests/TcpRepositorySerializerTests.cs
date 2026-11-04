@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using Idb.Serialization.Protobuf;
+using ProtoBuf.Meta;
 using Idb.Transport;
 using Idb.Transport.Repositories;
 using Idb.Libraries.Abstractions.Services.Encryption;
@@ -16,9 +18,11 @@ public sealed partial class TcpRepositoryTests
     private const string MarkerFormat = "test-marker-envelope-v1";
 
     [TestMethod]
-    public async Task Serializer_CustomFormatSurvivesReopenAndPreservesRevisionChecks()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Serializer_CustomFormatSurvivesReopenAndPreservesRevisionChecks(bool protobuf)
     {
-        var serializer = new MarkerSerializer();
+        var serializer = new MarkerSerializer(protobuf: protobuf);
         var manifest = Manifest() with { EnvelopeFormat = MarkerFormat };
         var path = Path.Combine(_root, "serializer-reopen");
         string key;
@@ -57,12 +61,14 @@ public sealed partial class TcpRepositoryTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Serializer_DiReusesSegmentCoreRegistrationIncludingEncryption(bool encrypted)
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task Serializer_DiReusesSegmentCoreRegistrationIncludingEncryption(bool encrypted, bool protobuf = false)
     {
         await using var store = await SegmentCoreEncodedEnvelopeStore.OpenAsync(Path.Combine(_root, "master"));
         var manifest = Manifest() with { EnvelopeFormat = MarkerFormat };
         await using var host = await TcpStoreHost.StartAsync(HostOptions(store) with { Stores = [new("people", manifest, store)] });
-        var inner = new MarkerSerializer();
+        var inner = new MarkerSerializer(protobuf: protobuf);
         IEncryptor encryptor = encrypted ? new AesGcmEncryptor(new SerializerKey()) : new EncryptionNone();
         IObjectSerializer<IRemotePerson> serializer = encrypted
             ? new EncryptingObjectSerializer<IRemotePerson>(inner, encryptor, 4 * 1024 * 1024) : inner;
@@ -220,10 +226,17 @@ public sealed partial class TcpRepositoryTests
             Connection = options.Connection with { Manifest = manifest } };
     }
 
-    // A deliberately different test format proves the transport does not silently reconstruct MessagePack.
-    private sealed class MarkerSerializer(bool useMarker = true) : IRevisionObjectSerializer<IRemotePerson>
+    private static ProtobufObjectSerializer<IRemotePerson> CreateProtobufSerializer()
     {
-        private readonly BinaryObjectSerializer<IRemotePerson> _inner = new(runtimeTypeAllowlist: new(typeof(RemotePerson)));
+        var model = RuntimeTypeModel.Create();
+        model.Add(typeof(RemotePerson), false).Add(1, nameof(RemotePerson.Name)).Add(2, nameof(RemotePerson.Score));
+        return new(model, new Dictionary<string, Type> { ["person-v1"] = typeof(RemotePerson) });
+    }
+
+    // A deliberately different test format proves the transport does not silently reconstruct MessagePack.
+    private sealed class MarkerSerializer(bool useMarker = true, bool protobuf = false) : IRevisionObjectSerializer<IRemotePerson>
+    {
+        private readonly IRevisionObjectSerializer<IRemotePerson> _inner = protobuf ? CreateProtobufSerializer() : new BinaryObjectSerializer<IRemotePerson>(runtimeTypeAllowlist: new(typeof(RemotePerson)));
         private int _writes, _reads;
         public int Writes => Volatile.Read(ref _writes);
         public int Reads => Volatile.Read(ref _reads);

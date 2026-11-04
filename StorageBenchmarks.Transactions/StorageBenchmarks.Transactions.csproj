@@ -27,6 +27,8 @@
     <ProjectReference Include="..\IdbDemoStorage\IdbDemoStorage.csproj" />
     <ProjectReference Include="..\Idb.Libraries\Idb.Libraries.csproj" />
     <ProjectReference Include="..\PerformanceCommon\PerformanceCommon.csproj" />
+    <ProjectReference Include="../src/InterfaceDB.Serialization.Protobuf/InterfaceDB.Serialization.Protobuf.csproj" />
+    <ProjectReference Include="../InterfaceDB.Transport/InterfaceDB.Transport.csproj" />
     <ProjectReference Include="..\InterfaceDB.Storage.SegmentCore\InterfaceDB.Storage.SegmentCore.csproj" />
   </ItemGroup>
 

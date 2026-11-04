@@ -26,6 +26,11 @@ using PersonStorage = IdbDemoStorage.Storage.Person.v1_0_0;
 
 try
 {
+    if (args.Contains("--serializer-comparison"))
+    {
+        await SerializerTransportComparison.RunAsync(args);
+        return;
+    }
     if (args.Contains("--sql-comparison"))
     {
         await RepositorySqlComparison.RunAsync(args);
@@ -336,6 +341,10 @@ public class TransactionBenchmarks : IDisposable
         Console.WriteLine("  Add --include-sqlserver to include the configured SQL Server alongside InterfaceDB and SQLite.");
         Console.WriteLine("  Add --include-write-ablations to isolate search-index and sidecar-lock write costs.");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --materialization-self-test");
+        Console.WriteLine();
+        Console.WriteLine("Compare MessagePack and Protobuf with local storage, TCP, and SQL controls:");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --serializer-comparison --iterations=500 --output=serializer-comparison.json");
+        Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --sql-comparison --compare-serializers --skip-file --cache=MetadataOnly --include-sqlserver");
         Console.WriteLine();
         Console.WriteLine("Run the low-level durable file-protocol probe:");
         Console.WriteLine("  dotnet run -c Release --project StorageBenchmarks.Transactions -- --file-protocol-probe --probe-records=200 --probe-payload-bytes=262");
