@@ -2,7 +2,26 @@
 
 This document lists the main InterfaceDB capabilities and how they fit together.
 
-## Tenant and group access policies — preview.13 source
+## All modules under MIT — preview.17
+
+The formerly commercial implementations now ship as optional public packages:
+
+- [Atlas](atlas-storage-provider.md): prefix-partitioned storage and independent maintenance.
+- [Local/remote repositories](local-remote-repositories.md): per-repository read preference,
+  offline writes, client-owned reconnect and disposable subscriptions.
+- [Server-managed setups](server-managed-setups.md): approved client configuration, version
+  authority and scoped access, with File, SegmentCore and Atlas adapters.
+- [Peer replication](peer-replicated-repository.md): local storage with relay-assisted
+  reconciliation, selectable join history and resume behavior.
+- [Provider migration](storage-migration.md): resumable startup handover, optional legacy
+  revision repair, writable partial availability and verified retirement/cleanup.
+- [Conflict resolution](conflict-resolution.md): opt-in three-way merge over retained edits.
+
+See the [package map and upgrade guide](preview17-release-notes.md). Existing serializers,
+durability, authorization and revision semantics are preserved. Sponsorship is optional;
+all implemented features use the same MIT license. gRPC remains roadmap work.
+
+## Tenant and group access policies — preview.13
 
 The new `IDataAccessPolicy` composition separates authentication, operation permission and data
 selection. Choose private-user, claim-based tenant/group, unrestricted or custom policies per

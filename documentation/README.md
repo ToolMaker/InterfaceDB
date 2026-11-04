@@ -15,16 +15,16 @@
 - [Voluntary sponsorship](../SPONSORING.md)
 
 
-Preview.16 published: [release and upgrade notes](preview16-release-notes.md) and
-[verification status](preview16-validation.md). Previous preview.15: [receipt](preview15-validation.md).
+Preview.17 published: [release and upgrade notes](preview17-release-notes.md) and
+[verification status](preview17-validation.md). Previous preview.16: [receipt](preview16-validation.md).
 
 Start with these documents:
 
 For the **preview.13 tenant/security-policy update**, start with
 [authentication, permissions and data isolation](data-access-policies.md), then
 [JWT setup](jwt-authentication.md), [security boundaries](security.md) and
-[production validation and costs](access-policy-production-20261028.md). The guides distinguish
-these source changes from the published preview.12 packages.
+[production validation and costs](access-policy-production-20261028.md). Dated reports retain
+their original release context; use the current release notes for package availability.
 
 1. [Why InterfaceDB](why-interfacedb.md) explains the architectural purpose and when the model is a good fit.
 2. [Getting Started](getting-started.md) builds the smallest working repository.

@@ -1,6 +1,6 @@
 # Preview.17: all implemented modules under MIT
 
-Status: **release candidate; publication verification pending**. All nine packages use
+Status: **published and verified, 4 November 2026**. All nine packages use
 `1.0.0-preview.17`. See the [validation record](preview17-validation.md) for actual results.
 
 ## Packages

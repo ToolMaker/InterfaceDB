@@ -2,7 +2,17 @@
 
 InterfaceDB is an interface-first storage stack for storage-aware contract objects. It persists concrete objects behind versioned C# interfaces, using envelopes as the low-level provider-neutral storage metadata boundary.
 
-The project has two local storage providers. The flat-file provider favors independently inspectable object files, file watching, and file-oriented migrations. SegmentCore favors dense append-only storage, atomic bulk transactions, checksummed WAL recovery, checkpointed primary locators, and bounded compaction. Both sit under the same repository and query/index layers.
+The project has three local storage providers. File favors independently inspectable object files, file watching, and file-oriented migrations. SegmentCore favors dense append-only storage, atomic bulk transactions, checksummed WAL recovery, checkpointed primary locators, and bounded compaction. Atlas partitions storage by physical-key prefixes with independent writer groups. All sit under the repository and query/index abstractions.
+
+All implemented modules are MIT licensed from preview.17. Optional composition modules
+add local/remote repositories, peer relay synchronization, provider-to-provider startup
+migration and three-way merge. Authentication and TCP remain optional for embedded users.
+See the [package map](preview17-release-notes.md#packages), [managed setup architecture](server-managed-setups.md)
+and [storage migration guide](storage-migration.md).
+
+Object envelopes use the configured `IObjectSerializer<T>` through DI. TCP can reuse
+that same registration; wire control framing is a separate concern. Higher-level
+coordinators depend on capability interfaces rather than selecting concrete storage classes.
 
 ## Solution Layout
 

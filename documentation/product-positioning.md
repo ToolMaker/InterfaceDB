@@ -1,6 +1,6 @@
 # Product Positioning
 
-InterfaceDB is an interface-first object repository with a file-backed storage provider. Its differentiator is the dependency boundary and object lifecycle—not a claim that every operation is faster than a mature embedded database.
+InterfaceDB is an interface-first object repository with File, SegmentCore and Atlas storage providers. Its differentiator is the dependency boundary and object lifecycle, not a claim that every operation is faster than a mature embedded database.
 
 ## What It Is
 
@@ -28,11 +28,14 @@ InterfaceDB is not:
 - a persistent full-text or vector search engine;
 - a distributed transaction coordinator.
 
-An ORM maps objects to relational tables. InterfaceDB owns an object repository model directly and currently persists one envelope-backed object per canonical file.
+An ORM maps objects to relational tables. InterfaceDB owns the object repository model directly.
+File stores one envelope-backed object per canonical file; SegmentCore and Atlas use append-only storage.
 
-The optional TCP connector hosts one database in a server process and gives remote clients
-the same repository API with disposable change hints. This preview.11 feature has
-no persistent client database or offline synchronization. See [TCP integration](tcp-repository.md).
+The optional basic TCP connector hosts one database and exposes the repository API with
+disposable change hints. Separate MIT packages add [local/remote composition](local-remote-repositories.md),
+offline replay, [peer replication](peer-replicated-repository.md), storage migration and
+conflict resolution. Basic TCP alone creates no persistent client database. See the
+[package map](preview17-release-notes.md#packages).
 
 ## Comparison
 
@@ -44,7 +47,7 @@ no persistent client database or offline synchronization. See [TCP integration](
 | Exact/range/prefix/suffix/contains indexes | In-memory, attribute-driven | Application-owned | Persistent B-tree/SQL indexes; text extensions vary | Database-backed |
 | Per-object inspectable files | Yes | Usually | No | No |
 | External file change reconciliation | Yes | Application-owned | Not object-file based | No |
-| Multi-record transactions | SegmentCore atomic batches | Usually no | Yes | Yes |
+| Multi-record transactions | SegmentCore/Atlas atomic batches | Usually no | Yes | Yes |
 | Joins/aggregation | No | No | Yes | Yes |
 | Encryption | Optional envelope/field AES-GCM | Application-owned | Provider/platform-dependent | Database/provider-dependent |
 | Server/connection string required | No | No | No for embedded SQLite | Depends on provider |
@@ -61,10 +64,10 @@ no persistent client database or offline synchronization. See [TCP integration](
 
 ## Choose Another Store When
 
-- multiple records must commit atomically;
+- records across independent contract stores must commit as one distributed transaction;
 - joins, grouping, or relational constraints drive the workload;
 - many remote users write concurrently;
-- replication, failover, or server-side authorization is required;
+- server clustering, automatic server failover or durable replicated consensus is required;
 - persistent full-text, geospatial, fuzzy, or vector search is central;
 - startup must reopen millions of indexed records immediately;
 - maximum independently durable write throughput matters more than per-object files.

@@ -1,6 +1,6 @@
 # InterfaceDB
 
-**Preview.17 release preparation:** every implemented module is now MIT licensed,
+**Preview.17 published:** every implemented module is now MIT licensed,
 including Atlas, local/remote and peer repositories, storage migration and conflict resolution.
 The nine packages are versioned together. See the [package map and upgrade notes](documentation/preview17-release-notes.md)
 and [verification/publication status](documentation/preview17-validation.md).
@@ -30,7 +30,7 @@ InterfaceDB is not an ORM. An ORM maps objects to a relational model. InterfaceD
 
 InterfaceDB is a strong fit for desktop applications, local-first tools, embedded application data, offline workloads, and systems where object-native persistence and architectural boundaries matter more than relational joins.
 
-It is not currently a replacement for a server database when you need distributed transactions, SQL joins, distributed transactions across stores, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
+It is not currently a replacement for a server database when you need distributed transactions across stores, SQL joins, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
 
 ## Optional online TCP access â€” preview.11
 
@@ -290,6 +290,8 @@ Run the canonical fresh managed object-materialization quick gate:
 Generated traces, BenchmarkDotNet artifacts, test data, and gate reports are intentionally ignored. Curated, reproducible results belong in `documentation/performance-results.md`.
 
 ## Project Status
+
+`1.0.0-preview.17` publishes all nine implemented modules under MIT, including the formerly commercial features. See the [package map](documentation/preview17-release-notes.md) and [verified publication](documentation/preview17-validation.md). Install only the modules you use, with matching versions.
 
 `1.0.0-preview.15` was published to NuGet.org on 31 October 2026 after Windows/Linux CI. It adds reviewed storage and authentication corrections, context-bound encrypted fields and server-owned remote revisions. See [the coordinated upgrade instructions](documentation/preview15-release-notes.md) and [published-package verification](documentation/preview15-validation.md). Update all four packages and rebuild clients and hosts together.
 
