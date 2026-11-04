@@ -121,8 +121,9 @@ public sealed partial class TcpRepositoryTests
                 master = await VersionedTcpStore.OpenAsync(path, "people", [StoreV1(), StoreV2()]);
                 host = await TcpStoreHost.StartAsync(HostOptions(master.Registration.Store) with
                 { Stores = [master.Registration], ListenEndPoint = new(System.Net.IPAddress.Loopback, port) });
-                await Until(() => Task.FromResult(managed.Connection.State == RepositoryConnectionState.Faulted));
-                StringAssert.Contains(managed.Connection.LastFailure!.ToString(), "Injected rebind failure");
+                // The v1 data subscription can report a manifest mismatch before version discovery reaches the rebind.
+                await Until(() => Task.FromResult(managed.Connection.State == RepositoryConnectionState.Faulted
+                    && managed.Connection.LastFailure is InvalidDataException { Message: "Injected rebind failure" }));
             }
             await host.DisposeAsync();
             mapper.Fail = false;
