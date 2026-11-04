@@ -1,6 +1,6 @@
 # InterfaceDB 1.0.0-preview.16
 
-Status: release candidate; see the [validation and publication status](preview16-validation.md).
+Published to NuGet.org on 4 November 2026; see the [validation and publication record](preview16-validation.md).
 Update `InterfaceDB`, `InterfaceDB.Storage.SegmentCore`, `InterfaceDB.Authentication`
 and `InterfaceDB.Transport` together and rebuild dependent applications and hosts.
 

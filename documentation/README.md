@@ -1,6 +1,6 @@
 # InterfaceDB Documentation
 
-Preview.16 candidate: [release and upgrade notes](preview16-release-notes.md) and
+Preview.16 published: [release and upgrade notes](preview16-release-notes.md) and
 [verification status](preview16-validation.md). Previous preview.15: [receipt](preview15-validation.md).
 
 Start with these documents:

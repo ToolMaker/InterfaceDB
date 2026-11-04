@@ -1,6 +1,6 @@
 # InterfaceDB
 
-**Preview.16 release candidate:** File read/delete correctness, validated file leases
+**Preview.16 published:** File read/delete correctness, validated file leases
 and provider-composition capabilities. All four public packages use `1.0.0-preview.16`.
 Existing formats, isolation, durable acknowledgements and committed-copy reads are preserved.
 See [release and upgrade notes](documentation/preview16-release-notes.md),
