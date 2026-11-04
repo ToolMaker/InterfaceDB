@@ -1,11 +1,10 @@
 # InterfaceDB
 
-**Preview.15 published:** encrypted-field, migration, checkpoint, query and authentication fixes.
-The four public `1.0.0-preview.15` packages are available on NuGet.org.
-Coordinate the TCP client/server upgrade and follow the staged encrypted-field conversion.
-Isolation, durable acknowledgements and committed-copy reads are preserved.
-See [release and upgrade notes](documentation/preview15-release-notes.md),
-[publication and verification receipt](documentation/preview15-validation.md),
+**Preview.16 release candidate:** File read/delete correctness, validated file leases
+and provider-composition capabilities. All four public packages use `1.0.0-preview.16`.
+Existing formats, isolation, durable acknowledgements and committed-copy reads are preserved.
+See [release and upgrade notes](documentation/preview16-release-notes.md),
+[publication and verification status](documentation/preview16-validation.md),
 [policy integration](documentation/data-access-policies.md) and
 [measured costs](documentation/access-policy-production-20261028.md).
 

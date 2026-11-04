@@ -76,7 +76,7 @@ the historical outcome. There is no automatic mutation replay or durable dedupli
 
 ## Application integration
 
-For the preview.15 candidate, reference `InterfaceDB.Transport` version `1.0.0-preview.15` from
+For the preview.15 candidate, reference `InterfaceDB.Transport` version `1.0.0-preview.16` from
 the candidate feed until publication. Preserve interface contracts, MessagePack implementations, indexes and normal
 `IRepository<T>` calls. Supply an explicit runtime type allowlist.
 

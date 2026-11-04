@@ -86,6 +86,16 @@ commit or a newer one; the callback payload represents the announced commit.
 
 ## Preventing notification feedback loops
 
+Trusted in-process import adapters can use the optional `IEnvelopeImportRepository<T>`
+capability on the concrete repository. `ImportWithoutNotificationsAsync` imports a
+detached record under an expected-missing condition with its existing positive revision
+and metadata. It suppresses application Created/Changed delivery for that call only.
+Index maintenance, durability, conflict checks, notification readiness and baseline
+invalidation still run. Ordinary saves, metadata saves and synchronization imports keep
+their existing notification behavior. This is not a global notification switch or a
+remote authorization bypass; custom providers must explicitly implement the capability.
+
+
 By default a subscription does **not** receive writes it caused, or their causal descendants.
 Repository callbacks are automatically tagged using an in-process async-flow scope. If handler
 A saves, B may receive that change; if B then saves in response, that descendant is not delivered

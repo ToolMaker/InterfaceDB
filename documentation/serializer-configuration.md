@@ -92,6 +92,54 @@ conflicts, deletes, metadata acknowledgements, deltas and pub/sub hints.
 
 ## Format changes and migrations
 
+### Unreleased infrastructure capabilities
+
+`ICanonicalObjectSerializer<T>` supplies deterministic logical bytes for integrity
+comparisons across application builds. `BinaryObjectSerializer<T>` implements it:
+the canonical runtime type identity omits assembly versions, while the serialized
+values, keys, contract version, revision and extension metadata remain covered.
+This auxiliary encoding is not a replacement storage format. Ordinary `Serialize`,
+deserialization and TCP payloads are unchanged. Custom serializers can implement
+the capability using their own format and value semantics.
+
+`ICommittedEnvelopeInventory<T>` exposes a fresh physical File inventory independently
+of the application cache. It does not initialize watchers, hydrate objects, rotate
+encryption keys or publish events. Its caller must hold provider exclusion while
+enumerating and capturing committed snapshots; it is not an independent transaction.
+
+File coordinator leases now use exclusive handles with delete-on-close. Abandoned
+leases can be reclaimed after an exclusive open proves that their holder is gone;
+age alone is never proof. Existing live exclusive leases remain protected. This
+changes recovery after process termination, not commit durability or conflict checks.
+
+Before acquiring File writer or migration leases, the coordinator validates exclusive
+handle enforcement through `IFileLeaseValidation`. The default
+`PlatformFileLeaseValidation` tests a uniquely owned file in the actual storage directory
+and accepts only the platform's sharing-conflict error. Disabled Unix .NET file locking
+or a successful competing exclusive open fails closed. A successful check is cached per
+coordinator, so normal writes do not repeat this probe; failed checks remain retryable.
+Read-only use does not run the writer probe. DI can supply another implementation that
+proves equivalent exclusion. Network filesystems across hosts and mobile devices still
+require qualification; this cannot exclude an unaware process that ignores locks.
+
+File key lookup and scans also tolerate a payload deleted after catalog lookup but before
+the file is opened. Already materialized results remain stable committed copies. Missing
+directories, missing serializer dependencies, corruption and other I/O errors still fail.
+
+Provider registrations also expose `RepositoryCompatibilityAlias` ownership metadata
+so repository composers can redirect their own aliases without removing application
+replacements or aliases belonging to another configured database.
+
+Repository composers can expose the optional `IRepositoryDataAvailability` capability.
+After initialization, consumers that reconcile whole datasets or perform authoritative
+exports must require `IsDataComplete` (or call `RepositoryDataAvailability.RequireComplete`).
+An incomplete query result cannot prove that an absent record was deleted. This is a
+provider-neutral contract; it adds no migration policy or background work to ordinary
+repositories. Ordinary providers that do not expose the capability retain their
+existing behavior.
+
+### Changing the stored format
+
 Registering another serializer does not convert existing files. Keep existing databases on
 their configured format, or perform an explicit verified conversion.
 

@@ -158,6 +158,7 @@ public static class SegmentCoreServiceCollectionExtensions
         services.TryAddKeyedSingleton<IRepositoryNotifications<TContract>>(databaseKey, (sp, key) =>
             (IRepositoryNotifications<TContract>)sp.GetRequiredKeyedService<IRepository<TContract>>(key));
 
+        var aliasesBefore = services.ToHashSet();
         services.TryAddSingleton<IDbContractConfigDto<TContract>>(sp =>
             sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(databaseKey));
         services.TryAddSingleton<StoragePolicy>(sp =>
@@ -188,6 +189,7 @@ public static class SegmentCoreServiceCollectionExtensions
             (IRepositoryNotifications<TContract>)sp.GetRequiredService<IRepository<TContract>>());
         services.TryAddSingleton<IEnvelopeMetadataRepository<TContract>>(sp =>
             sp.GetRequiredKeyedService<IEnvelopeMetadataRepository<TContract>>(databaseKey));
+        Idb.Libraries.Implementation.Extensions.RepositoryCompatibilityAlias.Record(services, typeof(TContract), databaseKey, aliasesBefore);
         return services;
     }
 

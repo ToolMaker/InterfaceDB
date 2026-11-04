@@ -311,12 +311,13 @@ namespace Idb.Libraries.Implementation.Extensions
                 (sp, _) => new SidecarFileWriteLock<TContract>(
                     sp.GetRequiredKeyedService<StoragePolicy>(databaseKey)));
             services.TryAddSingleton<IFilePublication>(PlatformFilePublication.Instance);
+            services.TryAddSingleton<IFileLeaseValidation>(PlatformFileLeaseValidation.Instance);
             services.TryAddKeyedSingleton<IFileWriteCoordinator>(internalKey, (sp, _) =>
                 new CoalescingFileWriteCoordinator<TContract>(
                     sp.GetRequiredKeyedService<IStorageWriteLock>(internalKey),
                     contractConfig,
                     sp.GetRequiredKeyedService<StoragePolicy>(databaseKey),
-                    sp.GetRequiredService<IFilePublication>()));
+                    sp.GetRequiredService<IFilePublication>(), sp.GetRequiredService<IFileLeaseValidation>()));
             services.TryAddKeyedSingleton<IEncryptionRotationOperation<TContract>>(
                 databaseKey,
                 (sp, key) => new FileSystemEncryptionRotationOperation<TContract>(
@@ -457,6 +458,7 @@ namespace Idb.Libraries.Implementation.Extensions
             bool hasMigrationStrategy)
             where TContract : class, IStoredContract<TContract>
         {
+            var aliasesBefore = services.ToHashSet();
             services.TryAddSingleton<IDbContractConfigDto<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IDbContractConfigDto<TContract>>(databaseKey));
             if (!hasUnkeyedCustomFactory)
@@ -512,6 +514,7 @@ namespace Idb.Libraries.Implementation.Extensions
                 (IRepositoryNotifications<TContract>)sp.GetRequiredService<IRepository<TContract>>());
             services.TryAddSingleton<IEnvelopeMetadataRepository<TContract>>(sp =>
                 sp.GetRequiredKeyedService<IEnvelopeMetadataRepository<TContract>>(databaseKey));
+            RepositoryCompatibilityAlias.Record(services, typeof(TContract), databaseKey, aliasesBefore);
         }
 
         private static bool TryAddRegistrationMarker<TContract>(

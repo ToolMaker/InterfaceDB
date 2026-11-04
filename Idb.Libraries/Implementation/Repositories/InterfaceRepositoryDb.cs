@@ -20,7 +20,7 @@ namespace Idb.Libraries.Implementation.Repositories;
 /// Repository facade that delegates persistence operations to the injected <see cref="IIndexManager{TContract}"/>.
 /// </summary>
 /// <typeparam name="TContract">Contract interface serviced by this repository.</typeparam>
-public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataRepository<TContract>, IRepositoryNotifications<TContract>, IRevisionEditingRepository<TContract>, IDisposable
+public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataRepository<TContract>, IEnvelopeImportRepository<TContract>, IRepositoryNotifications<TContract>, IRevisionEditingRepository<TContract>, IDisposable
     where TContract : class, IStoredContract<TContract>
 {
     private readonly IIndexManager<TContract> _indexManager;
@@ -123,8 +123,21 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
             ? throw new NotSupportedException("Detached updates require an explicit expected revision. Use the EnvelopeWriteCondition overload.")
             : SaveWithExtensionMetadataAsync(detachedEntity, null, extensionMetadata, new EnvelopeWriteCondition(0), cancellationToken);
 
-    public async ValueTask<TContract> SaveWithExtensionMetadataAsync(TContract detachedEntity, string? existingEnvelopeCacheKey,
+    public ValueTask<TContract> SaveWithExtensionMetadataAsync(TContract detachedEntity, string? existingEnvelopeCacheKey,
         byte[]? extensionMetadata, EnvelopeWriteCondition condition, CancellationToken cancellationToken = default)
+        => SaveWithExtensionMetadataCoreAsync(detachedEntity, existingEnvelopeCacheKey, extensionMetadata, condition, true, cancellationToken);
+
+    public ValueTask<TContract> ImportWithoutNotificationsAsync(TContract detachedEntity, string physicalKey,
+        long revision, byte[]? extensionMetadata, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(physicalKey);
+        if (revision <= 0) throw new ArgumentOutOfRangeException(nameof(revision));
+        return SaveWithExtensionMetadataCoreAsync(detachedEntity, physicalKey, extensionMetadata,
+            new EnvelopeWriteCondition(0, EnvelopeRevisionAction.Import, revision, ExpectedMissing: true), false, cancellationToken);
+    }
+
+    private async ValueTask<TContract> SaveWithExtensionMetadataCoreAsync(TContract detachedEntity, string? existingEnvelopeCacheKey,
+        byte[]? extensionMetadata, EnvelopeWriteCondition condition, bool publishNotifications, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(condition);
         ArgumentNullException.ThrowIfNull(detachedEntity);
@@ -142,7 +155,9 @@ public sealed class InterfaceRepositoryDb<TContract> : IEnvelopeMetadataReposito
         var staged = _envelopeMetadataStager.Stage(detachedEntity, existingEnvelopeCacheKey, extensionMetadata);
         if (existing is not null) staged.Location = existing.Location;
         EnvelopeWriteCoordinator<TContract>.SetCondition(staged, condition);
-        return await SaveAsync(detachedEntity, cancellationToken).ConfigureAwait(false);
+        return _notifications is null
+            ? await _indexManager.SaveAsync(detachedEntity, cancellationToken).ConfigureAwait(false)
+            : await _notifications.SaveAsync(detachedEntity, _observedSave!, cancellationToken, publishNotifications).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<TContract>> SaveManyAsync(

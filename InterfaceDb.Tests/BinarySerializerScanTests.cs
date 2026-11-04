@@ -12,6 +12,27 @@ namespace InterfaceDb.Tests;
 [TestClass]
 public sealed class BinarySerializerScanTests
 {
+    [TestMethod]
+    public void CanonicalEncodingOmitsBuildIdentityButRetainsRuntimeTypeMetadataAndEveryPayloadByte()
+    {
+        var serializer = new BinaryObjectSerializer<Record>();
+        var normal = serializer.Serialize(Envelope());
+        var canonical = serializer.SerializeCanonical(Envelope());
+        var stored = new MessagePackReader(normal.AsMemory(12));
+        var stable = new MessagePackReader(canonical.AsMemory(12));
+        Assert.AreEqual(stored.ReadString(), stable.ReadString());
+        Assert.AreEqual(stored.ReadString(), stable.ReadString());
+        var storedType = stored.ReadString(); var stableType = stable.ReadString();
+        StringAssert.Contains(storedType!, "Version=");
+        Assert.AreEqual(typeof(Record).FullName + "," + typeof(Record).Assembly.GetName().Name, stableType);
+        CollectionAssert.AreEqual(normal.AsSpan(0, 12).ToArray(), canonical.AsSpan(0, 12).ToArray());
+        CollectionAssert.AreEqual(normal.AsSpan(12 + (int)stored.Consumed).ToArray(), canonical.AsSpan(12 + (int)stable.Consumed).ToArray());
+        var changed = Envelope(); changed.ObjectInstance!.Payload[0] = 99;
+        Assert.IsFalse(canonical.SequenceEqual(serializer.SerializeCanonical(changed)));
+        changed = Envelope(new OtherRecord { Id = "record", Payload = [1, 2, 3] });
+        Assert.IsFalse(canonical.SequenceEqual(serializer.SerializeCanonical(changed)));
+    }
+
     private static FileObjectEnvelope<Record> Envelope(Record? record = null) => new()
     {
         EnvelopeCacheKey = "record-0", VersionTag = "1.2.3", RevisionTimestampUtcMicroseconds = 37,

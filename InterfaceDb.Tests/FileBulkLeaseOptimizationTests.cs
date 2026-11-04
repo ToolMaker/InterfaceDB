@@ -15,6 +15,67 @@ namespace InterfaceDb.Tests;
 public sealed class FileBulkLeaseOptimizationTests
 {
     [TestMethod]
+    public async Task UnsupportedLeasesFailBeforeReclaimingOrWriting()
+    {
+        await using var environment = new TestEnvironment();
+        var marker = Path.Combine(environment.Root, ".idb-migration.lock");
+        await File.WriteAllTextAsync(marker, "owned by another process");
+        var validation = new RejectLeases();
+        var coordinator = environment.CreateCoordinator(validation);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => coordinator.AcquireMigrationScopeAsync().AsTask());
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => coordinator.CommitEnvelopeAsync(
+            Path.Combine(environment.Root, "new.mpk"), false, (_, _, _) => throw new AssertFailedException("Must not write.")).AsTask());
+        Assert.AreEqual("owned by another process", await File.ReadAllTextAsync(marker));
+        Assert.AreEqual(2, validation.Attempts, "A failed capability check must never be cached as successful.");
+    }
+
+    [TestMethod]
+    public async Task ExclusiveHandleProbeUsesOnlyItsOwnedFile()
+    {
+        await using var environment = new TestEnvironment();
+        var existing = Path.Combine(environment.Root, "unrelated");
+        await File.WriteAllTextAsync(existing, "keep");
+        PlatformFileLeaseValidation.Instance.RequireExclusiveHandles(environment.Root);
+        Assert.IsEmpty(Directory.GetFiles(environment.Root, ".idb-lock-probe-*"));
+        Assert.AreEqual("keep", await File.ReadAllTextAsync(existing));
+    }
+
+    private sealed class RejectLeases : IFileLeaseValidation
+    {
+        public int Attempts { get; private set; }
+        public void RequireExclusiveHandles(string directory)
+        { Attempts++; throw new NotSupportedException("Injected unsupported locking."); }
+    }
+
+    [TestMethod]
+    public async Task RecentAbandonedMigrationLeaseIsRecoveredWithoutWaitingForAge()
+    {
+        await using var environment = new TestEnvironment();
+        await File.WriteAllTextAsync(Path.Combine(environment.Root, ".idb-migration.lock"), "legacy abandoned lease");
+        await File.WriteAllTextAsync(Path.Combine(environment.Root, ".idb-writer.abandoned.lock"), "legacy abandoned writer");
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await using (await environment.CreateCoordinator().AcquireMigrationScopeAsync(stop.Token))
+            Assert.IsFalse(File.Exists(Path.Combine(environment.Root, ".idb-writer.abandoned.lock")));
+        Assert.IsFalse(File.Exists(Path.Combine(environment.Root, ".idb-migration.lock")));
+    }
+
+    [TestMethod]
+    public async Task LiveLegacyLeaseIsNeverReclaimedEvenWhenItsTimestampIsOld()
+    {
+        await using var environment = new TestEnvironment();
+        var path = Path.Combine(environment.Root, ".idb-migration.lock");
+        await File.WriteAllTextAsync(path, "legacy live lease");
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddDays(-2));
+        await using (var legacy = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            await Assert.ThrowsAsync<OperationCanceledException>(() => environment.CreateCoordinator().AcquireMigrationScopeAsync(stop.Token).AsTask());
+            Assert.IsTrue(File.Exists(path));
+        }
+        await using var recovered = await environment.CreateCoordinator().AcquireMigrationScopeAsync();
+    }
+
+    [TestMethod]
     public async Task DurableBulkWritesShareOneLeasePerBoundedWindow()
     {
         await using var environment = new TestEnvironment();
@@ -219,8 +280,8 @@ public sealed class FileBulkLeaseOptimizationTests
             Coordinator = CreateCoordinator();
         }
 
-        public CoalescingFileWriteCoordinator<Record> CreateCoordinator()
-            => new(new SidecarFileWriteLock<Record>(Policy), _config, Policy);
+        public CoalescingFileWriteCoordinator<Record> CreateCoordinator(IFileLeaseValidation? validation = null)
+            => new(new SidecarFileWriteLock<Record>(Policy), _config, Policy, null, validation);
 
         public FileObjectWriter<Record> CreateWriter(IObjectSerializer<Record> serializer)
             => new(serializer, new Lifecycle(Root), _config, Policy,

@@ -23,6 +23,7 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
     IPhysicalEnvelopeLookup,
     ICachedEnvelopeSource<TContract>,
     ICommittedEnvelopeSnapshotSource<TContract>,
+    ICommittedEnvelopeInventory<TContract>,
     IRetainedVersionStore<TContract>,
     IBatchedEnvelopeRepository<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>,
@@ -150,6 +151,9 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
             throw new NotSupportedException("The configured reader cannot capture committed notification values.");
         return reader.CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
     }
+
+    public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateCommittedIdentitiesAsync(CancellationToken cancellationToken = default)
+        => EnumerateSkeletonsAsync(_dataRoot, cancellationToken);
 
     public async ValueTask<bool> ExistsPhysicalAsync(string physicalKey, CancellationToken cancellationToken = default)
     {
@@ -642,7 +646,17 @@ public abstract class FileEnvelopeRepositoryBase<TContract> :
         if (instance is null && !string.IsNullOrWhiteSpace(currentEnvelope.Location))
         {
             var file = new FileInfo(currentEnvelope.Location);
-            var hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false);
+            TContract hydrated;
+            try { hydrated = await ReaderAndWriter.Reader.ReadAsync(file, cancellationToken).ConfigureAwait(false); }
+            catch (FileNotFoundException missing) when (
+                string.Equals(missing.FileName, file.FullName, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+                && Directory.Exists(file.DirectoryName))
+            {
+                // Catalog/key snapshots do not pin an unopened file. A committed delete may
+                // remove this payload before hydration. Already materialized results remain
+                // unchanged; missing directories, dependencies and other I/O errors still fail.
+                return null;
+            }
             isolatedRead = ReaderAndWriter.Reader is IIsolatedObjectReader<TContract>;
             instance = hydrated;
             var hydratedEnvelope = hydrated.Envelope;

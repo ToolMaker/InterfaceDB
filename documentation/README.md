@@ -1,7 +1,7 @@
 # InterfaceDB Documentation
 
-Published preview.15: [release and upgrade notes](preview15-release-notes.md) and
-[verification receipt](preview15-validation.md). Previous preview.14: [receipt](preview14-validation.md).
+Preview.16 candidate: [release and upgrade notes](preview16-release-notes.md) and
+[verification status](preview16-validation.md). Previous preview.15: [receipt](preview15-validation.md).
 
 Start with these documents:
 

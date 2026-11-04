@@ -134,7 +134,8 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             : entity.Envelope is { } envelope && cache.Find(envelope.EnvelopeCacheKey) is { } snapshot
             ? ValueTask.FromResult<ICommittedEnvelopeSnapshot<T>?>(snapshot) : Capture(entity, token);
 
-    internal async ValueTask<T> SaveAsync(T entity, Func<T, CancellationToken, ValueTask<T>> save, CancellationToken token)
+    internal async ValueTask<T> SaveAsync(T entity, Func<T, CancellationToken, ValueTask<T>> save, CancellationToken token,
+        bool publishNotifications = true)
     {
         ArgumentNullException.ThrowIfNull(entity);
         var (phase, subscribers) = Enter();
@@ -147,7 +148,7 @@ internal sealed class RepositoryNotificationHub<T> : IDisposable where T : class
             if (phase.Cache is not { } cache) return await save(entity, token).ConfigureAwait(false);
             lease = await _mutations.AcquireAsync(entity, token).ConfigureAwait(false);
             await _initialize(token).ConfigureAwait(false);
-            var observe = subscribers.Any(item => item.Kind != RepositoryEventKind.Deleted && item.Accepts(NotificationWriteContext.Current));
+            var observe = publishNotifications && subscribers.Any(item => item.Kind != RepositoryEventKind.Deleted && item.Accepts(NotificationWriteContext.Current));
             if (!observe) { cache.Forget(entity); return await save(entity, token).ConfigureAwait(false); }
             _comparison?.ValidateRuntime(entity);
             var before = await Before(entity, cache, token).ConfigureAwait(false);

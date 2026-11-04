@@ -12,7 +12,7 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// <summary>
 /// Binary serializer (MessagePack-backed) that produces compact payloads compatible across contract versions.
 /// </summary>
-public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerializer<TContract>
+public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerializer<TContract>, ICanonicalObjectSerializer<TContract>
     where TContract : class, IStoredContract<TContract>
 {
     private const string DefaultExtension = ".mpk";
@@ -96,6 +96,17 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
     //}
 
     public byte[] Serialize(IObjectEnvelope<TContract> obj)
+        => SerializeCore(obj, canonical: false);
+
+    public byte[] SerializeCanonical(IObjectEnvelope<TContract> obj)
+        => SerializeCore(obj, canonical: true);
+
+    private static string StableTypeIdentity(Type type)
+        => type.IsArray ? StableTypeIdentity(type.GetElementType()!) + "[" + new string(',', type.GetArrayRank() - 1) + "]"
+            : type.IsGenericType ? type.GetGenericTypeDefinition().FullName + "[" + string.Join(";", type.GetGenericArguments().Select(StableTypeIdentity)) + "]," + type.Assembly.GetName().Name
+            : type.FullName + "," + type.Assembly.GetName().Name;
+
+    private byte[] SerializeCore(IObjectEnvelope<TContract> obj, bool canonical)
     {
         if (obj is null)
         {
@@ -123,7 +134,7 @@ public sealed class BinaryObjectSerializer<TContract> : IRevisionObjectSerialize
 
         writer.Write(version);
         writer.Write(cacheKey);
-        writer.Write(typeInfo.TypeName);
+        writer.Write(canonical ? StableTypeIdentity(runtimeType) : typeInfo.TypeName);
         writer.Write(obj.CacheObjectInstance);
         MessagePackSerializer.Serialize(ref writer, obj.EncryptedFields, _fastOptions);
         MessagePackSerializer.Serialize(ref writer, obj.ExtensionMetadata, _extensionMetadataOptions);

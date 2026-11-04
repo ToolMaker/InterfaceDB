@@ -4,14 +4,14 @@ namespace Idb.Libraries.Implementation.Serialization;
 /// Resolves path identity for the configured storage volume rather than assuming that every
 /// volume mounted by one operating system has the same case behavior.
 /// </summary>
-internal static class FileSystemPathIdentity
+public static class FileSystemPathIdentity
 {
     private const int MaximumCachedRoots = 256;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<
         string,
         Lazy<StringComparer>> Comparers = new(StringComparer.Ordinal);
 
-    internal static StringComparer ResolveComparer(string? storageRoot)
+    public static StringComparer ResolveComparer(string? storageRoot)
     {
         if (string.IsNullOrWhiteSpace(storageRoot))
         {

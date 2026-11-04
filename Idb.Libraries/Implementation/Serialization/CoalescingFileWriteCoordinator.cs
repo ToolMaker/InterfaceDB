@@ -20,6 +20,8 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     private readonly IStorageWriteLock _storageWriteLock;
     private readonly StoragePolicy _storagePolicy;
     private readonly IFilePublication _publication;
+    private readonly IFileLeaseValidation _leaseValidation;
+    private bool _leasesValidated;
     private readonly string _storageRoot;
     private readonly StringComparer _pathComparer;
     private readonly HashSet<string> _durableDirectories = new(StringComparer.Ordinal);
@@ -139,6 +141,14 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         IStorageWriteLock storageWriteLock,
         IDbContractConfigDto<TContract> contractConfig,
         StoragePolicy storagePolicy, IFilePublication? publication)
+        : this(storageWriteLock, contractConfig, storagePolicy, publication, null)
+    {
+    }
+
+    public CoalescingFileWriteCoordinator(
+        IStorageWriteLock storageWriteLock,
+        IDbContractConfigDto<TContract> contractConfig,
+        StoragePolicy storagePolicy, IFilePublication? publication, IFileLeaseValidation? leaseValidation)
     {
         _publication = publication ?? PlatformFilePublication.Instance;
         _storageWriteLock = storageWriteLock ?? throw new ArgumentNullException(nameof(storageWriteLock));
@@ -146,6 +156,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         _storageRoot = Path.GetFullPath(contractConfig?.DataRoot
             ?? throw new InvalidOperationException("Contract configuration must supply a DataRoot directory."));
         EnsureStorageDirectory(_storageRoot);
+        _leaseValidation = leaseValidation ?? PlatformFileLeaseValidation.Instance;
         _pathComparer = FileSystemPathIdentity.ResolveComparer(_storageRoot);
     }
 
@@ -169,6 +180,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(_storageRoot);
+        ValidateLeaseSupport();
         var migrationLockPath = Path.Combine(_storageRoot, ".idb-migration.lock");
         var migrationLock = await AcquireExclusiveLeaseAsync(migrationLockPath, cancellationToken).ConfigureAwait(false);
 
@@ -549,6 +561,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     private async ValueTask<IAsyncDisposable> AcquireWriterLeaseAsync(CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_storageRoot);
+        ValidateLeaseSupport();
         var migrationLockPath = Path.Combine(_storageRoot, ".idb-migration.lock");
         var deadline = DateTimeOffset.UtcNow + _storagePolicy.NormalizedWriteLockTimeout;
 
@@ -580,6 +593,17 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
         }
     }
 
+    private void ValidateLeaseSupport()
+    {
+        if (Volatile.Read(ref _leasesValidated)) return;
+        lock (_directoryGate)
+        {
+            if (_leasesValidated) return;
+            _leaseValidation.RequireExclusiveHandles(_storageRoot);
+            Volatile.Write(ref _leasesValidated, true);
+        }
+    }
+
     private async ValueTask<IAsyncDisposable> AcquireExclusiveLeaseAsync(
         string lockPath,
         CancellationToken cancellationToken)
@@ -596,7 +620,7 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
                     FileAccess.ReadWrite,
                     FileShare.None,
                     bufferSize: 1,
-                    FileOptions.None);
+                    FileOptions.DeleteOnClose);
                 return new FileLease(lockPath, stream);
             }
             catch (IOException)
@@ -631,15 +655,11 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
     {
         try
         {
-            var info = new FileInfo(path);
-            if (info.Exists
-                && DateTimeOffset.UtcNow - info.LastWriteTimeUtc >= _storagePolicy.NormalizedStaleWriteLockTimeout)
-            {
-                using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                {
-                }
-                File.Delete(path);
-            }
+            // Every supported writer holds FileShare.None for the lease lifetime. An
+            // exclusive open proves the holder is gone, irrespective of wall-clock age.
+            // Delete while still owning the handle; never close then unlink a replacement.
+            using var abandoned = new FileStream(path, FileMode.Open, FileAccess.ReadWrite,
+                FileShare.None, 1, FileOptions.DeleteOnClose);
         }
         catch
         {
@@ -730,13 +750,11 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
 
     private sealed class FileLease : IAsyncDisposable
     {
-        private readonly string _path;
         private readonly FileStream _stream;
         private int _disposed;
 
         public FileLease(string path, FileStream stream)
         {
-            _path = path;
             _stream = stream;
         }
 
@@ -748,7 +766,6 @@ public sealed class CoalescingFileWriteCoordinator<TContract> : IConditionalFile
             }
 
             await _stream.DisposeAsync().ConfigureAwait(false);
-            TryDelete(_path);
         }
     }
 

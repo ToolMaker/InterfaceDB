@@ -15,6 +15,7 @@ internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     ICachedEnvelopeSource<TContract>,
     IBatchedEnvelopeRepository<TContract>,
     ICommittedEnvelopeSnapshotSource<TContract>,
+    ICommittedEnvelopeInventory<TContract>,
     IRetainedVersionStore<TContract>,
     IEnvelopeRepositoryInitializationStream<TContract>
     where TContract : class, IStoredContract<TContract>
@@ -39,6 +40,9 @@ internal sealed class FileEnvelopeRepositoryFacade<TContract> :
     public ValueTask<ICommittedEnvelopeSnapshot<TContract>?> CaptureCommittedAsync(
         IObjectEnvelope<TContract> identity, int maximumBytes, CancellationToken cancellationToken = default) =>
         ((ICommittedEnvelopeSnapshotSource<TContract>)_repository).CaptureCommittedAsync(identity, maximumBytes, cancellationToken);
+
+    public IAsyncEnumerable<IObjectEnvelope<TContract>> EnumerateCommittedIdentitiesAsync(CancellationToken cancellationToken = default)
+        => ((ICommittedEnvelopeInventory<TContract>)_repository).EnumerateCommittedIdentitiesAsync(cancellationToken);
 
     public IEnumerable<KeyValuePair<string, TContract>> EnumerateCachedObjects()
         => ((ICachedEnvelopeSource<TContract>)_repository).EnumerateCachedObjects();

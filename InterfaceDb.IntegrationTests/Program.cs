@@ -22,6 +22,33 @@ using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 
+if (args is ["--lease-guard", var leaseOperation, var leaseRoot])
+{
+    try
+    {
+        if (leaseOperation == "migration")
+        {
+            var config = new LockTestOptions(leaseRoot);
+            var policy = config.StoragePolicy!;
+            var coordinator = new CoalescingFileWriteCoordinator<ILockTestRecord>(new SidecarFileWriteLock<ILockTestRecord>(policy), config, policy);
+            await using var lease = await coordinator.AcquireMigrationScopeAsync();
+        }
+        else if (leaseOperation == "write")
+        {
+            await using var provider = BuildProvider(leaseRoot);
+            await provider.GetRequiredService<IRepository<ILockTestRecord>>().SaveAsync(new LockTestRecord { Id = "lease-probe", Value = "value" });
+        }
+        else throw new ArgumentException("Unknown lease operation.");
+        Console.WriteLine("LEASE_SUPPORTED");
+        return 0;
+    }
+    catch (NotSupportedException error)
+    {
+        Console.WriteLine("LEASE_REJECTED: " + error.Message);
+        return 3;
+    }
+}
+
 if (args is ["--child", var dataRoot, var gatePath, var readyPath, var writerName])
 {
     await RunChildWriterAsync(dataRoot, gatePath, readyPath, writerName).ConfigureAwait(false);
