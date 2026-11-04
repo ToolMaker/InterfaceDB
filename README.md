@@ -1,7 +1,8 @@
 # InterfaceDB
 
-**Preview.18** adds TCP contract discovery and an optional Protobuf package.
-See the [release and upgrade notes](documentation/preview18-release-notes.md).
+**Preview.18 is available on NuGet.** It adds TCP contract discovery and an optional Protobuf package.
+See the [release and upgrade notes](documentation/preview18-release-notes.md)
+and [publication verification](documentation/preview18-validation.md).
 
 Preview.17 made every implemented module available under MIT,
 including Atlas, local/remote and peer repositories, storage migration and conflict resolution.

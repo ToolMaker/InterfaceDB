@@ -3,6 +3,7 @@
 ## All modules are MIT licensed
 
 - [Preview.18 packages and upgrade guide](preview18-release-notes.md)
+- [Preview.18 validation and publication](preview18-validation.md)
 - [Preview.17 packages and upgrade guide](preview17-release-notes.md)
 - [Validation and publication status](preview17-validation.md)
 - [Local remote repositories](local-remote-repositories.md)
