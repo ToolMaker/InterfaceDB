@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>InterfaceDB.Commercial.Transport.Tests</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/InterfaceDB.Transport.Repositories/InterfaceDB.Transport.Repositories.csproj" />
+    <ProjectReference Include="../../src/InterfaceDB.Transport.Atlas/InterfaceDB.Transport.Atlas.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Include="MSTest.TestAdapter" Version="4.5.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="4.5.1" />
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/FrameCodecTests.cs" Link="Public/FrameCodecTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/DataAccessPolicyTests.cs" Link="Public/DataAccessPolicyTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/ContractDataAccessPolicyTests.cs" Link="Public/ContractDataAccessPolicyTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/PartitionKeyIndexTests.cs" Link="Public/PartitionKeyIndexTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/JwtTransportTests.cs" Link="Public/JwtTransportTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/RemoteSchemaCompatibilityTests.cs" Link="Public/RemoteSchemaCompatibilityTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/SegmentCoreEncodedStoreTests.cs" Link="Public/SegmentCoreEncodedStoreTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositoryFixtures.cs" Link="Public/TcpRepositoryFixtures.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositoryRecoveryTests.cs" Link="Public/TcpRepositoryRecoveryTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositorySerializerTests.cs" Link="Public/TcpRepositorySerializerTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositorySubscriptionTests.cs" Link="Public/TcpRepositorySubscriptionTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositoryTests.cs" Link="Public/TcpRepositoryTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpRepositoryVersionTests.cs" Link="Public/TcpRepositoryVersionTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TcpTransportTests.cs" Link="Public/TcpTransportTests.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TestCertificates.cs" Link="Public/TestCertificates.cs" />
+    <Compile Include="../../InterfaceDB.Transport.Tests/TransportBoundaryTests.cs" Link="Public/TransportBoundaryTests.cs" />
+  </ItemGroup>
+</Project>

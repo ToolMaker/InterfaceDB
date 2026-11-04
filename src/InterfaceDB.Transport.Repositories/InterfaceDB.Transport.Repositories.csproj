@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>InterfaceDB.Commercial.Transport</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <RootNamespace>Idb.Transport</RootNamespace>
+    <Description>TLS TCP adapters for InterfaceDB server-managed local/remote repositories and peer relay synchronization.</Description>
+    <PackageTags>interfacedb;database;repository;storage</PackageTags>
+    <PackageId>InterfaceDB.Transport.Repositories</PackageId>
+    <Version>1.0.0-preview.17</Version>
+    <Authors>ToolMaker</Authors>
+    <Copyright>Copyright (c) 2026 Ernie Gunning</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 17 makes all implemented InterfaceDB modules available under MIT, preserves existing assembly and storage identities, and supports explicit same-label storage migration. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/preview17-release-notes.md</PackageReleaseNotes>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../InterfaceDB.Repositories/InterfaceDB.Repositories.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../InterfaceDB.Transport/InterfaceDB.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="README.md" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="" />
+  </ItemGroup>
+</Project>

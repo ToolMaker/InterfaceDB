@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InterfaceDB</PackageId>
-    <Version>1.0.0-preview.16</Version>
+    <Version>1.0.0-preview.17</Version>
     <Authors>ToolMaker</Authors>
     <Description>Interface-first object repository and embedded object database for .NET 10.</Description>
     <PackageTags>interfacedb;repository;object-database;embedded-database;android;ios;maccatalyst</PackageTags>
@@ -13,7 +13,7 @@
     <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 16 fixes File read/delete races and adds validated file leases, committed imports without application notification echoes, canonical integrity serialization, fresh committed inventories and composition capability gates. Existing data formats, durability, conflict protection and normal notifications are preserved. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.16/documentation/preview16-release-notes.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Preview 17 makes all implemented InterfaceDB modules available under MIT, preserves existing assembly and storage identities, and supports explicit same-label storage migration. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/preview17-release-notes.md</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,4 +27,7 @@
     <None Update="README.md" Pack="true" PackagePath="README.md" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="../LICENSE" Pack="true" PackagePath="" />
+  </ItemGroup>
 </Project>

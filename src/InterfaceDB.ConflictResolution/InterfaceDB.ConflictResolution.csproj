@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable><GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <AssemblyName>InterfaceDB.Commercial.ConflictResolution</AssemblyName>
+    <Description>Three-way merge strategy for retained InterfaceDB editing sessions.</Description>
+    <PackageTags>interfacedb;database;repository;storage</PackageTags>
+    <PackageId>InterfaceDB.ConflictResolution</PackageId>
+    <Version>1.0.0-preview.17</Version>
+    <Authors>ToolMaker</Authors>
+    <Copyright>Copyright (c) 2026 Ernie Gunning</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 17 makes all implemented InterfaceDB modules available under MIT, preserves existing assembly and storage identities, and supports explicit same-label storage migration. Upgrade guide: https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/preview17-release-notes.md</PackageReleaseNotes>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../Idb.Libraries/Idb.Libraries.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="README.md" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="" />
+  </ItemGroup>
+</Project>

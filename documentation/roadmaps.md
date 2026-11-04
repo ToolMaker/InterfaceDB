@@ -1,5 +1,17 @@
 # InterfaceDB Roadmap
 
+## Preview.17: unified MIT distribution
+
+All active storage, authentication, transport, repository composition, peer synchronization,
+provider migration and conflict-resolution modules are now in this repository under MIT.
+Package boundaries remain optional dependencies, not license tiers. See the
+[package guide](preview17-release-notes.md) and [voluntary sponsorship](../SPONSORING.md).
+
+gRPC, adaptive Atlas tuning, optional TCP pooling, historical stage reclamation and
+broader device/power-loss qualification remain future work. This distribution change
+does not implement them or weaken current correctness requirements.
+
+
 ## Preview.11: direct TCP access
 
 The MIT source now includes an online TCP connector, JWT authentication, a runnable host and
@@ -249,7 +261,7 @@ A vector index is not a replacement for literal substring search. Each family ne
 
 ## Priority 4: Security And Operations
 
-### Pre-Stable Security Hardening Status — 30 September 2026
+### Pre-Stable Security Hardening Status â€” 30 September 2026
 
 Preview.9 closes the current source-level hardening items below. Each completed item has focused
 regression coverage in the public test projects; final package publication still runs the normal

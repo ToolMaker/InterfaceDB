@@ -1,0 +1,12 @@
+[
+  "InterfaceDb.Tests/InterfaceDb.Tests.csproj",
+  "Idb.Analyzers.Tests/Idb.Analyzers.Tests.csproj",
+  "InterfaceDB.Storage.SegmentCore.Tests/InterfaceDB.Storage.SegmentCore.Tests.csproj",
+  "InterfaceDB.Authentication.Tests/InterfaceDB.Authentication.Tests.csproj",
+  "InterfaceDB.Transport.Tests/InterfaceDB.Transport.Tests.csproj",
+  "tests/InterfaceDB.Repositories.Tests/InterfaceDB.Repositories.Tests.csproj",
+  "tests/InterfaceDB.ConflictResolution.Tests/InterfaceDB.ConflictResolution.Tests.csproj",
+  "tests/InterfaceDB.StorageMigrations.Tests/InterfaceDB.StorageMigrations.Tests.csproj",
+  "tests/InterfaceDB.Storage.Atlas.Tests/InterfaceDB.Storage.Atlas.Tests.csproj",
+  "tests/InterfaceDB.Transport.Repositories.Tests/InterfaceDB.Transport.Repositories.Tests.csproj"
+]

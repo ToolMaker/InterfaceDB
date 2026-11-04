@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>InterfaceDB.Storage.Atlas.CrashHost</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/InterfaceDB.Storage.Atlas/InterfaceDB.Storage.Atlas.csproj" /></ItemGroup>
+</Project>

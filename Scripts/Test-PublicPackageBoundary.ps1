@@ -1,17 +1,16 @@
 param(
     [string] $PackageDirectory = 'artifacts/packages',
-    [string] $Version = '1.0.0-preview.16'
+    [string] $Version = '1.0.0-preview.17'
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$expected = @{
-    'InterfaceDB' = 'Idb.Libraries.dll'
-    'InterfaceDB.Storage.SegmentCore' = 'InterfaceDB.Storage.SegmentCore.dll'
-    'InterfaceDB.Authentication' = 'InterfaceDB.Authentication.dll'
-    'InterfaceDB.Transport' = 'InterfaceDB.Transport.dll'
+$expected = @{}
+foreach ($project in (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'PackageProjects.json') -Raw | ConvertFrom-Json)) {
+    $expected[$project.id] = $project.assembly
 }
-$allowedDependencies = @('InterfaceDB', 'InterfaceDB.Storage.SegmentCore', 'InterfaceDB.Authentication', 'MessagePack', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'Microsoft.Extensions.Logging.Abstractions', 'Microsoft.IdentityModel.JsonWebTokens', 'RadixForge', 'System.IO.Hashing')
+$allowedDependencies = @($expected.Keys) + @('MessagePack', 'Microsoft.Extensions.DependencyInjection', 'Microsoft.Extensions.DependencyInjection.Abstractions', 'Microsoft.Extensions.Logging.Abstractions', 'Microsoft.IdentityModel.JsonWebTokens', 'RadixForge', 'System.IO.Hashing')
+$licenseText = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '../LICENSE') -Raw).Replace("`r`n", "`n").Trim()
 $packages = @(Get-ChildItem -LiteralPath $PackageDirectory -Filter '*.nupkg' -File)
 if ($packages.Count -ne $expected.Count) { throw "Expected exactly $($expected.Count) public packages, found $($packages.Count)." }
 $seen = @{}
@@ -36,13 +35,26 @@ foreach ($package in $packages) {
         }
         foreach ($dependency in $metadata.dependencies.group.dependency) {
             if ([string] $dependency.id -notin $allowedDependencies) { throw "Unexpected dependency in ${id}: $($dependency.id)" }
+            if ($expected.ContainsKey([string] $dependency.id) -and [string] $dependency.version -notin @($Version, "[$Version, )", "[$Version]")) {
+                throw "Uncoordinated InterfaceDB dependency in ${id}: $($dependency.id) $($dependency.version)"
+            }
         }
         $readme = @($archive.Entries | Where-Object FullName -eq 'README.md')
         if ($readme.Count -ne 1) { throw "Expected one public README in $id." }
         $reader = [IO.StreamReader]::new($readme[0].Open())
         try { $readmeText = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        if ($readmeText -match '(?i)Atlas|InterfaceDB\.Commercial|ResilientRepository|ThreeWayMerge') {
-            throw "Private-product content found in the public README for $id."
+        if ($readmeText -match '(?i)\.codex-local|C:[/\\](Users|Code)|AVIATOR_FILE_TO_SEGMENT_HANDOFF') {
+            throw "Local-only content found in the public README for $id."
+        }
+        $license = @($archive.Entries | Where-Object FullName -eq 'LICENSE')
+        if ($license.Count -ne 1) { throw "Expected the standard MIT LICENSE in $id." }
+        $reader = [IO.StreamReader]::new($license[0].Open())
+        try { $packedLicense = $reader.ReadToEnd().Replace("`r`n", "`n").Trim() } finally { $reader.Dispose() }
+        if ($packedLicense -ne $licenseText) { throw "License text differs in $id." }
+        foreach ($entry in $archive.Entries) {
+            if ($entry.FullName -notmatch '^(lib/net10\.0/[^/]+\.dll|README\.md|LICENSE|[^/]+\.nuspec|\[Content_Types\]\.xml|_rels/\.rels|package/services/metadata/core-properties/[^/]+\.psmdcp|\.signature\.p7s)$') {
+                throw "Unexpected package content in ${id}: $($entry.FullName)"
+            }
         }
         Write-Host "Verified public package: $id $Version (MIT; one allowed assembly)."
     } finally { $archive.Dispose() }

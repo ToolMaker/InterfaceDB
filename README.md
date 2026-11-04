@@ -1,12 +1,12 @@
 # InterfaceDB
 
-**Preview.16 published:** File read/delete correctness, validated file leases
-and provider-composition capabilities. All four public packages use `1.0.0-preview.16`.
-Existing formats, isolation, durable acknowledgements and committed-copy reads are preserved.
-See [release and upgrade notes](documentation/preview16-release-notes.md),
-[publication and verification status](documentation/preview16-validation.md),
-[policy integration](documentation/data-access-policies.md) and
-[measured costs](documentation/access-policy-production-20261028.md).
+**Preview.17 release preparation:** every implemented module is now MIT licensed,
+including Atlas, local/remote and peer repositories, storage migration and conflict resolution.
+The nine packages are versioned together. See the [package map and upgrade notes](documentation/preview17-release-notes.md)
+and [verification/publication status](documentation/preview17-validation.md).
+
+If InterfaceDB helps you or your business, please consider [sponsoring maintenance](SPONSORING.md).
+Sponsorship is optional and adds no conditions to the [MIT license](LICENSE).
 
 InterfaceDB is an interface-first object repository and embedded object database for .NET 10. Application code works with versioned interfaces and `IRepository<TContract>`; serialization, concrete types, storage providers, indexes, migrations, caching, concurrency, and encryption stay behind that boundary.
 
@@ -26,19 +26,19 @@ InterfaceDB is not an ORM. An ORM maps objects to a relational model. InterfaceD
 - Choose metadata-only, weak, or strong object caching per workload.
 - Use authenticated AES-GCM encryption, field-level encryption, and key rotation when configured.
 - Run locally without a database server or connection string.
-- Choose independent inspectable files or the high-throughput append-only SegmentCore provider.
+- Choose independent inspectable files, append-only SegmentCore, or prefix-partitioned Atlas storage.
 
 InterfaceDB is a strong fit for desktop applications, local-first tools, embedded application data, offline workloads, and systems where object-native persistence and architectural boundaries matter more than relational joins.
 
-It is not currently a replacement for a server database when you need distributed transactions, SQL joins, replication, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
+It is not currently a replacement for a server database when you need distributed transactions, SQL joins, distributed transactions across stores, or a persistent full-text/vector engine. See [Product Positioning](documentation/product-positioning.md).
 
-## Optional online TCP access — preview.11
+## Optional online TCP access â€” preview.11
 
 The MIT `InterfaceDB.Transport` connector uses `IRepository<T>` against one remote database,
 with TLS/JWT access and disposable pub/sub refresh hints. It creates no persistent client database
 and has no offline fallback or queued writes. The server owns its database files.
 `InterfaceDB.Authentication` provides the optional JWT/OIDC services; embedded users need neither package.
-Preview.11 adds these optional packages. See the [release notes](documentation/preview11-release-notes.md) and [validation status](documentation/preview11-validation.md).
+Basic online access is independent of optional local/remote composition and peer relay packages. See the [local/remote guide](documentation/local-remote-repositories.md), [managed setups](documentation/server-managed-setups.md) and [peer replication](documentation/peer-replicated-repository.md).
 See [online TCP integration](documentation/tcp-repository.md) and [hosting](documentation/tcp-transport.md).
 
 Preview.14 also includes [native database username/password authentication](documentation/native-account-authentication.md),
@@ -175,7 +175,7 @@ See [Getting Started](documentation/getting-started.md) for the complete `Person
 - Revision-checked writes and stale-write rejection, with legacy abandoned-proposal recovery.
 - Performance and Durable file-write modes.
 - Eager strict, eager tolerant, and lazy runtime migrations.
-- MessagePack `IDB6` envelopes with exact-match revision writes and backward reads for `IDB2`–`IDB5`.
+- MessagePack `IDB6` envelopes with exact-match revision writes and backward reads for `IDB2`â€“`IDB5`.
 - Frozen per-contract runtime-type allowlists enforced before object construction and serialization.
 - Whole-envelope and selected-field AES-GCM encryption, with context-bound `IDBE` version 3 writes.
 - Active and historical key handling, compare-before-replace rotation on read, and File-provider full-store rotation.
@@ -233,7 +233,7 @@ reopen, restore, and catalog rebuild. It finished with 10,500 fully compared obj
 or query mismatch. SegmentCore also exposes listener-disabled-by-default `System.Diagnostics.Metrics`
 for open stages, maintenance outcomes/latency, and storage sizes.
 
-The latest one-million-record storage-core scale A/B passed in both modes. Resident locators reopened in 927.2 ms and allocated 139.9 MiB; paged locators reopened in 42.6 ms and allocated 25.2 MiB—a 21.8x reopen improvement and 82.0% allocation reduction. Paging costs more checkpoint time and about 40% sampled raw-payload point-read throughput, so the default switches automatically at 100,000 live entries. These measurements do not include repository object materialization and are local engineering measurements, not universal rankings.
+The latest one-million-record storage-core scale A/B passed in both modes. Resident locators reopened in 927.2 ms and allocated 139.9 MiB; paged locators reopened in 42.6 ms and allocated 25.2 MiBâ€”a 21.8x reopen improvement and 82.0% allocation reduction. Paging costs more checkpoint time and about 40% sampled raw-payload point-read throughput, so the default switches automatically at 100,000 live entries. These measurements do not include repository object materialization and are local engineering measurements, not universal rankings.
 
 SegmentCore is not presented as a general SQLite replacement: SQLite has the lower measured provider-open cost, maintenance can dominate very large batches at deliberately short checkpoint intervals, and SegmentCore does not implement SQL joins, relational constraints, multiple writer processes, or cross-store transactions. Provider-open timings stop before first-result object materialization and must not be read as end-to-end query latency. The five-minute Windows raw-store mixed soak, current 30-second/12.6-million-operation raw-store rerun, ENOSPC-equivalent recovery, all 93 Linux-container SegmentCore tests, 20 direct Linux InterfaceDB tests, 49 Linux integration scenarios, provider migration, online backup/restore, compatibility enforcement, package upgrade, and a 35.65 GB raw-payload larger-than-memory gate pass. The full virtualized-Linux strict-durability benchmark was 5.4% faster than SQLite at p50; the desired 15% lead remains an advisory optimization target, not a release blocker. Actual physical power-cut evidence remains outstanding and gates stable `1.0.0`; bare-metal Linux/NVMe and cold-media measurements are lower-priority hardware-specific characterization.
 

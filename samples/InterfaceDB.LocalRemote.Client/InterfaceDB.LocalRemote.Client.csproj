@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>InterfaceDB.Commercial.Composition.Sample</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/InterfaceDB.Transport.Repositories/InterfaceDB.Transport.Repositories.csproj" />
+    <ProjectReference Include="../../samples/InterfaceDB.TcpRepository.Client/InterfaceDB.TcpRepository.Client.csproj" />
+  </ItemGroup>
+</Project>

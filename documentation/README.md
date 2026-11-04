@@ -1,5 +1,20 @@
 # InterfaceDB Documentation
 
+## All modules are MIT licensed
+
+- [Preview.17 packages and upgrade guide](preview17-release-notes.md)
+- [Validation and publication status](preview17-validation.md)
+- [Local remote repositories](local-remote-repositories.md)
+- [Server managed setups](server-managed-setups.md)
+- [Peer replicated repository](peer-replicated-repository.md)
+- [Storage migration](storage-migration.md)
+- [Storage migration legacy repair](storage-migration-legacy-repair.md)
+- [Storage migration retirement](storage-migration-retirement.md)
+- [Atlas storage provider](atlas-storage-provider.md)
+- [Conflict resolution](conflict-resolution.md)
+- [Voluntary sponsorship](../SPONSORING.md)
+
+
 Preview.16 published: [release and upgrade notes](preview16-release-notes.md) and
 [verification status](preview16-validation.md). Previous preview.15: [receipt](preview15-validation.md).
 
@@ -54,12 +69,12 @@ Use the focused guides when needed:
 - [Query Planning](query-planning.md): expression routing, cardinality estimates, intersections, unions, and residual predicates.
 - [Search Index Strategies](search-index-strategies.md): exact, range, prefix, suffix, and contains structures.
 - [Current Performance Results](performance-results.md): reproducible measurements and honest interpretation.
-- [Access-policy selection experiment — 28 October 2026](../experiments/AccessPolicySelection/README.md): isolated tenant-index trials, authorization invariants, cold/warm timings, memory and write costs.
-- [Access-policy production integration — 28 October 2026](access-policy-production-20261028.md): interface ownership criteria, bounded index integration, regression tests and production TCP/TLS/JWT measurements.
-- [SQL Performance Comparison — 20 October 2026](performance-sql-20261020.md): repeated full-repository SQLite/SQL Server comparison, before/current changes, ordinal string controls, and historical storage-core rerun.
-- [Review Follow-up — 20 October 2026](review-followup-20261020.md): regression-tested publication and notification fixes, the string-search analyzer, and controlled flush-strategy measurements.
-- [Committed Baseline Performance Check — 20 October 2026](performance-baseline-20261020.md): repeated before/current measurements after the final corrections, with reboot isolation, SQL controls, and a focused weak-cache follow-up.
-- [Performance Proposal Review and Three-Build Comparison — 20–21 October 2026](performance-proposal-review-20261020.md): committed-cache isolation and A1 measured separately against the baseline and SQL, including copying costs, allocations, slower cases and the superseded shared-cache assessment.
+- [Access-policy selection experiment â€” 28 October 2026](../experiments/AccessPolicySelection/README.md): isolated tenant-index trials, authorization invariants, cold/warm timings, memory and write costs.
+- [Access-policy production integration â€” 28 October 2026](access-policy-production-20261028.md): interface ownership criteria, bounded index integration, regression tests and production TCP/TLS/JWT measurements.
+- [SQL Performance Comparison â€” 20 October 2026](performance-sql-20261020.md): repeated full-repository SQLite/SQL Server comparison, before/current changes, ordinal string controls, and historical storage-core rerun.
+- [Review Follow-up â€” 20 October 2026](review-followup-20261020.md): regression-tested publication and notification fixes, the string-search analyzer, and controlled flush-strategy measurements.
+- [Committed Baseline Performance Check â€” 20 October 2026](performance-baseline-20261020.md): repeated before/current measurements after the final corrections, with reboot isolation, SQL controls, and a focused weak-cache follow-up.
+- [Performance Proposal Review and Three-Build Comparison â€” 20â€“21 October 2026](performance-proposal-review-20261020.md): committed-cache isolation and A1 measured separately against the baseline and SQL, including copying costs, allocations, slower cases and the superseded shared-cache assessment.
 - [Preview.6 Performance Snapshot](performance-preview6-20260905.md): historical complete-object SQLite comparison, repository timings, allocations and regressions.
 - [Preview.6 Release Notes](preview6-release-notes.md): changes, IDB5 compatibility and release qualification.
 - [SegmentCore Storage Provider](segment-core-storage-provider.md): installation, registration, atomic writes, paged locators, migration, online backup/restore, compatibility policy, qualification, performance, and supported boundaries.

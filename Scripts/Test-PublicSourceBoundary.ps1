@@ -20,8 +20,8 @@ foreach ($project in $projects) {
         if (!(Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "Missing public project reference: $resolved" }
     }
     foreach ($reference in $xml.SelectNodes('//PackageReference')) {
-        if ($reference.Include -match '^InterfaceDB\.(Commercial|Storage\.Atlas)') {
-            throw "Private dependency in public project: $($project.Name)"
+        if ($reference.Include -match '^InterfaceDB\.Commercial') {
+            throw "Obsolete private package dependency in public project: $($project.Name)"
         }
     }
 }

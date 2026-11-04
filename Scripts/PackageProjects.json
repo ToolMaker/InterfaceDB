@@ -1,0 +1,47 @@
+[
+  {
+    "id": "InterfaceDB",
+    "project": "Idb.Libraries/Idb.Libraries.csproj",
+    "assembly": "Idb.Libraries.dll"
+  },
+  {
+    "id": "InterfaceDB.Storage.SegmentCore",
+    "project": "InterfaceDB.Storage.SegmentCore/InterfaceDB.Storage.SegmentCore.csproj",
+    "assembly": "InterfaceDB.Storage.SegmentCore.dll"
+  },
+  {
+    "id": "InterfaceDB.Authentication",
+    "project": "InterfaceDB.Authentication/InterfaceDB.Authentication.csproj",
+    "assembly": "InterfaceDB.Authentication.dll"
+  },
+  {
+    "id": "InterfaceDB.Transport",
+    "project": "InterfaceDB.Transport/InterfaceDB.Transport.csproj",
+    "assembly": "InterfaceDB.Transport.dll"
+  },
+  {
+    "id": "InterfaceDB.Repositories",
+    "project": "src/InterfaceDB.Repositories/InterfaceDB.Repositories.csproj",
+    "assembly": "InterfaceDB.Commercial.Repositories.dll"
+  },
+  {
+    "id": "InterfaceDB.ConflictResolution",
+    "project": "src/InterfaceDB.ConflictResolution/InterfaceDB.ConflictResolution.csproj",
+    "assembly": "InterfaceDB.Commercial.ConflictResolution.dll"
+  },
+  {
+    "id": "InterfaceDB.Transport.Repositories",
+    "project": "src/InterfaceDB.Transport.Repositories/InterfaceDB.Transport.Repositories.csproj",
+    "assembly": "InterfaceDB.Commercial.Transport.dll"
+  },
+  {
+    "id": "InterfaceDB.Transport.Atlas",
+    "project": "src/InterfaceDB.Transport.Atlas/InterfaceDB.Transport.Atlas.csproj",
+    "assembly": "InterfaceDB.Commercial.Transport.Atlas.dll"
+  },
+  {
+    "id": "InterfaceDB.Storage.Atlas",
+    "project": "src/InterfaceDB.Storage.Atlas/InterfaceDB.Storage.Atlas.csproj",
+    "assembly": "InterfaceDB.Storage.AtlasCore.dll"
+  }
+]
