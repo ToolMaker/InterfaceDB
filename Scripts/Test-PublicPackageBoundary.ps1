@@ -1,6 +1,6 @@
 param(
     [string] $PackageDirectory = 'artifacts/packages',
-    [string] $Version = '1.0.0-preview.17'
+    [string] $Version = '1.0.0-preview.18'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,7 +33,17 @@ foreach ($package in $packages) {
         if ($libraries.Count -ne 1 -or $libraries[0].FullName -ne "lib/net10.0/$($expected[$id])") {
             throw "Unexpected packaged assembly inventory in $id."
         }
+        $isProtobuf = $id -eq 'InterfaceDB.Serialization.Protobuf'
+        $schema = $archive.GetEntry('schemas/envelope.proto')
+        if ($isProtobuf -and $null -eq $schema) { throw "Missing Protobuf envelope schema in $id." }
+        if ($isProtobuf) {
+            $reader = [IO.StreamReader]::new($schema.Open())
+            try { $packagedSchema = $reader.ReadToEnd().Replace("`r`n", "`n") } finally { $reader.Dispose() }
+            $expectedSchema = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/InterfaceDB.Serialization.Protobuf/envelope.proto') -Raw).Replace("`r`n", "`n")
+            if ($packagedSchema -cne $expectedSchema) { throw "Protobuf envelope schema differs in $id." }
+        }
         foreach ($dependency in $metadata.dependencies.group.dependency) {
+            if ($isProtobuf -and [string] $dependency.id -eq 'protobuf-net') { continue }
             if ([string] $dependency.id -notin $allowedDependencies) { throw "Unexpected dependency in ${id}: $($dependency.id)" }
             if ($expected.ContainsKey([string] $dependency.id) -and [string] $dependency.version -notin @($Version, "[$Version, )", "[$Version]")) {
                 throw "Uncoordinated InterfaceDB dependency in ${id}: $($dependency.id) $($dependency.version)"
@@ -52,6 +62,7 @@ foreach ($package in $packages) {
         try { $packedLicense = $reader.ReadToEnd().Replace("`r`n", "`n").Trim() } finally { $reader.Dispose() }
         if ($packedLicense -ne $licenseText) { throw "License text differs in $id." }
         foreach ($entry in $archive.Entries) {
+            if ($isProtobuf -and $entry.FullName -ceq 'schemas/envelope.proto') { continue }
             if ($entry.FullName -notmatch '^(lib/net10\.0/[^/]+\.dll|README\.md|LICENSE|[^/]+\.nuspec|\[Content_Types\]\.xml|_rels/\.rels|package/services/metadata/core-properties/[^/]+\.psmdcp|\.signature\.p7s)$') {
                 throw "Unexpected package content in ${id}: $($entry.FullName)"
             }

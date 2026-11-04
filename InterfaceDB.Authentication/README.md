@@ -1,5 +1,10 @@
 # InterfaceDB.Authentication
 
+## Preview.18
+
+Use matching `1.0.0-preview.18` versions across InterfaceDB packages. See the
+[release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md).
+
 ## Preview.17: all modules under MIT
 
 Atlas, repository composition, storage migration, conflict resolution and managed TCP
@@ -36,7 +41,7 @@ not enable tenant isolation. Embedded local use can continue without either opti
 Native clients use their application's OAuth/OIDC login and token refresh. Service secrets
 belong in trusted services. Authentication must be combined with application authorization.
 
-Install `InterfaceDB.Authentication` version `1.0.0-preview.17`. Keep all InterfaceDB package versions aligned.
+Install `InterfaceDB.Authentication` version `1.0.0-preview.18`. Keep all InterfaceDB package versions aligned.
 See [JWT and Keycloak configuration](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/jwt-authentication.md).
 
 ## MIT and voluntary support

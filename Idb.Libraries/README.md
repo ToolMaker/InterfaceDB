@@ -1,5 +1,10 @@
 # InterfaceDB
 
+## Preview.18
+
+Use matching `1.0.0-preview.18` versions across InterfaceDB packages. See the
+[release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md).
+
 ## Preview.17: all modules under MIT
 
 Atlas, repository composition, storage migration, conflict resolution and managed TCP
@@ -46,9 +51,9 @@ Storage and TCP can share the registered revision-aware envelope serializer, inc
 ## Install and get started
 
 ```shell
-dotnet add package InterfaceDB --version 1.0.0-preview.17
+dotnet add package InterfaceDB --version 1.0.0-preview.18
 # Optional append-only provider:
-dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.17
+dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.18
 ```
 
 Start with the [getting-started guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/getting-started.md) for contracts, configuration, registration and your first save/query. The snippets below assume an initialized repository and your existing `IPerson` contract with its `Name` property; they are individual operations, not a complete application.

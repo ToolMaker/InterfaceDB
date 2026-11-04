@@ -1,5 +1,10 @@
 # InterfaceDB.Storage.SegmentCore
 
+## Preview.18
+
+Use matching `1.0.0-preview.18` versions across InterfaceDB packages. See the
+[release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md).
+
 ## Preview.17: all modules under MIT
 
 Atlas, repository composition, storage migration, conflict resolution and managed TCP
@@ -33,7 +38,7 @@ Storage and TCP can share the registered revision-aware envelope serializer, inc
 ## Install and register
 
 ```powershell
-dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.17
+dotnet add package InterfaceDB.Storage.SegmentCore --version 1.0.0-preview.18
 dotnet add package Microsoft.Extensions.DependencyInjection
 ```
 

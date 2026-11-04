@@ -3,10 +3,24 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
+    <PackageId>InterfaceDB.Serialization.Protobuf</PackageId>
+    <Version>1.0.0-preview.18</Version>
+    <Authors>ToolMaker</Authors>
+    <Description>Optional revision-aware Protobuf envelope serializer for InterfaceDB repositories and TCP.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ToolMaker/InterfaceDB</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ToolMaker/InterfaceDB</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 18 adds opt-in authenticated TCP contract discovery and the optional Protobuf serializer package. Upgrade guide at https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md</PackageReleaseNotes>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../Idb.Libraries/Idb.Libraries.csproj" />
     <PackageReference Include="protobuf-net" Version="3.4.40" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="README.md" />
+    <None Update="envelope.proto" Pack="true" PackagePath="schemas/envelope.proto" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="" />
   </ItemGroup>
 </Project>

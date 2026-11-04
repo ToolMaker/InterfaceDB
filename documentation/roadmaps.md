@@ -12,11 +12,12 @@ broader device/power-loss qualification remain future work. This distribution ch
 does not implement them or weaken current correctness requirements.
 
 
-## Protobuf serializer: source implementation
+## Preview.18: Protobuf serialization and TCP schema discovery
 
 The optional [Protobuf envelope serializer](protobuf-serialization.md) is implemented
 through the existing serializer abstraction and tested with File, SegmentCore, Atlas
-and TLS TCP. It is not an HTTP/2 gRPC service and is not in the preview.17 packages.
+and TLS TCP. Preview.18 makes it available as an optional package.
+See the [preview.18 upgrade notes](preview18-release-notes.md).
 
 The [measured comparison](performance-protobuf-sql-20261104.md) found smaller
 Protobuf envelopes and higher encoding cost. MessagePack remains the default.
@@ -27,12 +28,10 @@ descriptor interface.
 
 ## Final preview candidate
 
-Treat preview.18 as the proposed final feature preview. Package the optional
-serializer separately, keeping the Protobuf dependency out of the core and
-default provider packages. Verify the package inventory, Windows/Linux CI,
-and a clean NuGet consumer that writes, reopens and reads with the new package.
-The release notes should describe Protobuf serialization and its current migration
-and transport boundaries.
+Treat preview.18 as the final feature preview candidate. The optional serializer
+package keeps the Protobuf dependency out of core and the default provider packages.
+Release checks include the package inventory, Windows/Linux CI and a clean NuGet
+consumer that writes, reopens and reads with the new package.
 
 After that, freeze feature scope and focus on qualification for stable 1.0.
 Retain the [physical power-cut gate](#stable-10-release-gate) and the

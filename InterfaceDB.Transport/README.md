@@ -1,5 +1,12 @@
 # InterfaceDB.Transport
 
+## Preview.18
+
+Use matching `1.0.0-preview.18` versions across InterfaceDB packages. See the
+[release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md).
+
+Opt in to TCP contract discovery per alias. See the [host and client setup](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/tcp-transport.md#optional-contract-descriptions).
+
 ## Preview.17: all modules under MIT
 
 Atlas, repository composition, storage migration, conflict resolution and managed TCP
@@ -41,10 +48,10 @@ pub/sub hints, explicit compatibility manifests, and a runnable SegmentCore host
 envelope serializer remains MessagePack; a configured revision-aware serializer can be shared
 with storage. TCP control frames retain their MessagePack protocol.
 
-Install `InterfaceDB.Transport` version `1.0.0-preview.17`. Keep all InterfaceDB package versions aligned.
+Install `InterfaceDB.Transport` version `1.0.0-preview.18`. Keep all InterfaceDB package versions aligned.
 
 ```shell
-dotnet add package InterfaceDB.Transport --version 1.0.0-preview.17
+dotnet add package InterfaceDB.Transport --version 1.0.0-preview.18
 ```
 
 See the [online TCP guide](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.17/documentation/tcp-repository.md),

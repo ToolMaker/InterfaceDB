@@ -1,13 +1,16 @@
 # InterfaceDB
 
-**Preview.17 published:** every implemented module is now MIT licensed,
+**Preview.18** adds TCP contract discovery and an optional Protobuf package.
+See the [release and upgrade notes](documentation/preview18-release-notes.md).
+
+Preview.17 made every implemented module available under MIT,
 including Atlas, local/remote and peer repositories, storage migration and conflict resolution.
-The nine packages are versioned together. See the [package map and upgrade notes](documentation/preview17-release-notes.md)
+That release shipped nine coordinated packages. See the [package map and upgrade notes](documentation/preview17-release-notes.md)
 and [verification/publication status](documentation/preview17-validation.md).
 
-The current source also includes an optional [Protobuf serializer for gRPC integrations](documentation/protobuf-serialization.md),
+Preview.18 includes an optional [Protobuf serializer for gRPC integrations](documentation/protobuf-serialization.md),
 with [MessagePack, TCP and SQL benchmark results](documentation/performance-protobuf-sql-20261104.md).
-The published preview.17 packages use the existing MessagePack default.
+MessagePack remains the default serializer.
 
 If InterfaceDB helps you or your business, please consider [sponsoring maintenance](SPONSORING.md).
 Sponsorship is optional and adds no conditions to the [MIT license](LICENSE).

@@ -5,7 +5,8 @@
 `src/InterfaceDB.Serialization.Protobuf` adds
 `Idb.Serialization.Protobuf.ProtobufObjectSerializer<TContract>`, an implementation of
 `IRevisionObjectSerializer<TContract>` using protobuf-net 3.4.40 on .NET 10. It is an
-optional source module, not part of the already published preview.17 packages.
+optional package named `InterfaceDB.Serialization.Protobuf`. Use matching preview.18
+InterfaceDB package versions. The package includes `schemas/envelope.proto`.
 
 Protobuf is the normal serialization format used by gRPC. This module implements the
 serialization piece; it does not introduce a gRPC service, HTTP/2 endpoint, generated
@@ -19,7 +20,7 @@ inside its authenticated ciphertext.
 
 ## Explicit schema and registration
 
-Reference the serializer project and configure a model at the application's composition
+Install the serializer package and configure a model at the application's composition
 root. Stable field numbers and explicit type IDs replace assembly-qualified names in
 the persisted entity identity. Register all nested types needed by the model as well.
 

@@ -1,12 +1,17 @@
 # InterfaceDB.Repositories
 
+## Preview.18
+
+Use matching `1.0.0-preview.18` versions across InterfaceDB packages. See the
+[release and upgrade notes](https://github.com/ToolMaker/InterfaceDB/blob/v1.0.0-preview.18/documentation/preview18-release-notes.md).
+
 Repository composition, offline synchronization, peer replication and resumable provider-to-provider storage migration for InterfaceDB.
 
 Part of [InterfaceDB](https://github.com/ToolMaker/InterfaceDB), for .NET 10.
 All implemented modules are free and MIT licensed. This is a preview release.
 
 ```sh
-dotnet add package InterfaceDB.Repositories --version 1.0.0-preview.17
+dotnet add package InterfaceDB.Repositories --version 1.0.0-preview.18
 ```
 
 Use matching versions for all InterfaceDB packages. Configure implementations at the

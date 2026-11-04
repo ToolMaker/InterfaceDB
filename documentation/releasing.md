@@ -22,7 +22,7 @@ task-owned directory beneath `C:\Temp`; do not change machine-wide settings.
 
 ```powershell
 ./Scripts/Test-PublicSourceBoundary.ps1
-./Scripts/Test-ReleaseVersion.ps1 -Tag v1.0.0-preview.17
+./Scripts/Test-ReleaseVersion.ps1 -Tag v1.0.0-preview.18
 dotnet restore InterfaceDB.sln
 dotnet build InterfaceDB.sln -c Release --no-restore -warnaserror:CS9057
 ./Scripts/Test-AllSuites.ps1
@@ -30,11 +30,11 @@ dotnet run -c Release --no-build --no-restore --project InterfaceDb.IntegrationT
 dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Transactions -- --materialization-self-test
 dotnet run -c Release --no-build --no-restore --project StorageBenchmarks.Repository -- --smoke --records 200 --batch 32 --output artifacts/repository-smoke.json
 ./Scripts/Pack-PublicPackages.ps1 -OutputDirectory artifacts/packages
-./Scripts/Test-PublicPackageBoundary.ps1 -Version 1.0.0-preview.17
+./Scripts/Test-PublicPackageBoundary.ps1 -Version 1.0.0-preview.18
 dotnet list InterfaceDB.sln package --vulnerable --include-transitive
 ```
 
-Use a fresh output directory. Package checks require exactly the inventory's nine
+Use a fresh output directory. Package checks require exactly the inventory's ten
 packages, coordinated versions, MIT metadata, the standard license, one expected
 assembly per package and allowed dependencies/assets. Historical assembly names
 containing `Commercial` are compatibility identities, not a licensing boundary.

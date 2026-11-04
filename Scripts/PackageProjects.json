@@ -43,5 +43,10 @@
     "id": "InterfaceDB.Storage.Atlas",
     "project": "src/InterfaceDB.Storage.Atlas/InterfaceDB.Storage.Atlas.csproj",
     "assembly": "InterfaceDB.Storage.AtlasCore.dll"
+  },
+  {
+    "id": "InterfaceDB.Serialization.Protobuf",
+    "project": "src/InterfaceDB.Serialization.Protobuf/InterfaceDB.Serialization.Protobuf.csproj",
+    "assembly": "InterfaceDB.Serialization.Protobuf.dll"
   }
 ]
